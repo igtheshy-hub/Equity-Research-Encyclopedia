@@ -75,7 +75,7 @@ def _iter_pdfs():
 def cmd_ingest(args):
     from src import pdf_extract
     if args.file:
-        targets = [Path(args.file)]
+        targets = [Path(args.file).resolve()]
     else:
         targets = list(_iter_pdfs())
     if not targets:

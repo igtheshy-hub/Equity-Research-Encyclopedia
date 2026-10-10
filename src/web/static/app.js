@@ -108,8 +108,13 @@ if (ingestForm) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paths }),
     })
-      .then((r) => r.json())
-      .then((d) => {
+      .then((r) => r.json().then((d) => ({ status: r.status, body: d })))
+      .then(({ status, body: d }) => {
+        if (status !== 200) {
+          btn.disabled = false;
+          hint.textContent = d.error || ("摄入请求失败（HTTP " + status + "）");
+          return;
+        }
         btn.disabled = false;
         hint.textContent = "";
         log.textContent = d.log + (d.problems && d.problems.length
@@ -122,7 +127,12 @@ if (ingestForm) {
   });
 }
 
-/* 6. 审校执行 */
+/* 6. 摄入进行中：自动刷新页面直到状态变化 */
+if (document.getElementById("ingest-running")) {
+  setTimeout(() => location.reload(), 15000);
+}
+
+/* 7. 审校执行 */
 const auditBtn = document.getElementById("audit-btn");
 if (auditBtn) {
   auditBtn.addEventListener("click", () => {

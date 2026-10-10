@@ -1,6 +1,9 @@
 import io
+import json
+import threading
 import uuid
 from contextlib import redirect_stdout
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -15,6 +18,25 @@ from ..classify import classify_one, sanitize, unique_target
 from ..ingest import iter_pdfs, load_manifest, run_all
 
 app = Flask(__name__)
+
+STATE_PATH = config.DATA_DIR / "ui_state.json"
+
+# 同一时刻只允许一个摄入在跑：防重复提交导致重复调用、重复写盘
+_ingest_lock = threading.Lock()
+
+
+def _load_state():
+    if STATE_PATH.exists():
+        try:
+            return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        except ValueError:
+            return {}
+    return {}
+
+
+def _save_state(state):
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
 
 TYPE_LABELS = {"company": "公司", "industry": "行业", "concept": "概念", "source": "来源摘要"}
 _LAST_ASK = {}
@@ -132,7 +154,10 @@ def memo_save():
 
 @app.route("/upload")
 def upload_page():
-    return render_template("upload.html")
+    state = _load_state()
+    last_upload = state.get("last_upload")
+    inbox = sorted(p.name for p in config.INBOX_DIR.glob("*.pdf"))
+    return render_template("upload.html", last_upload=last_upload, inbox=inbox)
 
 
 @app.route("/upload/do", methods=["POST"])
@@ -155,6 +180,9 @@ def upload_do():
         except Exception as e:
             r = {"ok": False, "file": dest.name, "error": str(e)}
         results.append(r)
+    state = _load_state()
+    state["last_upload"] = {"time": datetime.now().strftime("%Y-%m-%d %H:%M"), "results": results}
+    _save_state(state)
     return jsonify({"results": results})
 
 
@@ -172,7 +200,16 @@ def ingest_page():
             "entries": info and info.get("entries_count"),
         })
     inbox = sorted(p.name for p in config.INBOX_DIR.glob("*.pdf"))
-    return render_template("ingest.html", rows=rows, inbox=inbox)
+    last_ingest = _load_state().get("last_ingest")
+    if last_ingest and last_ingest.get("status") == "running":
+        try:
+            started = datetime.fromisoformat(last_ingest["started_at"])
+            if (datetime.now() - started).total_seconds() > 1800:
+                last_ingest = dict(last_ingest, status="abandoned",
+                                   note="状态超过 30 分钟未更新，按中断处理；未入库的文件可重新摄入")
+        except (KeyError, ValueError):
+            last_ingest = dict(last_ingest, status="abandoned", note="状态时间戳异常，按中断处理")
+    return render_template("ingest.html", rows=rows, inbox=inbox, last_ingest=last_ingest)
 
 
 @app.route("/ingest/do", methods=["POST"])
@@ -187,10 +224,24 @@ def ingest_do():
         targets = [valid[rel] for rel in (data.get("paths") or []) if rel in valid]
     if not targets:
         return jsonify({"results": [], "log": "没有选中可摄入的文件", "problems": []})
+    if not _ingest_lock.acquire(blocking=False):
+        return jsonify({"error": "已有摄入正在进行中，请等它完成（摄入页会自动刷新显示进度）后再操作。"}), 409
+    state = _load_state()
+    state["last_ingest"] = {"status": "running", "started": datetime.now().strftime("%H:%M"),
+                            "started_at": datetime.now().isoformat(timespec="seconds"),
+                            "targets": [p.name for p in targets]}
+    _save_state(state)
     buf = io.StringIO()
-    with redirect_stdout(buf):
-        results = run_all(targets)
-        problems = validate.validate_all()
+    try:
+        with redirect_stdout(buf):
+            results = run_all(targets)
+            problems = validate.validate_all()
+    finally:
+        state = _load_state()
+        state["last_ingest"] = {"status": "done", "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                "count": len(results)}
+        _save_state(state)
+        _ingest_lock.release()
     return jsonify({"results": results, "log": buf.getvalue(), "problems": problems})
 
 

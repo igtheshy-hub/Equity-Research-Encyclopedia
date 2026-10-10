@@ -7,6 +7,9 @@ raw/
 # 提取中间产物：含研报全文文本，同上
 data/extracts/
 
+# 网页本地运行状态（收件台/摄入页的最近结果）
+data/ui_state.json
+
 # Python
 __pycache__/
 *.pyc

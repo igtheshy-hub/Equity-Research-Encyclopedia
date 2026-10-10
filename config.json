@@ -3,7 +3,8 @@
     "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
     "model": "glm-4.6",
     "read_timeout_s": 180,
-    "max_retries": 3
+    "max_retries": 3,
+    "disable_thinking": true
   },
   "temperature": {
     "select": 0.0,

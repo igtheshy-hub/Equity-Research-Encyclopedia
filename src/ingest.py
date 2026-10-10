@@ -350,6 +350,7 @@ def run_all(paths):
             continue
         if r:
             results.append(r)
+        save_manifest(manifest)  # 逐文件落盘，中途失败不丢已完成的部分
     save_manifest(manifest)
     wiki.rebuild_index_md(wiki.load_pages())
     if results:

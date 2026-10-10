@@ -66,6 +66,9 @@ def _call(messages, task):
         "messages": messages,
         "temperature": config.CFG["temperature"].get(task, 0.2),
     }
+    # 本项目任务均为结构化提取/判定，关闭 GLM 深度思考以免长输入时思考耗时顶爆读超时
+    if config.CFG["llm"].get("disable_thinking", True):
+        payload["thinking"] = {"type": "disabled"}
     max_retries = config.CFG["llm"]["max_retries"]
     last = None
     for attempt in range(max_retries + 1):

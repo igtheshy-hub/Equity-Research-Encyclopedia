@@ -8,6 +8,28 @@
     <p>把 PDF 拖到这里，或</p>
     <label class="primary">选择文件<input type="file" id="file-input" accept="application/pdf" multiple hidden></label>
   </div>
+  {% if inbox %}
+  <div class="banner warn">收件台还有未归类的文件（上次处理中断或失败），可刷新页面上方的说明后重新上传，或手动处理：{{ inbox | join('、') }}</div>
+  {% endif %}
+  {% if last_upload %}
+  <div class="step">
+    <h2>最近一次归类结果（{{ last_upload.time }}）</h2>
+    <table>
+      <thead><tr><th>原文件</th><th>结果</th><th>新名字 / 目录</th><th>依据</th></tr></thead>
+      <tbody>
+      {% for r in last_upload.results %}
+      <tr>
+        <td>{{ r.file or '' }}</td>
+        <td>{{ '✓ 归类成功' if r.ok else '✗ 失败' }}</td>
+        <td>{% if r.ok %}{{ r.renamed }}<br><span class="muted">{{ r.target }}</span>{% else %}<span class="muted">{{ r.error or '' }}</span>{% endif %}</td>
+        <td class="muted">{{ r.reason or '' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p><a href="/ingest">归类完成的文件在摄入页勾选编译入库 →</a></p>
+  </div>
+  {% endif %}
   <div id="upload-progress" hidden>处理中，请稍候…</div>
   <div id="upload-results"></div>
   <p><a href="/ingest">归类完成后，去摄入页编译入库 →</a></p>
