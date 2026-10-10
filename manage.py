@@ -124,7 +124,12 @@ def cmd_ask(args):
 
 
 def cmd_audit(args):
-    print("审校引擎在后续步骤实现（当前为骨架）。")
+    from src import audit
+    r = audit.run()
+    print("审校完成：")
+    for k, v in r["counts"].items():
+        print(f"  {k}: {v}")
+    print(f"报告：{r['path'].relative_to(config.ROOT).as_posix()}")
     return 0
 
 
@@ -141,7 +146,9 @@ def cmd_validate(args):
 
 
 def cmd_serve(args):
-    print("网页界面在后续步骤实现（当前为骨架）。")
+    from src.web.app import app
+    print("启动本地网页：http://127.0.0.1:5000 （Ctrl+C 停止）")
+    app.run(host="127.0.0.1", port=5000, debug=False)
     return 0
 
 

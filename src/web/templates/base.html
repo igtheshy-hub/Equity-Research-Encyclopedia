@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}研报百科{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header>
+  <div class="brand"><a href="/">研报百科</a><span class="sub">句句标注出处的团队知识库</span></div>
+  <nav>
+    <a href="/">首页</a>
+    <a href="/ask">问答</a>
+    <a href="/upload">收件台</a>
+    <a href="/ingest">摄入</a>
+    <a href="/audit">审校</a>
+    <a href="/outputs">产出</a>
+    <a href="/log">日志</a>
+  </nav>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+<footer>研报百科原型 · 本地单机 · 数据在 raw/ 与 wiki/ 目录</footer>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

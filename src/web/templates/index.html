@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}首页 · 研报百科{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <input id="filter" type="search" placeholder="按标题、别名或摘要过滤…" autocomplete="off">
+  <span id="filter-count" class="muted"></span>
+</div>
+{% for g in groups %}
+<section class="group" data-group="{{ g.label }}">
+  <h2>{{ g.label }}（{{ g.pages | length }}）</h2>
+  {% if g.pages %}
+  <table>
+    <thead><tr><th>页面</th><th>别名</th><th>摘要</th><th>来源</th><th>条目</th><th>更新</th></tr></thead>
+    <tbody>
+    {% for e in g.pages %}
+      <tr class="row" data-search="{{ e.title }} {{ e.aliases | join(' ') }} {{ e.summary }}">
+        <td><a href="{{ e.url }}">{{ e.title }}</a></td>
+        <td>{{ e.aliases | join('、') or '—' }}</td>
+        <td>{{ e.summary or '—' }}</td>
+        <td class="num">{{ e.source_files | length }}</td>
+        <td class="num">{{ e.statements }}</td>
+        <td>{{ e.updated }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">（暂无）</p>
+  {% endif %}
+</section>
+{% endfor %}
+{% endblock %}

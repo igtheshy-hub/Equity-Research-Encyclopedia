@@ -312,10 +312,6 @@ def ingest_one(pdf_path, manifest):
             created.append(topic["title"])
             touched_titles.append(topic["title"])
             print(f"  新建 {path.relative_to(config.WIKI_DIR).as_posix()}（{count} 条）")
-            total_added += count
-            created.append(topic["title"])
-            touched_titles.append(topic["title"])
-            print(f"  新建 {path.relative_to(config.WIKI_DIR).as_posix()}（{count} 条）")
     entries_count = sum(sum(len(v) for v in t["sections"].values()) for t in topics)
     if touched_titles:
         _write_source_page(pdf_path, touched_titles, compiled["report_date"], entries_count)

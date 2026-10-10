@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}产出 · 研报百科{% endblock %}
+{% block content %}
+<div class="narrow">
+  <h1>产出</h1>
+  <h2>研究备忘</h2>
+  {% if memos %}
+  <ul>{% for m in memos %}<li><a href="/outputs/{{ m }}">{{ m }}</a></li>{% endfor %}</ul>
+  {% else %}<p class="muted">（暂无，问答后可存为备忘）</p>{% endif %}
+  <h2>审校报告等</h2>
+  {% if reports %}
+  <ul>{% for r in reports %}<li><a href="/outputs/{{ r }}">{{ r }}</a></li>{% endfor %}</ul>
+  {% else %}<p class="muted">（暂无）</p>{% endif %}
+</div>
+{% endblock %}

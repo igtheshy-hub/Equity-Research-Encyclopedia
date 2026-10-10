@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ meta.title or slug }} · 研报百科{% endblock %}
+{% block content %}
+<div class="page-wrap">
+  <article class="page-main">
+    <p class="crumbs"><a href="/">首页</a> / {{ TYPE_LABELS[ptype] }} / {{ slug }}</p>
+    <div class="meta-card">
+      <div><b>{{ meta.title or slug }}</b>（{{ TYPE_LABELS[ptype] }}）</div>
+      {% if meta.aliases %}<div>别名：{{ meta.aliases | join('、') }}</div>{% endif %}
+      <div>更新：{{ meta.updated }} · 条目 {{ statements }} 条 · 来源 {{ (meta.sources or []) | length }} 份</div>
+      {% if meta.sources %}
+      <div class="sources">来源文件：
+        {% for s in meta.sources %}<span class="src">{{ s.split('/')[-1] }}</span>{% endfor %}
+      </div>
+      {% endif %}
+      {% if meta.history %}
+      <details><summary>更新历史（{{ meta.history | length }}）</summary>
+        <ul>{% for h in meta.history %}<li>{{ h }}</li>{% endfor %}</ul>
+      </details>
+      {% endif %}
+    </div>
+    <div class="page-body">{{ body_html | safe }}</div>
+    <p class="hint">点击句尾蓝色角标，右侧打开对应 PDF 原页对照。</p>
+  </article>
+  <aside class="pdf-panel" id="pdf-panel">
+    <div class="pdf-head">PDF 原文对照 <button id="pdf-close" class="ghost" hidden>收起</button></div>
+    <iframe id="pdf-frame" title="PDF 原文" hidden></iframe>
+    <p class="placeholder" id="pdf-placeholder">尚未打开 PDF<br>点击正文角标即可对照原页</p>
+  </aside>
+</div>
+{% endblock %}

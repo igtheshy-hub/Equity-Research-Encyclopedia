@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}日志 · 研报百科{% endblock %}
+{% block content %}
+<div class="narrow">
+  <h1>操作日志</h1>
+  <p class="muted">wiki/log.md，新在前。</p>
+  <table>
+    <thead><tr><th>日期</th><th>操作</th><th>摘要</th></tr></thead>
+    <tbody>
+    {% for r in rows %}<tr><td>{{ r[0] }}</td><td>{{ r[1] }}</td><td>{{ r[2] }}</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

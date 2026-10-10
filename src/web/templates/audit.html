@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}审校 · 研报百科{% endblock %}
+{% block content %}
+<div class="narrow">
+  <h1>审校</h1>
+  <p class="muted">对全库跑四类健康检查：矛盾（附双方原文与锚点）、过期（超 90 天未更新）、未摄入（raw/ 有文件未入库 + 内容缺口）、孤立（无引用页面与合并建议）。</p>
+  <button class="primary" id="audit-btn">执行审校</button>
+  <span id="audit-hint" class="muted"></span>
+  <h2>历史报告</h2>
+  {% if reports %}
+  <ul>
+    {% for r in reports %}<li><a href="/outputs/{{ r }}">{{ r }}</a></li>{% endfor %}
+  </ul>
+  {% else %}<p class="muted">（还没有报告）</p>{% endif %}
+</div>
+{% endblock %}
