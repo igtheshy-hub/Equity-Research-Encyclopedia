@@ -41,6 +41,22 @@ def cmd_selftest(args):
         return 1
     dt = time.monotonic() - t0
     print(f"  [好] {config.CFG['llm']['model']} 响应 {dt:.1f}s：{reply.strip()[:30]}")
+    print("== 库外问答检查 ==")
+    from src import ask as ask_mod
+    r = ask_mod.ask("马斯克的火星殖民计划最新进展如何？", distill=False)
+    if r["answer_md"].strip() == ask_mod.REFUSAL:
+        print("  [好] 知识库外问题正确走了拒绝路径")
+    else:
+        print(f"  [败] 库外问题未拒绝：{r['answer_md'][:60]}")
+        return 1
+    print("== 全库校验 ==")
+    from src import validate
+    problems = validate.validate_all()
+    if problems:
+        for x in problems:
+            print(f"  [问题] {x}")
+        return 1
+    print("  [好] 全库校验通过")
     print("\nselftest 通过。")
     return 0
 
@@ -87,7 +103,23 @@ def cmd_ingest(args):
 
 
 def cmd_ask(args):
-    print("问答管道在后续步骤实现（当前为骨架）。")
+    from src import ask as ask_mod
+    result = ask_mod.ask(args.question)
+    sel = result["step1"]
+    print(f"问题：{result['question']}")
+    print(f"选页：{'、'.join(sel['selected']) or '（无）'}")
+    if sel["reason"]:
+        print(f"理由：{sel['reason']}")
+    print()
+    print(result["answer_md"])
+    if not result["validation"]["ok"]:
+        print(f"\n[警告] 答案锚点校验未通过：{'；'.join(result['validation']['violations'])}")
+    if result.get("distill"):
+        d = result["distill"]
+        print(f"\n[沉淀] 新知识 {d['lines']} 条写入 {d['page']}，详见 wiki/log.md")
+    if args.save:
+        path = ask_mod.save_memo(result, args.save)
+        print(f"\n备忘已存：{path.relative_to(config.ROOT).as_posix()}")
     return 0
 
 

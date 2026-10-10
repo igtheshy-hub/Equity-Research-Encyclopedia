@@ -193,7 +193,7 @@ def plan_merge(topics, index_entries):
     return decisions
 
 
-def _apply_merge(page_path, meta, body, topic, pdf_path):
+def _apply_merge(page_path, meta, body, topic, extra_sources, note_prefix):
     sections = wiki.body_to_sections(body)
     old_anchors = wiki.anchors_of(body)
     added = 0
@@ -208,10 +208,10 @@ def _apply_merge(page_path, meta, body, topic, pdf_path):
     new_anchors = wiki.anchors_of(new_body)
     if not old_anchors <= new_anchors:
         raise RuntimeError(f"{page_path.name}: 合并后锚点集合减少，拒绝写盘")
-    rel = pdf_path.relative_to(config.ROOT).as_posix()
     srcs = meta.get("sources") or []
-    if rel not in srcs:
-        srcs.append(rel)
+    for s in extra_sources:
+        if s not in srcs:
+            srcs.append(s)
     meta["sources"] = srcs
     meta["updated"] = config.today_str()
     aliases = meta.get("aliases") or []
@@ -221,7 +221,7 @@ def _apply_merge(page_path, meta, body, topic, pdf_path):
     if aliases:
         meta["aliases"] = aliases
     hist = meta.get("history") or []
-    hist.append(f"{config.today_str()} 并入 {pdf_path.name}（+{added} 条）")
+    hist.append(f"{config.today_str()} {note_prefix}（+{added} 条）")
     meta["history"] = hist
     wiki.write_page(page_path, meta, new_body)
     return added
@@ -234,7 +234,7 @@ def _dir_type(page_path):
     return "concept"
 
 
-def _apply_create(decision, topic, pdf_path):
+def _apply_create(decision, topic, extra_sources, note_prefix):
     type_ = decision["type"]
     slug = sanitize(topic["title"]) or sanitize(decision.get("slug") or "") or "未命名"
     path = wiki.slug_to_path(type_, slug)
@@ -242,14 +242,13 @@ def _apply_create(decision, topic, pdf_path):
     while path.exists():
         path = wiki.slug_to_path(type_, f"{slug}-{i}")
         i += 1
-    rel = pdf_path.relative_to(config.ROOT).as_posix()
     count = sum(len(v) for v in topic["sections"].values())
     meta = {
         "title": topic["title"],
         "type": type_,
-        "sources": [rel],
+        "sources": list(extra_sources),
         "updated": config.today_str(),
-        "history": [f"{config.today_str()} 新建页面，摄入 {pdf_path.name}（{count} 条）"],
+        "history": [f"{config.today_str()} {note_prefix}（{count} 条）"],
     }
     aliases = [a for a in topic["aliases"] if _norm(a) != _norm(topic["title"])]
     if aliases:
@@ -298,15 +297,21 @@ def ingest_one(pdf_path, manifest):
     created, merged, touched_titles = [], [], []
     total_added = 0
     for decision, topic in decisions:
+        rel = pdf_path.relative_to(config.ROOT).as_posix()
         if decision["action"] == "merge" and decision["slug"] in by_slug:
             p = by_slug[decision["slug"]]
-            added = _apply_merge(p["path"], p["meta"], p["body"], topic, pdf_path)
+            added = _apply_merge(p["path"], p["meta"], p["body"], topic, [rel], f"并入 {pdf_path.name}")
             total_added += added
-            merged.append(str(p["meta"].get("title") or decision["slug"]))
-            touched_titles.append(str(p["meta"].get("title") or decision["slug"]))
+            title = str(p["meta"].get("title") or decision["slug"])
+            merged.append(title)
+            touched_titles.append(title)
             print(f"  并入 {decision['slug']}（+{added} 条）")
         else:
-            path, count = _apply_create(decision, topic, pdf_path)
+            path, count = _apply_create(decision, topic, [rel], f"新建页面，摄入 {pdf_path.name}")
+            total_added += count
+            created.append(topic["title"])
+            touched_titles.append(topic["title"])
+            print(f"  新建 {path.relative_to(config.WIKI_DIR).as_posix()}（{count} 条）")
             total_added += count
             created.append(topic["title"])
             touched_titles.append(topic["title"])

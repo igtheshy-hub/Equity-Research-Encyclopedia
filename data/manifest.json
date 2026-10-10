@@ -26,6 +26,20 @@
     "Regulation on Securities Research Reports"
    ],
    "entries_count": 2
+  },
+  {
+   "file": "GuotaiJunanSecurities_Baijiu研报_20260620.pdf",
+   "path": "raw/reports/Baijiu/GuotaiJunanSecurities_Baijiu研报_20260620.pdf",
+   "sha256": "06885375e1d0f3e125f8edebee7187e2abd4f3791a2820ca620a1d8106209c55",
+   "page_count": 2,
+   "report_date": "2026-06-20",
+   "source_type": "report",
+   "ingested_at": "2026-10-10T10:56:10",
+   "topics_touched": [
+    "白酒行业",
+    "贵州茅台"
+   ],
+   "entries_count": 3
   }
  ]
 }
