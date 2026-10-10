@@ -7,6 +7,7 @@
   },
   "temperature": {
     "select": 0.0,
+    "classify": 0.0,
     "merge": 0.0,
     "audit": 0.1,
     "compile": 0.2,

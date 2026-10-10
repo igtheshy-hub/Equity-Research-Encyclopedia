@@ -30,6 +30,13 @@ frontmatter 除必填的 title / type / sources / updated 外，可加 aliases�
 
 页面间互引用用 `[[页面标题]]`，只能指向已存在的页面；跨类型引用也算有效入链。
 
+## 收件台规则
+
+- 新文件先进 raw/inbox/（网页上传或人工复制）
+- 智能体读取每份文件开头几页文字，判断类型（卖方研报 / 公司财报 / 监管政策）、主题、出具方与日期，生成规范文件名（如 中信证券_白酒行业研报_20260312.pdf），文件名只用安全字符，不含空格与 [ ] # |
+- 程序校验文件名合法性与全库唯一性（重名自动加序号后缀），把文件移入对应目录：研报 → raw/reports/<行业>/，财报 → raw/filings/<公司>/，政策 → raw/policies/
+- 收件台只移动 inbox/ 内的文件；已归入 raw/ 正式目录的文件智能体只读（inbox 是「raw/ 人工管理」的唯一例外区）
+
 ## Ingest 规则
 
 - 读取 raw/ 中的新文档，提取核心观点、数据和结论
@@ -82,6 +89,7 @@ frontmatter 除必填的 title / type / sources / updated 外，可加 aliases�
 
 ```
 python manage.py selftest              # 体检：依赖、API 连通、全库校验、库外问答测试
+python manage.py sort                  # 收件台：归类 raw/inbox/ 中的新文件
 python manage.py ingest [--all | --file 路径] [--dry-run]
 python manage.py ask "问题" [--save "备忘标题"]
 python manage.py audit

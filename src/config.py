@@ -15,6 +15,7 @@ ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "")
 CFG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 RAW_DIR = ROOT / "raw"
+INBOX_DIR = RAW_DIR / "inbox"
 REPORTS_DIR = RAW_DIR / "reports"
 FILINGS_DIR = RAW_DIR / "filings"
 POLICIES_DIR = RAW_DIR / "policies"
@@ -45,7 +46,7 @@ SECTION_ENUMS = {
 
 
 def ensure_dirs():
-    for d in (REPORTS_DIR, FILINGS_DIR, POLICIES_DIR, *TYPE_DIRS.values(), OUTPUTS_DIR, EXTRACTS_DIR):
+    for d in (INBOX_DIR, REPORTS_DIR, FILINGS_DIR, POLICIES_DIR, *TYPE_DIRS.values(), OUTPUTS_DIR, EXTRACTS_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

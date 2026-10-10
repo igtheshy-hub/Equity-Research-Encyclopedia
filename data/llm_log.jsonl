@@ -1,0 +1,3 @@
+{"time": "2026-10-10T10:34:19", "task": "select", "model": "glm-4.6", "in_chars": 10, "out_chars": 2, "prompt_tokens": 11, "completion_tokens": 118, "ok": true, "error": null}
+{"time": "2026-10-10T10:37:16", "task": "classify", "model": "glm-4.6", "in_chars": 500, "out_chars": 163, "prompt_tokens": 257, "completion_tokens": 671, "ok": true, "error": null}
+{"time": "2026-10-10T10:37:48", "task": "classify", "model": "glm-4.6", "in_chars": 563, "out_chars": 200, "prompt_tokens": 281, "completion_tokens": 1133, "ok": true, "error": null}
