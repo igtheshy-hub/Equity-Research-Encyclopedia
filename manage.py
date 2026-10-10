@@ -79,7 +79,10 @@ def cmd_ingest(args):
             preview = next((pg["text"] for pg in pages if pg["text"]), "")
             print(f"  首个有效页预览: {preview[:120]}")
     if not args.dry_run:
-        print("\n编译与归并阶段在下一步实现，当前先完成提取。")
+        from src import ingest
+        results = ingest.run_all(targets)
+        if results:
+            print(f"\n完成 {len(results)} 份材料的摄入，详情见 wiki/log.md")
     return 0
 
 
@@ -94,7 +97,14 @@ def cmd_audit(args):
 
 
 def cmd_validate(args):
-    print("全库校验在后续步骤实现（当前为骨架）。")
+    from src import validate
+    problems = validate.validate_all()
+    if problems:
+        print(f"发现 {len(problems)} 个问题：")
+        for x in problems:
+            print(f"  - {x}")
+        return 1
+    print("全库校验通过。")
     return 0
 
 
