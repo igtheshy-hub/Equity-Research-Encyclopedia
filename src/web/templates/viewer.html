@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>原文对照 · 投研百科</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="viewer-page" data-file="{{ file }}" data-loc="{{ loc }}" data-hl="{{ hl }}">
+<header class="viewer-bar">
+  <span class="viewer-name" id="v-name">{{ file }}</span>
+  <span class="viewer-loc muted" id="v-loc"></span>
+  <span class="spacer"></span>
+  <span class="muted" id="v-progress"></span>
+  <button class="ghost sm" id="v-zoom-out" title="缩小">−</button>
+  <button class="ghost sm" id="v-zoom-fit" title="适应宽度">适应宽度</button>
+  <button class="ghost sm" id="v-zoom-in" title="放大">＋</button>
+</header>
+<div class="viewer-scroll" id="v-scroll">
+  <p class="muted" id="v-loading">正在打开原文…</p>
+</div>
+<script type="module" src="{{ url_for('static', filename='viewer.js') }}"></script>
+</body>
+</html>

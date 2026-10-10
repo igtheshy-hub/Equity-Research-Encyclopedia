@@ -1,151 +1,268 @@
-/* 研报百科 前端交互（原生 JS，无框架） */
+/* 投研百科 全局脚本：任务轮询与角标、提取弹窗、原文对照面板、表格过滤 */
 
-/* 1. 角标点击 → 右栏 iframe 打开 PDF 原页（仅页面视图有 iframe；问答/报告页走新标签打开） */
+/* ---------- 小工具 ---------- */
+
+const $ = (sel, root) => (root || document).querySelector(sel);
+const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+
+window.App = {
+  onTasks: [],      // 页面脚本注册的轮询回调 (tasks, active) => void
+  escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+    ));
+  },
+  toast(msg, type) {
+    const wrap = $("#toast-wrap");
+    if (!wrap) return;
+    const el = document.createElement("div");
+    el.className = "toast " + (type || "info");
+    el.textContent = msg;
+    wrap.appendChild(el);
+    setTimeout(() => { el.classList.add("fade"); }, 2600);
+    setTimeout(() => { el.remove(); }, 3200);
+  },
+};
+
+/* ---------- 任务轮询 ---------- */
+
+function tickTasks() {
+  fetch("/api/tasks")
+    .then((r) => r.json())
+    .then((d) => {
+      const tasks = d.tasks || [];
+      const active = d.active || {};
+      const running = Object.values(active).reduce((a, b) => a + b, 0);
+      const badge = $("#task-badge");
+      if (badge) {
+        badge.hidden = running === 0;
+        badge.textContent = running;
+        const names = Object.keys(active).filter((k) => active[k] > 0);
+        badge.title = names.length ? "正在运行：" + names.join("、") : "";
+      }
+      App.onTasks.forEach((fn) => { try { fn(tasks, active); } catch (e) { console.error(e); } });
+    })
+    .catch(() => {});
+}
+
+setInterval(() => { if (!document.hidden) tickTasks(); }, 2000);
+tickTasks();
+
+/* 任务卡渲染（首页进度区 / 产出页 / 审校页共用） */
+App.taskCardHTML = function (t) {
+  const pct = Math.max(0, Math.min(100, t.percent || 0));
+  let mid = "";
+  if (t.status === "running") {
+    mid = `<div class="bar"><i style="width:${pct}%"></i></div>
+           <div class="tc-detail">${App.escapeHtml(t.detail || (pct ? pct + "%" : "进行中"))}</div>`;
+  } else if (t.status === "waiting") {
+    mid = `<div class="bar waiting"><i style="width:${pct}%"></i></div><div class="tc-detail">排队等待中（同类任务进行中）</div>`;
+  } else if (t.status === "error") {
+    mid = `<div class="tc-err">失败：${App.escapeHtml(t.error || "未知错误")}</div>`;
+  } else if (t.status === "done") {
+    mid = `<div class="tc-ok">${App.doneText(t)}</div>`;
+  }
+  const ack = (t.status === "done" || t.status === "error")
+    ? `<button class="icon-btn tc-ack" data-tid="${t.id}" title="知道了，移除">✕</button>` : "";
+  return `<div class="task-card ${t.status}" data-tid="${t.id}">
+    <div class="tc-top"><span class="tc-kind">${App.escapeHtml(t.kind_label || t.kind)}</span>
+      <span class="tc-label">${App.escapeHtml(t.label || "")}</span>${ack}</div>${mid}</div>`;
+};
+
+App.doneText = function (t) {
+  const r = t.result;
+  try {
+    if (t.kind === "classify" && Array.isArray(r)) {
+      const bad = r.filter((x) => !x.ok);
+      if (bad.length) return `完成，${bad.length} 份未归类：` + bad.map((x) => x.file).join("、");
+      return "全部文件都已取名并进入资料库";
+    }
+    if (t.kind === "ingest" && Array.isArray(r)) {
+      if (!r.length) return "完成：没有文件产出条目（可能已摄入过或是扫描版）";
+      return "全部文件都已摄入：" + r.map((x) => `${x.file}（${x.entries_count} 条）`).join("、");
+    }
+    if (t.kind === "report" && r && r.file) {
+      return `报告已生成：<a href="/outputs/${encodeURIComponent(r.file)}" target="_blank" rel="noopener">${App.escapeHtml(r.file)}</a>`;
+    }
+    if (t.kind === "audit" && r && r.counts) {
+      const c = r.counts;
+      return `完成：矛盾 ${c["矛盾"] || 0}、过期 ${c["过期"] || 0}、未摄入 ${c["未摄入文件"] || 0} 文件、孤立 ${c["孤立"] || 0}`;
+    }
+    if (t.kind === "fix" && r && Array.isArray(r.notes)) {
+      return "修复完成：" + r.notes.slice(0, 3).join("；");
+    }
+  } catch (e) { /* 结果展示失败不影响主流程 */ }
+  return "完成";
+};
+
+document.addEventListener("click", (e) => {
+  const ack = e.target.closest(".tc-ack");
+  if (!ack) return;
+  fetch("/api/tasks/" + ack.dataset.tid + "/ack", { method: "POST" })
+    .then(() => tickTasks())
+    .catch(() => {});
+});
+
+/* ---------- 提取（沉淀）弹窗 ---------- */
+
+function extractItemHTML(item, gi) {
+  const p = item.proposal;
+  const target = p.action === "merge"
+    ? `并入已有页「${App.escapeHtml(p.target_title || "")}」` : `新建${p.type === "company" ? "公司" : p.type === "industry" ? "行业" : "概念"}页`;
+  const lines = (p.lines || []).map((ln, i) => `
+    <label class="extract-line"><input type="checkbox" checked data-g="${gi}" data-i="${i}">
+      <span>${App.escapeHtml((p.lines_pretty || p.lines)[i] || ln)}</span></label>`).join("");
+  return `<div class="extract-group" data-g="${gi}">
+    <div class="eg-head"><b>${App.escapeHtml(p.title)}</b><span class="muted">${target}</span></div>
+    ${p.summary ? `<div class="muted eg-summary">${App.escapeHtml(p.summary)}</div>` : ""}
+    <div class="eg-lines">${lines}</div>
+  </div>`;
+}
+
+App.openExtractModal = function (items, note) {
+  const modal = $("#extract-modal");
+  const body = $("#extract-body");
+  if (!modal || !body || !items.length) return;
+  $("#extract-note").textContent = note || "";
+  body.innerHTML = items.map(extractItemHTML).join("");
+  modal.hidden = false;
+  $("#extract-confirm").onclick = () => {
+    const applies = [];
+    items.forEach((item, gi) => {
+      const g = body.querySelector(`.extract-group[data-g="${gi}"]`);
+      const checked = $$("input:checked", g);
+      if (!checked.length) return;
+      const lines = checked.map((c) => item.proposal.lines[+c.dataset.i]);
+      applies.push({ conv_id: item.conv_id, msg_id: item.msg_id, lines });
+    });
+    if (!applies.length) { closeModal("extract-modal"); return; }
+    fetch("/api/distill/apply", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ applies }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        const ok = (d.results || []).filter((x) => x.ok).length;
+        const bad = (d.results || []).filter((x) => !x.ok);
+        closeModal("extract-modal");
+        if (bad.length) App.toast(`提取完成 ${ok} 项，失败 ${bad.length} 项`, "warn");
+        else App.toast(`已提取 ${ok} 个提案进知识库，详情见日志页`, "ok");
+        if (App.onDistillApplied) App.onDistillApplied();
+      })
+      .catch((err) => App.toast("提取失败：" + err, "bad"));
+  };
+};
+
+function closeModal(id) {
+  const m = document.getElementById(id);
+  if (m) m.hidden = true;
+}
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-close]");
+  if (btn) closeModal(btn.dataset.close);
+  if (e.target.classList && e.target.classList.contains("modal-backdrop")) {
+    closeModal(e.target.id);
+  }
+});
+const extractLater = $("#extract-later");
+if (extractLater) extractLater.addEventListener("click", () => closeModal("extract-modal"));
+
+/* 任一页面加载时检查未处理的沉淀提案（服务端记 presented，只弹一次） */
+fetch("/api/proposals/pending")
+  .then((r) => r.json())
+  .then((d) => {
+    const items = d.items || [];
+    if (items.length) {
+      const titles = [...new Set(items.map((x) => x.conv_title || ""))].filter(Boolean);
+      App.openExtractModal(items, "来自会话「" + (titles.join("」「") || "未命名") + "」的可沉淀新知识");
+    }
+  })
+  .catch(() => {});
+
+/* ---------- 角标点击：加 hl 参数；wiki 页放右栏 iframe ---------- */
+
+function enrichCiteLinks(root) {
+  $$("sup.cite a", root).forEach((a) => {
+    if (a.dataset.enriched) return;
+    a.dataset.enriched = "1";
+    const block = a.closest("li, p, td");
+    if (!block) return;
+    const text = block.textContent.replace(a.textContent, "").replace(/\s+/g, "").slice(0, 30);
+    if (text) a.href += "&hl=" + encodeURIComponent(text);
+  });
+}
+
+App.enrichCiteLinks = enrichCiteLinks;
+document.addEventListener("DOMContentLoaded", () => enrichCiteLinks(document));
+
 document.addEventListener("click", (e) => {
   const a = e.target.closest("sup.cite a");
   if (!a) return;
-  const frame = document.getElementById("pdf-frame");
-  if (!frame) return; // 无对照栏，保持默认新标签打开
+  const frame = $("#viewer-frame");
+  if (!frame) return; // 无对照栏：保持新标签打开
   e.preventDefault();
-  frame.hidden = false;
-  frame.src = a.getAttribute("href");
-  const ph = document.getElementById("pdf-placeholder");
-  if (ph) ph.hidden = true;
-  const close = document.getElementById("pdf-close");
-  if (close) close.hidden = false;
-});
-document.addEventListener("click", (e) => {
-  if (e.target.id !== "pdf-close") return;
-  const frame = document.getElementById("pdf-frame");
-  if (frame) { frame.hidden = true; frame.src = "about:blank"; }
-  e.target.hidden = true;
-  const ph = document.getElementById("pdf-placeholder");
-  if (ph) ph.hidden = false;
+  const panel = $("#viewer-panel"), divider = $("#hdivider");
+  if (panel) panel.hidden = false;
+  if (divider) divider.hidden = false;
+  frame.src = a.href;
+  const title = $("#viewer-title");
+  if (title) title.textContent = a.textContent;
+  const saved = localStorage.getItem("pageViewerWidth");
+  if (saved) applyPaneWidth(saved);
 });
 
-/* 2. 首页过滤 */
-const filter = document.getElementById("filter");
+function applyPaneWidth(px) {
+  const main = $(".page-main");
+  const wrap = $(".page-wrap");
+  if (!main || !wrap) return;
+  const pct = Math.max(30, Math.min(85, (px / wrap.clientWidth) * 100));
+  main.style.flex = `0 0 ${pct}%`;
+}
+
+(function initDivider() {
+  const divider = $("#hdivider");
+  if (!divider) return;
+  const saved = localStorage.getItem("pageViewerWidth");
+  if (saved && !$("#viewer-panel").hidden) applyPaneWidth(+saved);
+  let dragging = false;
+  divider.addEventListener("mousedown", (e) => { dragging = true; e.preventDefault(); });
+  document.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    const wrap = $(".page-wrap");
+    const px = Math.max(300, Math.min(wrap.clientWidth - 320, e.clientX - wrap.getBoundingClientRect().left));
+    applyPaneWidth(px);
+  });
+  document.addEventListener("mouseup", (e) => {
+    if (!dragging) return;
+    dragging = false;
+    const wrap = $(".page-wrap");
+    if (wrap) localStorage.setItem("pageViewerWidth", String(e.clientX - wrap.getBoundingClientRect().left));
+  });
+})();
+
+document.addEventListener("click", (e) => {
+  if (e.target.id !== "viewer-close") return;
+  const frame = $("#viewer-frame");
+  if (frame) { frame.src = "about:blank"; }
+  const panel = $("#viewer-panel"), divider = $("#hdivider");
+  if (panel) panel.hidden = true;
+  if (divider) divider.hidden = true;
+});
+
+/* ---------- 表格过滤（知识库 / 日志共用） ---------- */
+
+const filter = $("#filter");
 if (filter) {
   filter.addEventListener("input", () => {
     const q = filter.value.trim().toLowerCase();
     let shown = 0;
-    document.querySelectorAll("tr.row").forEach((tr) => {
-      const hit = !q || tr.dataset.search.toLowerCase().includes(q);
+    $$("tr.row").forEach((tr) => {
+      const hit = !q || (tr.dataset.search || "").toLowerCase().includes(q);
       tr.style.display = hit ? "" : "none";
       if (hit) shown += 1;
     });
-    const count = document.getElementById("filter-count");
-    if (count) count.textContent = q ? `匹配 ${shown} 页` : "";
-  });
-}
-
-/* 3. 问答提交提示 */
-const askForm = document.getElementById("ask-form");
-if (askForm) {
-  askForm.addEventListener("submit", () => {
-    const hint = document.getElementById("ask-hint");
-    if (hint) hint.textContent = "提问中：选页 + 作答约需十几秒，请勿关闭页面…";
-  });
-}
-
-/* 4. 收件台上传 */
-const dropzone = document.getElementById("dropzone");
-if (dropzone) {
-  const input = document.getElementById("file-input");
-  const progress = document.getElementById("upload-progress");
-  const results = document.getElementById("upload-results");
-
-  const send = (fileList) => {
-    const files = Array.from(fileList).filter((f) => f.name.toLowerCase().endsWith(".pdf"));
-    if (!files.length) { progress.hidden = false; progress.textContent = "只接受 PDF 文件。"; return; }
-    const fd = new FormData();
-    files.forEach((f) => fd.append("files", f));
-    progress.hidden = false;
-    progress.textContent = `已接收 ${files.length} 份，模型归类中，每份约十几秒…`;
-    results.innerHTML = "";
-    fetch("/upload/do", { method: "POST", body: fd })
-      .then((r) => r.json())
-      .then((d) => {
-        progress.hidden = true;
-        const rows = d.results.map((r) => `
-          <tr>
-            <td>${r.file || ""}</td>
-            <td>${r.ok ? "✓ 归类成功" : "✗ 失败"}</td>
-            <td>${r.ok ? `${r.renamed}<br><span class="muted">${r.target}</span>` : `<span class="muted">${r.error || ""}</span>`}</td>
-            <td class="muted">${r.reason || ""}</td>
-          </tr>`).join("");
-        results.innerHTML = `<table><thead><tr><th>原文件</th><th>结果</th><th>新名字 / 目录</th><th>依据</th></tr></thead><tbody>${rows}</tbody></table>`;
-      })
-      .catch((err) => { progress.hidden = false; progress.textContent = "上传失败：" + err; });
-  };
-
-  dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("drag"); });
-  dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
-  dropzone.addEventListener("drop", (e) => {
-    e.preventDefault();
-    dropzone.classList.remove("drag");
-    if (e.dataTransfer && e.dataTransfer.files.length) send(e.dataTransfer.files);
-  });
-  if (input) input.addEventListener("change", () => { if (input.files.length) send(input.files); });
-}
-
-/* 5. 摄入执行 */
-const ingestForm = document.getElementById("ingest-form");
-if (ingestForm) {
-  ingestForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const paths = Array.from(ingestForm.querySelectorAll('input[name=path]:checked')).map((c) => c.value);
-    const hint = document.getElementById("ingest-hint");
-    const btn = document.getElementById("ingest-btn");
-    const log = document.getElementById("ingest-log");
-    if (!paths.length) { hint.textContent = "没有勾选任何新文件。"; return; }
-    btn.disabled = true;
-    hint.textContent = `摄入中：${paths.length} 份，每份 20 页约 1–2 分钟，请保持页面打开…`;
-    log.hidden = false;
-    log.textContent = "";
-    fetch("/ingest/do", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paths }),
-    })
-      .then((r) => r.json().then((d) => ({ status: r.status, body: d })))
-      .then(({ status, body: d }) => {
-        if (status !== 200) {
-          btn.disabled = false;
-          hint.textContent = d.error || ("摄入请求失败（HTTP " + status + "）");
-          return;
-        }
-        btn.disabled = false;
-        hint.textContent = "";
-        log.textContent = d.log + (d.problems && d.problems.length
-          ? "\n[校验问题]\n" + d.problems.join("\n")
-          : "\n[全库校验通过]");
-        log.textContent += "\n\n3 秒后刷新列表…";
-        setTimeout(() => location.reload(), 3000);
-      })
-      .catch((err) => { btn.disabled = false; hint.textContent = "摄入请求失败：" + err; });
-  });
-}
-
-/* 6. 摄入进行中：自动刷新页面直到状态变化 */
-if (document.getElementById("ingest-running")) {
-  setTimeout(() => location.reload(), 15000);
-}
-
-/* 7. 审校执行 */
-const auditBtn = document.getElementById("audit-btn");
-if (auditBtn) {
-  auditBtn.addEventListener("click", () => {
-    const hint = document.getElementById("audit-hint");
-    auditBtn.disabled = true;
-    hint.textContent = "审校中：逐页矛盾检测与缺口分析，约需几十秒…";
-    fetch("/audit/run", { method: "POST" })
-      .then((r) => r.json())
-      .then((d) => {
-        const c = d.counts || {};
-        hint.textContent = `完成：矛盾 ${c["矛盾"] || 0}、过期 ${c["过期"] || 0}、未摄入 ${c["未摄入文件"] || 0} 文件、孤立 ${c["孤立"] || 0}，正在打开报告…`;
-        location.href = "/outputs/" + encodeURIComponent(d.file);
-      })
-      .catch((err) => { auditBtn.disabled = false; hint.textContent = "审校失败：" + err; });
+    const count = $("#filter-count");
+    if (count) count.textContent = q ? `匹配 ${shown} 行` : "";
   });
 }

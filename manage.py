@@ -2,7 +2,6 @@ import argparse
 import importlib
 import sys
 import time
-from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -12,7 +11,7 @@ from src import config
 def cmd_selftest(args):
     ok = True
     print("== 依赖检查 ==")
-    for mod in ("httpx", "pdfplumber", "flask", "dotenv", "yaml", "markdown"):
+    for mod in ("httpx", "pdfplumber", "flask", "dotenv", "yaml", "markdown", "docx"):
         try:
             importlib.import_module(mod)
             print(f"  [好] {mod}")
@@ -43,11 +42,11 @@ def cmd_selftest(args):
     print(f"  [好] {config.CFG['llm']['model']} 响应 {dt:.1f}s：{reply.strip()[:30]}")
     print("== 库外问答检查 ==")
     from src import ask as ask_mod
-    r = ask_mod.ask("马斯克的火星殖民计划最新进展如何？", distill=False)
-    if r["answer_md"].strip() == ask_mod.REFUSAL:
-        print("  [好] 知识库外问题正确走了拒绝路径")
+    r = ask_mod.ask("马斯克的火星殖民计划最新进展如何？", propose=False)
+    if r["kind"] == "referral":
+        print("  [好] 知识库外问题正确走了 raw 文件名回退路径")
     else:
-        print(f"  [败] 库外问题未拒绝：{r['answer_md'][:60]}")
+        print(f"  [败] 库外问题未走回退：{str(r['answer_md'])[:60]}")
         return 1
     print("== 全库校验 ==")
     from src import validate
@@ -67,33 +66,30 @@ def cmd_sort(args):
     return 0
 
 
-def _iter_pdfs():
-    for d in (config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR):
-        yield from sorted(d.rglob("*.pdf"))
-
-
 def cmd_ingest(args):
     from src import pdf_extract
+    from src.ingest import iter_raw_files
     if args.file:
-        targets = [Path(args.file).resolve()]
+        targets = [config.ROOT / args.file]
     else:
-        targets = list(_iter_pdfs())
+        targets = list(iter_raw_files())
     if not targets:
-        print("raw/ 正式目录下没有 PDF。先跑收件台（python manage.py sort）或直接把文件放进 raw/ 对应目录。")
+        print("raw/ 正式目录下没有可摄入文件。先跑收件台（python manage.py sort）或用网页上传。")
         return 0
     for p in targets:
         print(f"== {p.name} ==")
         try:
-            pages, n, scanned = pdf_extract.extract_to_store(p)
+            units, count, scanned, unit_kind = pdf_extract.extract_to_store(p)
         except Exception as e:
             print(f"  提取失败: {e}")
             continue
-        print(f"  页数: {n}  逐页文本: data/extracts/{p.stem}.pages.json")
+        word = "段落/块" if unit_kind == "para" else "页"
+        print(f"  {word}数: {count}  提取缓存: data/extracts/{p.stem}.units.json")
         if scanned:
             print("  [拒] 疑似扫描版（有效页平均字符过少），不会进入编译")
         else:
-            preview = next((pg["text"] for pg in pages if pg["text"]), "")
-            print(f"  首个有效页预览: {preview[:120]}")
+            preview = next((u["text"] for u in units if u["text"]), "")
+            print(f"  首个有效单元预览: {preview[:120]}")
     if not args.dry_run:
         from src import ingest
         results = ingest.run_all(targets)
@@ -105,21 +101,35 @@ def cmd_ingest(args):
 def cmd_ask(args):
     from src import ask as ask_mod
     result = ask_mod.ask(args.question)
+    if result["kind"] == "report":
+        from src import report as report_mod
+        print(f"识别为报告请求《{result['title']}》，开始生成…")
+        path = report_mod.generate(result["title"], args.question)
+        print(f"报告已存：{path.relative_to(config.ROOT).as_posix()}")
+        return 0
     sel = result["step1"]
     print(f"问题：{result['question']}")
-    print(f"选页：{'、'.join(sel['selected']) or '（无）'}")
-    if sel["reason"]:
-        print(f"理由：{sel['reason']}")
+    print(f"选页：{'、'.join(sel['selected']) or '（无）'}（{sel['reason']}）")
     print()
     print(result["answer_md"])
+    if result["kind"] == "referral":
+        print("\n（可改用网页端点击「进一步查询」对 raw 原文深查）")
     if not result["validation"]["ok"]:
         print(f"\n[警告] 答案锚点校验未通过：{'；'.join(result['validation']['violations'])}")
-    if result.get("distill"):
-        d = result["distill"]
-        print(f"\n[沉淀] 新知识 {d['lines']} 条写入 {d['page']}，详见 wiki/log.md")
-    if args.save:
-        path = ask_mod.save_memo(result, args.save)
-        print(f"\n备忘已存：{path.relative_to(config.ROOT).as_posix()}")
+    prop = result.get("proposal")
+    if prop:
+        print(f"\n[提案] 检出 {len(prop['lines'])} 条可沉淀的新知识（"
+              f"{'并入 ' + prop['target_title'] if prop['action'] == 'merge' else '新建' + prop['title']}）：")
+        for ln in prop["lines"]:
+            print(f"  - {ln}")
+        try:
+            ans = input("写入 wiki？[y/N] ").strip().lower()
+        except EOFError:
+            ans = "n"
+        if ans in ("y", "yes"):
+            d = ask_mod.apply_distill(prop)
+            if d:
+                print(f"[沉淀] {d['lines']} 条写入 {d['page']}，详见 wiki/log.md")
     return 0
 
 
@@ -163,14 +173,13 @@ def main():
     p.set_defaults(func=cmd_sort)
 
     p = sub.add_parser("ingest", help="摄入 raw/ 中的材料")
-    p.add_argument("--file", help="指定单个 PDF 路径")
+    p.add_argument("--file", help="指定单个文件路径")
     p.add_argument("--all", action="store_true", help="扫描 raw/ 全部材料（默认行为）")
     p.add_argument("--dry-run", action="store_true", help="只做提取预览，不调用 LLM 编译")
     p.set_defaults(func=cmd_ingest)
 
     p = sub.add_parser("ask", help="两步问答")
     p.add_argument("question")
-    p.add_argument("--save", metavar="标题", help="把问答结果存为 outputs/ 研究备忘")
     p.set_defaults(func=cmd_ask)
 
     p = sub.add_parser("audit", help="四类审校")

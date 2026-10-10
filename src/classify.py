@@ -1,9 +1,10 @@
 import hashlib
 import re
 import shutil
+from pathlib import Path
 
 from . import config, llm
-from .pdf_extract import first_pages_text
+from .pdf_extract import SUPPORTED_SUFFIXES, first_text
 
 UNSAFE = re.compile(r'[\s\[\]#|/\\:*?"<>\x00-\x1f]')
 
@@ -19,7 +20,7 @@ PROMPT = """你是投研资料归档员。下面是一份 PDF 文件开头几页
   "reason": "一句话判断依据"
 }
 
-文件名由程序拼接（券商_主题+类型词_日期），你不用拼，把字段给准即可。
+文件名由程序拼接（券商_主题+类型词_日期，保留原始扩展名），你不用拼，把字段给准即可。
 broker、topic、industry 一律用中文规范名（如 国泰君安、白酒、贵州茅台），英文材料也译成中文；证券代码等专有缩写可保留英文。
 
 --- 文件文字开始 ---
@@ -39,7 +40,7 @@ def sanitize(s):
     return UNSAFE.sub("", str(s or ""))
 
 
-def build_filename(cls, original_stem):
+def build_filename(cls, original_stem, suffix=".pdf"):
     kind_word = {"report": "研报", "filing": "财报", "policy": "政策文件"}[cls["kind"]]
     parts = []
     if sanitize(cls.get("broker")):
@@ -49,20 +50,20 @@ def build_filename(cls, original_stem):
     date = sanitize(cls.get("date"))
     if re.fullmatch(r"\d{8}", date):
         parts.append(date)
-    name = "_".join(parts) + ".pdf"
-    if name == ".pdf" or set(name[:-4]) <= {"_"}:
-        name = f"未归类_{sanitize(original_stem) or '文件'}.pdf"
+    name = "_".join(parts) + suffix
+    if name == suffix or set(name[:-len(suffix)]) <= {"_"}:
+        name = f"未归类_{sanitize(original_stem) or '文件'}{suffix}"
     return name
 
 
 def unique_target(directory, filename):
     if not (directory / filename).exists():
         return filename
-    stem = filename[:-4]
+    stem = Path(filename).stem
     i = 2
-    while (directory / f"{stem}-{i}.pdf").exists():
+    while (directory / f"{stem}-{i}{Path(filename).suffix}").exists():
         i += 1
-    return f"{stem}-{i}.pdf"
+    return f"{stem}-{i}{Path(filename).suffix}"
 
 
 def target_directory(cls):
@@ -76,10 +77,9 @@ def target_directory(cls):
 
 
 def classify_one(path):
-    texts = first_pages_text(path, 3)
-    content = "\n\n".join(f"[第{i}页]\n{t}" for i, t in enumerate(texts, 1) if t)
+    content = first_text(path)
     if not content.strip():
-        return {"ok": False, "file": path.name, "error": "前 3 页没有提取到文字（疑似扫描版），未归类，文件留在收件台"}
+        return {"ok": False, "file": path.name, "error": "开头没有提取到文字（疑似扫描版或空文档），未归类，文件留在收件台"}
     cls = llm.chat(
         [{"role": "user", "content": PROMPT.replace("{TEXT}", content)}],
         task="classify",
@@ -87,7 +87,7 @@ def classify_one(path):
     )
     if cls.get("kind") not in ("report", "filing", "policy"):
         return {"ok": False, "file": path.name, "error": f"LLM 返回的 kind 不合法: {cls.get('kind')!r}，文件留在收件台"}
-    filename = build_filename(cls, path.stem)
+    filename = build_filename(cls, path.stem, path.suffix.lower())
     directory = target_directory(cls)
     directory.mkdir(parents=True, exist_ok=True)
     filename = unique_target(directory, filename)
@@ -105,12 +105,12 @@ def classify_one(path):
 
 def classify_inbox():
     config.INBOX_DIR.mkdir(parents=True, exist_ok=True)
-    pdfs = sorted(config.INBOX_DIR.glob("*.pdf"))
-    if not pdfs:
-        print("收件台（raw/inbox/）没有待归类的 PDF。")
+    files = sorted(p for suf in SUPPORTED_SUFFIXES for p in config.INBOX_DIR.glob("*" + suf))
+    if not files:
+        print("收件台（raw/inbox/）没有待归类的文件。")
         return []
     results = []
-    for p in pdfs:
+    for p in files:
         print(f"归类中: {p.name} ...")
         try:
             r = classify_one(p)

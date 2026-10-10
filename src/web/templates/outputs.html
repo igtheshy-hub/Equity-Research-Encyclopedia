@@ -1,15 +1,17 @@
 {% extends "base.html" %}
-{% block title %}产出 · 研报百科{% endblock %}
+{% block title %}产出 · 投研百科{% endblock %}
+{% block page %}outputs{% endblock %}
 {% block content %}
 <div class="narrow">
-  <h1>产出</h1>
-  <h2>研究备忘</h2>
-  {% if memos %}
-  <ul>{% for m in memos %}<li><a href="/outputs/{{ m }}">{{ m }}</a></li>{% endfor %}</ul>
-  {% else %}<p class="muted">（暂无，问答后可存为备忘）</p>{% endif %}
-  <h2>审校报告等</h2>
+  <div class="page-head"><h1>产出</h1></div>
+  <p class="muted">问答里提出报告要求后，在这里看生成进度与成品。</p>
+  <div id="report-tasks" class="task-area"></div>
+  <h2>报告</h2>
   {% if reports %}
-  <ul>{% for r in reports %}<li><a href="/outputs/{{ r }}">{{ r }}</a></li>{% endfor %}</ul>
-  {% else %}<p class="muted">（暂无）</p>{% endif %}
+  <ul class="plain-list">
+    {% for r in reports %}<li><a href="/outputs/{{ r }}">{{ r }}</a></li>{% endfor %}
+  </ul>
+  {% else %}<p class="muted">（还没有报告，去问答页提一个试试）</p>{% endif %}
 </div>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='outputs_page.js') }}" defer></script>{% endblock %}

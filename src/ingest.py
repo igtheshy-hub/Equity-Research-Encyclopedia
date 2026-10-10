@@ -4,13 +4,13 @@ from pathlib import Path
 
 from . import config, llm, wiki
 from .classify import sha256_of, sanitize
-from .pdf_extract import extract_to_store
+from .pdf_extract import SUPPORTED_SUFFIXES, extract_to_store, unit_kind_of
 
-COMPILE_PROMPT = """你是投研知识编辑，把一份材料的逐页文本编译成 wiki 知识条目。
+COMPILE_PROMPT = """你是投研知识编辑，把一份材料的逐单元文本编译成 wiki 知识条目。单元{UNIT_WORD}，每单元文字前有形如「[第3页]」「[第3段]」的序号标记；锚点格式 {ANCHOR_FORM}，序号必须取该内容所在单元的实际序号。
 
 规则：
 - 只用给定材料，禁止编造，材料里没有的信息不写
-- 每条知识一句话，句尾必须带锚点 [[{FILE}#p页码]]，页码取该内容所在页的实际页码
+- 每条知识一句话，句尾必须带锚点 {ANCHOR_EXAMPLE}
 - 保留原文关键数字（金额、增速、比率、评级、目标价等），不改口径
 - 营销表述、免责声明、分析师介绍一律丢弃
 - 主题划分：公司给 type=company，行业给 type=industry，估值方法/政策术语等给 type=concept
@@ -27,12 +27,12 @@ COMPILE_PROMPT = """你是投研知识编辑，把一份材料的逐页文本编
       "type": "company|industry|concept",
       "aliases": ["别名或代码，没有给空数组"],
       "summary": "一句话摘要",
-      "sections": {"经营与财务": ["某条知识句尾带锚点[[{FILE}#p5]]", "..."]}
+      "sections": {"经营与财务": ["某条知识句尾带锚点{ANCHOR_EXAMPLE}", "..."]}
     }
   ]
 }
 
---- 材料开始（每页前有页码标记）---
+--- 材料开始 ---
 {TEXT}
 --- 材料结束 ---"""
 
@@ -47,13 +47,18 @@ MERGE_PROMPT = """现有知识库索引如下（每行：slug | 类型 | 别名�
 拿不准就 create，宁可新建碎页交给审校收编。"""
 
 
-def iter_pdfs():
+def iter_raw_files():
     for d in (config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR):
-        yield from sorted(d.rglob("*.pdf"))
+        for suf in SUPPORTED_SUFFIXES:
+            yield from sorted(d.rglob("*" + suf))
 
 
-def source_kind(pdf_path):
-    rel = pdf_path.relative_to(config.RAW_DIR).as_posix()
+# 兼容旧名（审校未摄入检查等处引用）
+iter_pdfs = iter_raw_files
+
+
+def source_kind(path):
+    rel = path.relative_to(config.RAW_DIR).as_posix()
     for kind in ("report", "filing", "policy"):
         if rel.startswith(kind + "s/"):
             return kind
@@ -79,8 +84,8 @@ def _safe_type(t):
     return t if t in ("company", "industry", "concept") else "concept"
 
 
-def _valid_lines(lines, fname, page_count):
-    # 锚点校验：每条必须有锚点且全部指向本文件、页码在范围内，违规行丢弃
+def _valid_lines(lines, fname, unit_kind, count):
+    # 锚点校验：每条必须有锚点且全部指向本文件、单元类型与序号范围正确，违规行丢弃
     keep, dropped = [], 0
     for ln in lines:
         ln = str(ln).strip()
@@ -88,7 +93,11 @@ def _valid_lines(lines, fname, page_count):
         if not ln:
             continue
         found = wiki.ANCHOR_RE.findall(ln)
-        if not found or not all(a[0] == fname and 1 <= int(a[1]) <= page_count for a in found):
+        ok = bool(found) and all(
+            a[0] == fname and wiki.loc_kind(a[1]) == unit_kind and 1 <= wiki.loc_num(a[1]) <= count
+            for a in found
+        )
+        if not ok:
             dropped += 1
             continue
         if ln not in keep:
@@ -96,19 +105,30 @@ def _valid_lines(lines, fname, page_count):
     return keep, dropped
 
 
-def compile_file(pdf_path, pages):
-    fname = pdf_path.name
+def _unit_words(unit_kind):
+    if unit_kind == "para":
+        return {"UNIT_WORD": "为文档块（段落或表格）", "ANCHOR_FORM": "[[文件名.docx#para段落号]]", "ANCHOR_EXAMPLE": "[[{FILE}#para1]]"}
+    return {"UNIT_WORD": "为页", "ANCHOR_FORM": "[[文件名.pdf#p页码]]", "ANCHOR_EXAMPLE": "[[{FILE}#p1]]"}
+
+
+def compile_file(path, units, unit_kind):
+    fname = path.name
     chunk_size = config.CFG["ingest"]["compile_chunk_pages"]
-    chunks = [pages] if len(pages) <= 40 else [
-        pages[i:i + chunk_size] for i in range(0, len(pages), chunk_size)
+    chunks = [units] if len(units) <= 40 else [
+        units[i:i + chunk_size] for i in range(0, len(units), chunk_size)
     ]
+    words = _unit_words(unit_kind)
+    prompt = COMPILE_PROMPT
+    for k, v in words.items():
+        prompt = prompt.replace("{" + k + "}", v)
     topics = {}
     report_date = ""
     total_dropped = 0
     for chunk in chunks:
-        text = "\n\n".join(f"[第{p['page']}页]\n{p['text']}" for p in chunk if p["text"])
+        tag = "段" if unit_kind == "para" else "页"
+        text = "\n\n".join(f"[第{u['n']}{tag}]\n{u['text']}" for u in chunk if u["text"])
         out = llm.chat(
-            [{"role": "user", "content": COMPILE_PROMPT.replace("{FILE}", fname).replace("{TEXT}", text)}],
+            [{"role": "user", "content": prompt.replace("{FILE}", fname).replace("{TEXT}", text)}],
             task="compile",
             response_json=True,
         )
@@ -128,7 +148,7 @@ def compile_file(pdf_path, pages):
                 ex["summary"] = str(t["summary"])
             for s, lines in (t.get("sections") or {}).items():
                 s = str(s).strip() or "其他"
-                keep, dropped = _valid_lines(lines, fname, len(pages))
+                keep, dropped = _valid_lines(lines, fname, unit_kind, len(units))
                 total_dropped += dropped
                 bucket = ex["sections"].setdefault(s, [])
                 for ln in keep:
@@ -137,7 +157,7 @@ def compile_file(pdf_path, pages):
     topics = {k: v for k, v in topics.items() if any(v["sections"].values())}
     if total_dropped:
         print(f"  [校验] 丢弃 {total_dropped} 条锚点不合规的条目")
-    out_path = config.EXTRACTS_DIR / (pdf_path.stem + ".entries.json")
+    out_path = config.EXTRACTS_DIR / (path.stem + ".entries.json")
     out_path.write_text(json.dumps({"file": fname, "report_date": report_date, "topics": list(topics.values())}, ensure_ascii=False, indent=1), encoding="utf-8")
     return {"report_date": report_date, "topics": list(topics.values())}
 
@@ -260,35 +280,39 @@ def _apply_create(decision, topic, extra_sources, note_prefix):
     return path, count
 
 
-def _write_source_page(pdf_path, topic_titles, report_date, entries_count):
-    title = pdf_path.stem
-    path = config.TYPE_DIRS["source"] / f"{title}.md"
-    rel = pdf_path.relative_to(config.ROOT).as_posix()
+def _write_source_page(path, topic_titles, report_date, entries_count):
+    title = path.stem
+    out_path = config.TYPE_DIRS["source"] / f"{title}.md"
+    rel = path.relative_to(config.ROOT).as_posix()
+    unit_word = "文档块" if unit_kind_of(path) == "para" else "页"
     info = [
-        f"文件：{pdf_path.name}",
-        f"类型：{source_kind(pdf_path)}",
+        f"文件：{path.name}",
+        f"类型：{source_kind(path)}",
         f"报告日期：{report_date or '未识别'}",
         f"知识条目：{entries_count} 条",
     ]
     links = "、".join(f"[[{t}]]" for t in topic_titles)
     sections = {"材料信息": info, "贡献": [f"贡献主题页：{links}" if links else "贡献主题页：无"]}
     meta = {"title": title, "type": "source", "sources": [rel], "updated": config.today_str()}
-    wiki.write_page(path, meta, wiki.render_page(title, sections, "source"))
+    wiki.write_page(out_path, meta, wiki.render_page(title, sections, "source"))
 
 
-def ingest_one(pdf_path, manifest):
-    sha = sha256_of(pdf_path)
+def ingest_one(path, manifest):
+    sha = sha256_of(path)
     if any(f["sha256"] == sha for f in manifest["files"]):
         print("  已摄入过（SHA256 一致），跳过")
         return None
-    dup_name = next((f for f in manifest["files"] if f["file"] == pdf_path.name), None)
+    dup_name = next((f for f in manifest["files"] if f["file"] == path.name), None)
     if dup_name:
         print(f"  [警告] 与已摄入的 {dup_name['file']} 同名但内容不同，旧锚点将指向新文件内容")
-    pages, page_count, scanned = extract_to_store(pdf_path)
+    units, count, scanned, unit_kind = extract_to_store(path)
     if scanned:
         print("  [拒] 疑似扫描版（无文本层），不编译")
         return None
-    compiled = compile_file(pdf_path, pages)
+    if not any(u["text"] for u in units):
+        print("  [拒] 未提取到任何文字，不编译")
+        return None
+    compiled = compile_file(path, units, unit_kind)
     topics = compiled["topics"]
     existing = wiki.load_pages()
     index_entries = [wiki.build_index_entry(p) for p in existing if p["type"] != "source"]
@@ -297,31 +321,32 @@ def ingest_one(pdf_path, manifest):
     created, merged, touched_titles = [], [], []
     total_added = 0
     for decision, topic in decisions:
-        rel = pdf_path.relative_to(config.ROOT).as_posix()
+        rel = path.relative_to(config.ROOT).as_posix()
         if decision["action"] == "merge" and decision["slug"] in by_slug:
             p = by_slug[decision["slug"]]
-            added = _apply_merge(p["path"], p["meta"], p["body"], topic, [rel], f"并入 {pdf_path.name}")
+            added = _apply_merge(p["path"], p["meta"], p["body"], topic, [rel], f"并入 {path.name}")
             total_added += added
             title = str(p["meta"].get("title") or decision["slug"])
             merged.append(title)
             touched_titles.append(title)
             print(f"  并入 {decision['slug']}（+{added} 条）")
         else:
-            path, count = _apply_create(decision, topic, [rel], f"新建页面，摄入 {pdf_path.name}")
-            total_added += count
+            new_path, cnt = _apply_create(decision, topic, [rel], f"新建页面，摄入 {path.name}")
+            total_added += cnt
             created.append(topic["title"])
             touched_titles.append(topic["title"])
-            print(f"  新建 {path.relative_to(config.WIKI_DIR).as_posix()}（{count} 条）")
+            print(f"  新建 {new_path.relative_to(config.WIKI_DIR).as_posix()}（{cnt} 条）")
     entries_count = sum(sum(len(v) for v in t["sections"].values()) for t in topics)
     if touched_titles:
-        _write_source_page(pdf_path, touched_titles, compiled["report_date"], entries_count)
+        _write_source_page(path, touched_titles, compiled["report_date"], entries_count)
     manifest["files"].append({
-        "file": pdf_path.name,
-        "path": pdf_path.relative_to(config.ROOT).as_posix(),
+        "file": path.name,
+        "path": path.relative_to(config.ROOT).as_posix(),
         "sha256": sha,
-        "page_count": page_count,
+        "unit": unit_kind,
+        "count": count,
         "report_date": compiled["report_date"] or None,
-        "source_type": source_kind(pdf_path),
+        "source_type": source_kind(path),
         "ingested_at": config.now_iso(),
         "topics_touched": touched_titles,
         "entries_count": entries_count,
@@ -332,17 +357,20 @@ def ingest_one(pdf_path, manifest):
     if merged:
         log.append("并入 " + "、".join(merged))
     return {
-        "file": pdf_path.name,
+        "file": path.name,
         "entries_count": entries_count,
         "log": "；".join(log) or "未产出条目",
     }
 
 
-def run_all(paths):
+def run_all(paths, progress=None):
     manifest = load_manifest()
     results = []
-    for p in paths:
+    paths = list(paths)
+    for i, p in enumerate(paths, 1):
         print(f"== 摄入 {p.name} ==")
+        if progress:
+            progress(i, p.name)
         try:
             r = ingest_one(p, manifest)
         except Exception as e:

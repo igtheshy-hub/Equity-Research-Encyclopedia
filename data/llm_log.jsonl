@@ -1,16 +1,9 @@
-{"time": "2026-10-10T15:52:12", "task": "classify", "model": "glm-4.6", "in_chars": 2052, "out_chars": 165, "prompt_tokens": 1374, "completion_tokens": 1040, "ok": true, "error": null}
-{"time": "2026-10-10T15:55:38", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 0, "prompt_tokens": null, "completion_tokens": null, "ok": false, "error": "The read operation timed out"}
-{"time": "2026-10-10T15:58:40", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 0, "prompt_tokens": null, "completion_tokens": null, "ok": false, "error": "The read operation timed out"}
-{"time": "2026-10-10T16:01:44", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 0, "prompt_tokens": null, "completion_tokens": null, "ok": false, "error": "The read operation timed out"}
-{"time": "2026-10-10T16:04:52", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 0, "prompt_tokens": null, "completion_tokens": null, "ok": false, "error": "The read operation timed out"}
-{"time": "2026-10-10T16:13:42", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 0, "prompt_tokens": null, "completion_tokens": null, "ok": false, "error": "The read operation timed out"}
-{"time": "2026-10-10T16:16:44", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 0, "prompt_tokens": null, "completion_tokens": null, "ok": false, "error": "The read operation timed out"}
-{"time": "2026-10-10T16:19:48", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 0, "prompt_tokens": null, "completion_tokens": null, "ok": false, "error": "The read operation timed out"}
-{"time": "2026-10-10T16:22:14", "task": "select", "model": "glm-4.6", "in_chars": 10, "out_chars": 2, "prompt_tokens": 11, "completion_tokens": 107, "ok": true, "error": null}
-{"time": "2026-10-10T16:22:56", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 0, "prompt_tokens": null, "completion_tokens": null, "ok": false, "error": "The read operation timed out"}
-{"time": "2026-10-10T16:25:28", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 0, "prompt_tokens": null, "completion_tokens": null, "ok": false, "error": "The read operation timed out"}
-{"time": "2026-10-10T16:28:30", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 0, "prompt_tokens": null, "completion_tokens": null, "ok": false, "error": "The read operation timed out"}
-{"time": "2026-10-10T16:31:35", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 0, "prompt_tokens": null, "completion_tokens": null, "ok": false, "error": "The read operation timed out"}
-{"time": "2026-10-10T16:34:43", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 0, "prompt_tokens": null, "completion_tokens": null, "ok": false, "error": "The read operation timed out"}
-{"time": "2026-10-10T16:40:34", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 3004, "prompt_tokens": 8837, "completion_tokens": 1776, "ok": true, "error": null}
-{"time": "2026-10-10T16:41:41", "task": "compile", "model": "glm-4.6", "in_chars": 12480, "out_chars": 2570, "prompt_tokens": 8837, "completion_tokens": 1519, "ok": true, "error": null}
+{"time": "2026-10-11T01:48:14", "task": "classify", "model": "glm-4.6", "in_chars": 3165, "out_chars": 198, "prompt_tokens": 2210, "completion_tokens": 96, "ok": true, "error": null}
+{"time": "2026-10-11T01:49:16", "task": "compile", "model": "glm-4.6", "in_chars": 12561, "out_chars": 4804, "prompt_tokens": 8883, "completion_tokens": 2506, "ok": true, "error": null}
+{"time": "2026-10-11T01:50:55", "task": "select", "model": "glm-4.6", "in_chars": 278, "out_chars": 43, "prompt_tokens": 147, "completion_tokens": 15, "ok": true, "error": null}
+{"time": "2026-10-11T01:51:00", "task": "select", "model": "glm-4.6", "in_chars": 374, "out_chars": 121, "prompt_tokens": 203, "completion_tokens": 59, "ok": true, "error": null}
+{"time": "2026-10-11T01:51:18", "task": "answer", "model": "glm-4.6", "in_chars": 3883, "out_chars": 977, "prompt_tokens": 2411, "completion_tokens": 594, "ok": true, "error": null}
+{"time": "2026-10-11T01:51:23", "task": "audit", "model": "glm-4.6", "in_chars": 1237, "out_chars": 89, "prompt_tokens": 720, "completion_tokens": 29, "ok": true, "error": null}
+{"time": "2026-10-11T01:51:39", "task": "select", "model": "glm-4.6", "in_chars": 272, "out_chars": 43, "prompt_tokens": 145, "completion_tokens": 15, "ok": true, "error": null}
+{"time": "2026-10-11T01:51:44", "task": "select", "model": "glm-4.6", "in_chars": 368, "out_chars": 72, "prompt_tokens": 201, "completion_tokens": 32, "ok": true, "error": null}
+{"time": "2026-10-11T01:51:47", "task": "select", "model": "glm-4.6", "in_chars": 308, "out_chars": 30, "prompt_tokens": 174, "completion_tokens": 10, "ok": true, "error": null}

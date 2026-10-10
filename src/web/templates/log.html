@@ -1,14 +1,29 @@
 {% extends "base.html" %}
-{% block title %}日志 · 研报百科{% endblock %}
+{% block title %}日志 · 投研百科{% endblock %}
+{% block page %}log{% endblock %}
 {% block content %}
-<div class="narrow">
-  <h1>操作日志</h1>
-  <p class="muted">wiki/log.md，新在前。</p>
-  <table>
-    <thead><tr><th>日期</th><th>操作</th><th>摘要</th></tr></thead>
-    <tbody>
-    {% for r in rows %}<tr><td>{{ r[0] }}</td><td>{{ r[1] }}</td><td>{{ r[2] }}</td></tr>{% endfor %}
-    </tbody>
-  </table>
+<div class="page-head">
+  <h1>日志</h1>
+  <input id="filter" type="search" placeholder="按标题、标签、摘要或来源过滤…" autocomplete="off">
+  <span id="filter-count" class="muted"></span>
+</div>
+<p class="muted">每个 wiki 条目的档案：什么时候建的、什么时候更新、知识来自哪些文件（含会话中提取）。点行进全文。</p>
+<div class="table-card">
+<table>
+  <thead><tr><th>标题</th><th>类型</th><th>标签</th><th>摘要</th><th>生成时间</th><th>更新时间</th><th>来源</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr class="row log-row" data-search="{{ r.search }}" data-url="{{ r.url }}">
+      <td><a href="{{ r.url }}">{{ r.title }}</a></td>
+      <td>{{ r.type }}</td>
+      <td>{{ r.tags }}</td>
+      <td>{{ r.summary }}</td>
+      <td>{{ r.created }}</td>
+      <td>{{ r.updated }}</td>
+      <td>{{ r.sources }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
 </div>
 {% endblock %}

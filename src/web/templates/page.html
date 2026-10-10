@@ -1,9 +1,10 @@
 {% extends "base.html" %}
-{% block title %}{{ meta.title or slug }} · 研报百科{% endblock %}
+{% block title %}{{ meta.title or slug }} · 投研百科{% endblock %}
+{% block page %}wikipage{% endblock %}
 {% block content %}
 <div class="page-wrap">
   <article class="page-main">
-    <p class="crumbs"><a href="/">首页</a> / {{ TYPE_LABELS[ptype] }} / {{ slug }}</p>
+    <p class="crumbs"><a href="/kb">知识库</a> / {{ TYPE_LABELS[ptype] }} / {{ slug }}</p>
     <div class="meta-card">
       <div><b>{{ meta.title or slug }}</b>（{{ TYPE_LABELS[ptype] }}）</div>
       {% if meta.aliases %}<div>别名：{{ meta.aliases | join('、') }}</div>{% endif %}
@@ -20,12 +21,15 @@
       {% endif %}
     </div>
     <div class="page-body">{{ body_html | safe }}</div>
-    <p class="hint">点击句尾蓝色角标，右侧打开对应 PDF 原页对照。</p>
+    <p class="hint">点击句尾角标，右侧打开原文对照（PDF 定位到页、Word 定位到段落），分隔条可拖宽。</p>
   </article>
-  <aside class="pdf-panel" id="pdf-panel">
-    <div class="pdf-head">PDF 原文对照 <button id="pdf-close" class="ghost" hidden>收起</button></div>
-    <iframe id="pdf-frame" title="PDF 原文" hidden></iframe>
-    <p class="placeholder" id="pdf-placeholder">尚未打开 PDF<br>点击正文角标即可对照原页</p>
+  <div class="hdivider" id="hdivider" hidden></div>
+  <aside class="viewer-panel" id="viewer-panel" hidden>
+    <div class="viewer-head">
+      <span id="viewer-title">原文对照</span>
+      <button id="viewer-close" class="icon-btn" title="收起">✕</button>
+    </div>
+    <iframe id="viewer-frame" title="原文对照"></iframe>
   </aside>
 </div>
 {% endblock %}

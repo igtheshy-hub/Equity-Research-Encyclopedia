@@ -1,16 +1,36 @@
 {% extends "base.html" %}
-{% block title %}审校 · 研报百科{% endblock %}
+{% block title %}审校 · 投研百科{% endblock %}
+{% block page %}audit{% endblock %}
 {% block content %}
 <div class="narrow">
-  <h1>审校</h1>
-  <p class="muted">对全库跑四类健康检查：矛盾（附双方原文与锚点）、过期（超 90 天未更新）、未摄入（raw/ 有文件未入库 + 内容缺口）、孤立（无引用页面与合并建议）。</p>
-  <button class="primary" id="audit-btn">执行审校</button>
-  <span id="audit-hint" class="muted"></span>
+  <div class="page-head">
+    <h1>审校</h1>
+    <button class="primary" id="audit-btn">执行审校</button>
+  </div>
+  <p class="muted">对全库跑四类健康检查：矛盾（附双方原文与锚点）、过期（超 90 天未更新）、未摄入（raw/ 有文件未入库 + 内容缺口）、孤立（无引用页面与合并建议）。审校在后台运行，可随意切换页面。</p>
+  <div id="audit-progress" class="task-area"></div>
+  <div id="audit-summary" hidden></div>
   <h2>历史报告</h2>
   {% if reports %}
-  <ul>
+  <ul class="plain-list">
     {% for r in reports %}<li><a href="/outputs/{{ r }}">{{ r }}</a></li>{% endfor %}
   </ul>
   {% else %}<p class="muted">（还没有报告）</p>{% endif %}
 </div>
+
+<div class="modal-backdrop" id="fix-modal" hidden>
+  <div class="modal modal-wide">
+    <div class="modal-head">
+      <b>按最新报告修改 wiki</b>
+      <button class="icon-btn" data-close="fix-modal" title="关闭">✕</button>
+    </div>
+    <p class="modal-note muted">下面是审校报告中可以由程序执行的动作，先勾选你认可的处理方式，确认后才会动 wiki（全程写日志）。</p>
+    <div class="modal-body" id="fix-body"></div>
+    <div class="modal-foot">
+      <button class="ghost" data-close="fix-modal">取消</button>
+      <button class="primary" id="fix-confirm">执行修复</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='audit_page.js') }}" defer></script>{% endblock %}

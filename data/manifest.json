@@ -1,17 +1,22 @@
 {
  "files": [
   {
-   "file": "乘联会_乘用车市场研报_20260717.pdf",
-   "path": "raw/reports/汽车/乘联会_乘用车市场研报_20260717.pdf",
+   "file": "中国汽车流通协会乘用车市场信息联席分会_乘用车市场研报_20260717.pdf",
+   "path": "raw/reports/汽车/中国汽车流通协会乘用车市场信息联席分会_乘用车市场研报_20260717.pdf",
    "sha256": "8824701ccfa75efffa7696d5f1c4fdc5577ecd65200d8fa029f01800f74168a5",
-   "page_count": 19,
+   "unit": "page",
+   "count": 19,
    "report_date": "2026-07-17",
    "source_type": "report",
-   "ingested_at": "2026-10-10T16:41:41",
+   "ingested_at": "2026-10-11T01:49:16",
    "topics_touched": [
-    "中国乘用车市场"
+    "中国乘用车市场",
+    "狭义乘用车",
+    "广义乘用车",
+    "NEV",
+    "豪华品牌"
    ],
-   "entries_count": 22
+   "entries_count": 37
   }
  ]
 }

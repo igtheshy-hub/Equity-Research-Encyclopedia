@@ -1,40 +1,17 @@
 {% extends "base.html" %}
-{% block title %}问答 · 研报百科{% endblock %}
+{% block title %}问答 · 投研百科{% endblock %}
+{% block page %}ask{% endblock %}
 {% block content %}
-<div class="narrow">
-  <h1>两步问答</h1>
-  <p class="muted">第一步按索引选页（最多 3 页），第二步只用所选页面作答，句句带出处锚点。知识库外的问题会直接回答不知道。</p>
-  <form method="post" id="ask-form">
-    <textarea name="question" rows="3" placeholder="例如：白酒行业各家券商的最新观点是什么？" required>{{ result.question if result else '' }}</textarea>
-    <button type="submit" class="primary">提问</button>
-    <span class="muted" id="ask-hint"></span>
-  </form>
-
-  {% if error %}<div class="banner bad">{{ error }}</div>{% endif %}
-
-  {% if result %}
-  <div class="result">
-    <div class="step">
-      <h2>第一步 · 选页</h2>
-      <p>选中：{{ result.step1.selected | join('、') or '（无）' }}</p>
-      <p class="muted">理由：{{ result.step1.reason or '—' }}</p>
-    </div>
-    <div class="step">
-      <h2>第二步 · 回答</h2>
-      {% if not result.validation.ok %}
-      <div class="banner bad">锚点校验未通过：{{ result.validation.violations | join('；') }}<br>以下答案未经程序验证，请谨慎使用。</div>
-      {% endif %}
-      <div class="page-body">{{ result.answer_md | md }}</div>
-    </div>
-    {% if result.distill %}
-    <div class="banner ok">本次问答沉淀了 {{ result.distill.lines }} 条新知识到「{{ result.distill.page }}」（{{ '并入已有页' if result.distill.action == 'merge' else '新建页面' }}）。</div>
-    {% endif %}
-    <form method="post" action="/memo/save" class="memo-form">
-      <input type="hidden" name="token" value="{{ token }}">
-      <input type="text" name="title" placeholder="备忘标题（不填取问题前 30 字）">
-      <button type="submit">存为研究备忘</button>
-    </form>
+<div class="ask-layout">
+  <div class="ask-toolbar">
+    <span class="muted">提问后答案后台生成，切换页面不丢；答案句尾角标可点开原文对照。</span>
+    <button class="ghost" id="split-toggle">添加会话窗口</button>
   </div>
-  {% endif %}
+  <div class="panes" id="panes">
+    <section class="pane" data-pane="0"></section>
+    <div class="vdivider" id="vdivider" hidden></div>
+    <section class="pane" data-pane="1" hidden></section>
+  </div>
 </div>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='ask.js') }}" defer></script>{% endblock %}

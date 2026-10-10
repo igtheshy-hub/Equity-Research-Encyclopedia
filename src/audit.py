@@ -44,7 +44,7 @@ def _anchor_of(s, page):
     m = wiki.ANCHOR_RE.search(str(s or ""))
     if not m:
         return None
-    pair = (m.group(1), int(m.group(2)))
+    pair = (m.group(1), m.group(2))
     return pair if pair in page["anchors"] else None
 
 
@@ -88,18 +88,24 @@ def _gaps_of(page):
     return [g for g in _llm_page(GAP_PROMPT, page, "gaps") if isinstance(g, dict) and g.get("point")]
 
 
-def run():
+def run(task_id=None):
     pages = wiki.load_pages()
     manifest = load_manifest()
     today = date.today()
     stale_days = config.CFG["audit"]["stale_days"]
 
+    def tick(i, n, name):
+        if task_id:
+            from . import tasks
+            tasks.update(task_id, current=i, detail=f"已检查 {i}/{n} 页：{name}")
+
     conflicts, time_diffs, gaps_by_page = [], [], []
-    for p in pages:
-        if p["type"] == "source":
-            continue
+    check_pages = [p for p in pages if p["type"] != "source"]
+    for i, p in enumerate(check_pages, 1):
+        tick(i, len(check_pages), str(p["meta"].get("title") or p["slug"]))
         for c in _conflicts_of(p):
             c["page"] = str(p["meta"].get("title") or p["slug"])
+            c["slug"] = p["slug"]
             (conflicts if c.get("kind") == "矛盾" else time_diffs).append(c)
         g = _gaps_of(p)
         if g:
@@ -109,7 +115,7 @@ def run():
     for p in pages:
         d = _parse_date(p["meta"].get("updated"))
         if d is None or (today - d).days > stale_days:
-            stale.append(str(p["meta"].get("title") or p["slug"]))
+            stale.append({"slug": p["slug"], "title": str(p["meta"].get("title") or p["slug"])})
 
     known = {f["file"] for f in manifest["files"]}
     missing_files = [p for p in iter_pdfs() if p.name not in known]
@@ -128,6 +134,7 @@ def run():
                 inlinks[tgt["slug"]].append(str(p["meta"].get("title") or p["slug"]))
     orphans = [str(p["meta"].get("title") or p["slug"]) for p in non_source if not inlinks[p["slug"]]]
 
+    # 结构化合并建议，供网页端修复向导勾选方向
     merge_suggestions = []
     for i, a in enumerate(non_source):
         for b in non_source[i + 1:]:
@@ -136,12 +143,21 @@ def run():
             ta = str(a["meta"].get("title") or a["slug"])
             tb = str(b["meta"].get("title") or b["slug"])
             if ta != tb and (ta in tb or tb in ta):
-                merge_suggestions.append(f"{ta} 与 {tb} 标题互为包含，疑似应合并")
+                merge_suggestions.append({
+                    "kind": "pair",
+                    "a": {"slug": a["slug"], "title": ta},
+                    "b": {"slug": b["slug"], "title": tb},
+                    "note": "标题互为包含，疑似应合并",
+                })
     for p in non_source:
         if p["statements"] < config.CFG["audit"]["orphan_min_statements"] and len(p["meta"].get("sources") or []) <= 1:
-            merge_suggestions.append(
-                f"{p['meta'].get('title') or p['slug']} 仅 {p['statements']} 条、单一来源，疑似碎片页"
-            )
+            merge_suggestions.append({
+                "kind": "fragment",
+                "slug": p["slug"],
+                "title": str(p["meta"].get("title") or p["slug"]),
+                "statements": p["statements"],
+                "note": f"仅 {p['statements']} 条、单一来源，疑似碎片页",
+            })
 
     out_lines = [f"# 审校报告 {datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
     out_lines += [f"范围：wiki/ 共 {len(pages)} 页（含来源摘要页）", ""]
@@ -166,7 +182,7 @@ def run():
     out_lines.append("")
 
     out_lines += [f"## 过期（{len(stale)}）"]
-    out_lines += [f"- {s}" for s in stale] or ["（无）"]
+    out_lines += [f"- {s['title']}" for s in stale] or ["（无）"]
     out_lines.append("")
 
     out_lines += [f"## 未摄入（文件 {len(missing_files)}，内容缺口 {len(gaps_by_page)} 页）"]
@@ -182,13 +198,34 @@ def run():
     out_lines += [f"## 孤立（{len(orphans)}）"]
     out_lines += [f"- {s}（无任何页面引用）" for s in orphans] or ["（无）"]
     for m in merge_suggestions:
-        out_lines += [f"- {m}"]
+        if m["kind"] == "pair":
+            out_lines += [f"- {m['a']['title']} 与 {m['b']['title']} {m['note']}"]
+        else:
+            out_lines += [f"- {m['title']} {m['note']}"]
     out_lines.append("")
 
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = config.OUTPUTS_DIR / f"audit-{ts}.md"
     config.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(out_lines), encoding="utf-8")
+    # 结构化结果落盘，供网页端「按报告修改 wiki」向导使用
+    import json as _json
+
+    data_path = config.DATA_DIR / f"audit-{ts}.json"
+    data_path.write_text(_json.dumps({
+        "ts": ts,
+        "report": out_path.name,
+        "counts": {
+            "矛盾": len(conflicts), "时点差异": len(time_diffs), "过期": len(stale),
+            "未摄入文件": len(missing_files), "内容缺口页": len(gaps_by_page), "孤立": len(orphans),
+        },
+        "conflicts": conflicts,
+        "stale": stale,
+        "missing_files": [p.relative_to(config.ROOT).as_posix() for p in missing_files],
+        "gaps_by_page": gaps_by_page,
+        "orphans": orphans,
+        "merge_suggestions": merge_suggestions,
+    }, ensure_ascii=False, indent=1), encoding="utf-8")
     wiki.append_log(
         "audit",
         f"审校报告 {out_path.name}：矛盾 {len(conflicts)}、过期 {len(stale)}、"

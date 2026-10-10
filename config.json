@@ -16,7 +16,8 @@
     "summary": 0.3
   },
   "ask": {
-    "max_pages": 3
+    "max_pages": 8,
+    "history_turns": 4
   },
   "audit": {
     "stale_days": 90,

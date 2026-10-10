@@ -1,68 +1,23 @@
-import io
-import json
-import threading
-import uuid
-from contextlib import redirect_stdout
-from datetime import datetime
-from pathlib import Path
-from urllib.parse import quote
+import re
 
-import markdown as md_lib
-from flask import (Flask, abort, jsonify, redirect, render_template, request,
+from flask import (Flask, abort, redirect, render_template, request,
                    send_file, url_for)
-from markupsafe import Markup
 
-from .. import ask as ask_mod
 from .. import config, wiki
-from ..classify import classify_one, sanitize, unique_target
-from ..ingest import iter_pdfs, load_manifest, run_all
+from ..docx_html import docx_to_html
+from ..pdf_extract import raw_file_index
+from .api import api
+from .render import TYPE_LABELS, render_md
 
 app = Flask(__name__)
-
-STATE_PATH = config.DATA_DIR / "ui_state.json"
-
-# 同一时刻只允许一个摄入在跑：防重复提交导致重复调用、重复写盘
-_ingest_lock = threading.Lock()
-
-
-def _load_state():
-    if STATE_PATH.exists():
-        try:
-            return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-        except ValueError:
-            return {}
-    return {}
-
-
-def _save_state(state):
-    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
-
-TYPE_LABELS = {"company": "公司", "industry": "行业", "concept": "概念", "source": "来源摘要"}
-_LAST_ASK = {}
-
-
-def _anchor_repl(m):
-    fname, page = m.group(1), m.group(2)
-    label = fname[:-4] if fname.lower().endswith(".pdf") else fname
-    href = f"/pdf/{quote(fname)}#page={page}"
-    return f'<sup class="cite"><a href="{href}" target="_blank" rel="noopener">{label}·p{page}</a></sup>'
-
-
-def _wikilink_repl(m):
-    t = m.group(1).strip()
-    return f'<a class="wikilink" href="/find/{quote(t)}">{t}</a>'
-
-
-def render_md(text):
-    text = wiki.ANCHOR_RE.sub(_anchor_repl, str(text or ""))
-    text = wiki.WIKILINK_RE.sub(_wikilink_repl, text)
-    return md_lib.markdown(text, extensions=["tables"])
+app.register_blueprint(api)
 
 
 @app.template_filter("md")
 def _md_filter(text):
-    return Markup(render_md(text))
+    from markupsafe import Markup
+    from .render import md_filter
+    return md_filter(text)
 
 
 @app.context_processor
@@ -72,6 +27,11 @@ def _inject():
 
 @app.route("/")
 def home():
+    return render_template("index.html")
+
+
+@app.route("/kb")
+def kb():
     groups = []
     for t, label in TYPE_LABELS.items():
         items = []
@@ -82,7 +42,7 @@ def home():
             e["url"] = url_for("show_page", ptype=t, slug=p["slug"])
             items.append(e)
         groups.append({"label": label, "pages": items})
-    return render_template("index.html", groups=groups)
+    return render_template("kb.html", groups=groups)
 
 
 @app.route("/page/<ptype>/<slug>")
@@ -104,15 +64,26 @@ def show_page(ptype, slug):
     return render_template("page.html", **ctx)
 
 
-@app.route("/pdf/<name>")
-def pdf(name):
-    info = next((f for f in load_manifest()["files"] if f["file"] == name), None)
-    if info is None:
+@app.route("/file/<name>")
+def raw_file(name):
+    # PDF 原样发送（PDF.js 用）；docx 返回带块号的 HTML 片段（对照定位用）
+    p = raw_file_index().get(name)
+    if p is None:
         abort(404)
-    p = (config.ROOT / info["path"]).resolve()
-    if config.RAW_DIR.resolve() not in p.parents or not p.exists():
-        abort(404)
+    if p.suffix.lower() == ".docx":
+        return docx_to_html(p)
     return send_file(p, mimetype="application/pdf")
+
+
+@app.route("/viewer")
+def viewer():
+    name = request.args.get("file", "").strip()
+    loc = request.args.get("loc", "").strip()
+    hl = request.args.get("hl", "").strip()
+    if not name or name not in raw_file_index():
+        abort(404)
+    is_docx = name.lower().endswith(".docx")
+    return render_template("viewer.html", file=name, loc=loc, hl=hl, is_docx=is_docx)
 
 
 @app.route("/find/<path:target>")
@@ -124,125 +95,9 @@ def find(target):
     abort(404)
 
 
-@app.route("/ask", methods=["GET", "POST"])
-def ask_view():
-    result = token = error = None
-    if request.method == "POST":
-        q = request.form.get("question", "").strip()
-        if not q:
-            error = "问题不能为空"
-        else:
-            try:
-                result = ask_mod.ask(q)
-                token = uuid.uuid4().hex
-                _LAST_ASK.clear()
-                _LAST_ASK[token] = result
-            except Exception as e:
-                error = f"问答失败：{e}"
-    return render_template("ask.html", result=result, token=token, error=error)
-
-
-@app.route("/memo/save", methods=["POST"])
-def memo_save():
-    result = _LAST_ASK.get(request.form.get("token", ""))
-    if result is None:
-        return render_template("error.html", message="这次问答的结果已过期，请重新提问后再存备忘"), 400
-    title = sanitize(request.form.get("title", "").strip()) or sanitize(result["question"][:30]) or "未命名"
-    path = ask_mod.save_memo(result, title)
-    return redirect(url_for("show_output", name=path.name))
-
-
-@app.route("/upload")
-def upload_page():
-    state = _load_state()
-    last_upload = state.get("last_upload")
-    inbox = sorted(p.name for p in config.INBOX_DIR.glob("*.pdf"))
-    return render_template("upload.html", last_upload=last_upload, inbox=inbox)
-
-
-@app.route("/upload/do", methods=["POST"])
-def upload_do():
-    files = request.files.getlist("files")
-    if not files:
-        return jsonify({"results": [{"ok": False, "file": "", "error": "没有收到文件"}]})
-    config.INBOX_DIR.mkdir(parents=True, exist_ok=True)
-    results = []
-    for f in files:
-        orig = f.filename or "未命名"
-        if not orig.lower().endswith(".pdf"):
-            results.append({"ok": False, "file": orig, "error": "只接受 PDF 文件"})
-            continue
-        stem = sanitize(Path(orig).stem) or "未命名"
-        dest = config.INBOX_DIR / unique_target(config.INBOX_DIR, stem + ".pdf")
-        f.save(dest)
-        try:
-            r = classify_one(dest)
-        except Exception as e:
-            r = {"ok": False, "file": dest.name, "error": str(e)}
-        results.append(r)
-    state = _load_state()
-    state["last_upload"] = {"time": datetime.now().strftime("%Y-%m-%d %H:%M"), "results": results}
-    _save_state(state)
-    return jsonify({"results": results})
-
-
-@app.route("/ingest")
-def ingest_page():
-    by_file = {f["file"]: f for f in load_manifest()["files"]}
-    rows = []
-    for p in iter_pdfs():
-        info = by_file.get(p.name)
-        rows.append({
-            "rel": p.relative_to(config.ROOT).as_posix(),
-            "ingested": bool(info),
-            "page_count": info and info.get("page_count"),
-            "report_date": info and info.get("report_date") or "",
-            "entries": info and info.get("entries_count"),
-        })
-    inbox = sorted(p.name for p in config.INBOX_DIR.glob("*.pdf"))
-    last_ingest = _load_state().get("last_ingest")
-    if last_ingest and last_ingest.get("status") == "running":
-        try:
-            started = datetime.fromisoformat(last_ingest["started_at"])
-            if (datetime.now() - started).total_seconds() > 1800:
-                last_ingest = dict(last_ingest, status="abandoned",
-                                   note="状态超过 30 分钟未更新，按中断处理；未入库的文件可重新摄入")
-        except (KeyError, ValueError):
-            last_ingest = dict(last_ingest, status="abandoned", note="状态时间戳异常，按中断处理")
-    return render_template("ingest.html", rows=rows, inbox=inbox, last_ingest=last_ingest)
-
-
-@app.route("/ingest/do", methods=["POST"])
-def ingest_do():
-    from .. import validate
-    data = request.get_json(force=True, silent=True) or {}
-    valid = {p.relative_to(config.ROOT).as_posix(): p for p in iter_pdfs()}
-    if data.get("all_new"):
-        known = {f["file"] for f in load_manifest()["files"]}
-        targets = [p for rel, p in valid.items() if p.name not in known]
-    else:
-        targets = [valid[rel] for rel in (data.get("paths") or []) if rel in valid]
-    if not targets:
-        return jsonify({"results": [], "log": "没有选中可摄入的文件", "problems": []})
-    if not _ingest_lock.acquire(blocking=False):
-        return jsonify({"error": "已有摄入正在进行中，请等它完成（摄入页会自动刷新显示进度）后再操作。"}), 409
-    state = _load_state()
-    state["last_ingest"] = {"status": "running", "started": datetime.now().strftime("%H:%M"),
-                            "started_at": datetime.now().isoformat(timespec="seconds"),
-                            "targets": [p.name for p in targets]}
-    _save_state(state)
-    buf = io.StringIO()
-    try:
-        with redirect_stdout(buf):
-            results = run_all(targets)
-            problems = validate.validate_all()
-    finally:
-        state = _load_state()
-        state["last_ingest"] = {"status": "done", "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                "count": len(results)}
-        _save_state(state)
-        _ingest_lock.release()
-    return jsonify({"results": results, "log": buf.getvalue(), "problems": problems})
+@app.route("/ask")
+def ask_page():
+    return render_template("ask.html")
 
 
 @app.route("/audit")
@@ -251,19 +106,11 @@ def audit_list():
     return render_template("audit.html", reports=reports)
 
 
-@app.route("/audit/run", methods=["POST"])
-def audit_run():
-    from .. import audit
-    r = audit.run()
-    return jsonify({"file": r["path"].name, "counts": r["counts"]})
-
-
 @app.route("/outputs")
 def outputs_page():
     files = sorted(config.OUTPUTS_DIR.glob("*.md"), reverse=True)
-    memos = [p.name for p in files if p.name.startswith("memo-")]
-    reports = [p.name for p in files if not p.name.startswith("memo-")]
-    return render_template("outputs.html", memos=memos, reports=reports)
+    reports = [p.name for p in files if not p.name.startswith(("memo-", "audit-"))]
+    return render_template("outputs.html", reports=reports)
 
 
 @app.route("/outputs/<name>")
@@ -279,12 +126,26 @@ def show_output(name):
 @app.route("/log")
 def log_page():
     rows = []
-    if config.LOG_MD.exists():
-        for line in config.LOG_MD.read_text(encoding="utf-8").splitlines():
-            if not line.startswith("|"):
-                continue
-            parts = [x.strip() for x in line.strip().strip("|").split("|")]
-            if len(parts) >= 3:
-                rows.append(parts[:3])
-    rows.reverse()
+    for p in wiki.load_pages():
+        if p["type"] == "source":
+            continue
+        meta = p["meta"]
+        hist = [str(h) for h in (meta.get("history") or [])]
+        created = hist[0][:10] if hist else ""
+        sources = sorted(set(re.findall(r"[\w一-鿿·()（）\-]+?\.(?:pdf|docx)", " ".join(hist))))
+        if any("会话中提取" in h for h in hist):
+            sources.append("会话中提取")
+        title = str(meta.get("title") or p["slug"])
+        tags = "、".join(str(a) for a in (meta.get("aliases") or [])) or "—"
+        rows.append({
+            "title": title,
+            "type": TYPE_LABELS[p["type"]],
+            "tags": tags,
+            "summary": str(meta.get("summary") or "") or "—",
+            "created": created or "—",
+            "updated": str(meta.get("updated") or "") or "—",
+            "sources": "、".join(sources) or "—",
+            "url": url_for("show_page", ptype=p["type"], slug=p["slug"]),
+            "search": " ".join([title, tags, str(meta.get("summary") or ""), " ".join(sources)]),
+        })
     return render_template("log.html", rows=rows)

@@ -5,13 +5,22 @@ import yaml
 
 from . import config
 
-ANCHOR_RE = re.compile(r"\[\[([^\[\]#|]+\.pdf)#p(\d+)\]\]")
+# 锚点两种形态：[[文件.pdf#p页码]]、[[文件.docx#para段落号]]（Word 无固定页码，按段落定位）
+ANCHOR_RE = re.compile(r"\[\[([^\[\]#|]+\.(?:pdf|docx))#(p\d+|para\d+)\]\]")
 WIKILINK_RE = re.compile(r"\[\[([^\[\]#|.]+)\]\]")
 FRONT_SPLIT_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.S)
 
 
+def loc_kind(loc):
+    return "para" if str(loc).startswith("para") else "page"
+
+
+def loc_num(loc):
+    return int(str(loc).replace("para", "").replace("p", ""))
+
+
 def anchors_of(text):
-    return {(m.group(1), int(m.group(2))) for m in ANCHOR_RE.finditer(text)}
+    return {(m.group(1), m.group(2)) for m in ANCHOR_RE.finditer(text)}
 
 
 def wikilinks_of(text):
