@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -13,7 +13,7 @@ from app.models.db import get_session
 from app.models.orm import Report
 from app.schemas import IngestStatusResponse, IngestUploadResponse
 from app.services.admin import delete_report as _delete_report
-from app.services.ingest import ingest_pdf_path, start_ingest_async
+from app.services.ingest import ingest_pdf_path
 from app.services.library import scan_library
 from app.services.pdf_extract import save_uploaded_pdf
 from app.models.orm import Page
@@ -25,20 +25,14 @@ _TEMPLATES = Jinja2Templates(directory="app/templates")
 
 @router.post("/upload")
 async def upload_pdf(
-    background: BackgroundTasks,
     files: List[UploadFile] = File(..., alias="file"),
     session: Session = Depends(get_session),
 ) -> dict:
-    """上传一个或多个 PDF，**异步**排队到后台摄取。
+    """上传一个或多个 PDF，逐个触发摄入主流程。
 
-    - 接口立即返回（每份 < 500ms），不阻塞浏览器
-    - 每份先建 Report 行（status="extracting"），全流程交给 BackgroundTasks 在后台线程跑
-    - 前端通过 /api/ingest/library 或 /api/ingest/status/{id} 看 status 变化
+    - 单文件上传：返回 dict {batch, results:[{filename, report_id, status, page_count, ...}]}
+    - 多文件上传：每份独立走完整 ingest_pdf_path
     - 任何一条失败不阻断其它
-
-    返回：results[i].status 取值：
-      - "queued"：已加入后台队列（最常见）
-      - "extracting"：已经在跑（极少见）
     """
     if not files:
         raise HTTPException(status_code=400, detail="未提供文件")
@@ -55,22 +49,20 @@ async def upload_pdf(
                 results.append({"filename": name, "ok": False, "error": "文件为空"})
                 continue
             dest = save_uploaded_pdf(content, name, settings.wiki_data_dir / "reports")
-            report = start_ingest_async(
-                session, dest,
-                background_tasks=background,
-                original_filename=name,
-            )
+            report = ingest_pdf_path(dest, session=session)
+            session.refresh(report)
             results.append({
                 "filename": name,
                 "ok": True,
                 "report_id": report.id,
                 "sha256": report.sha256,
-                "status": "queued",
-                "page_count": 0,
-                "message": "已加入后台编译队列，去库面板查看进度",
+                "status": report.status,
+                "page_count": report.page_count,
+                "title": report.title or "",
+                "message": "已编译" if report.status == "compiled" else "抽取完成，等待 LLM 编译",
             })
         except Exception as e:  # noqa: BLE001
-            log.exception("排队失败: %s", name)
+            log.exception("摄取失败: %s", name)
             results.append({"filename": name, "ok": False, "error": repr(e)})
 
     return {
@@ -97,26 +89,22 @@ def library_pane(request: Request, session: Session = Depends(get_session)) -> H
 
 @router.post("/trigger")
 def trigger_ingest(
-    background: BackgroundTasks,
     filename: str = Query(..., description="data/reports/ 下的文件名"),
     session: Session = Depends(get_session),
 ) -> dict:
-    """从硬盘上 ingest 一份已存在的 PDF（不重新上传）。**异步**版本，立即返回。"""
+    """从硬盘上 ingest 一份已存在的 PDF（不重新上传）。"""
     p = settings.wiki_data_dir / "reports" / filename
     if not p.exists():
         raise HTTPException(status_code=404, detail=f"硬盘上找不到 {filename}")
     try:
-        report = start_ingest_async(
-            session, p,
-            background_tasks=background,
-            original_filename=filename,
-        )
+        report = ingest_pdf_path(p, session=session)
+        session.refresh(report)
         return {
             "ok": True,
             "filename": filename,
             "report_id": report.id,
-            "status": "queued",
-            "page_count": 0,
+            "status": report.status,
+            "page_count": report.page_count,
             "title": report.title or "",
         }
     except Exception as e:  # noqa: BLE001
@@ -126,78 +114,55 @@ def trigger_ingest(
 
 @router.post("/recompile")
 def recompile(
-    background: BackgroundTasks,
     report_id: int = Query(..., description="已存在的 Report.id"),
     session: Session = Depends(get_session),
 ) -> dict:
-    """重跑 LLM 编译（不重抽 PDF）。**异步**版本，立即返回。
+    """重跑 LLM 编译（不重抽 PDF）；等价于 manage.py reingest --report-id N。"""
+    import datetime as dt
 
-    线程里跑：构造 ExtractResult → _compile_with_llm → 改 status。
-    """
+    from app.models.orm import Page
+    from app.services.ingest import _compile_with_llm
+    from app.services.pdf_extract import ExtractResult, ExtractedPage
+
     r: Report | None = session.get(Report, report_id)
     if r is None:
         raise HTTPException(status_code=404, detail=f"未找到 r.id={report_id}")
 
-    pages_count = session.query(Page).filter(Page.report_id == r.id).count()
-    if pages_count == 0:
+    pages = session.query(Page).filter(Page.report_id == r.id).order_by(Page.page_no).all()
+    if not pages:
         raise HTTPException(status_code=400, detail="该 Report 没有 Pages 行，无法重编译")
 
-    # 立即把 status 改成 extracting，避免前端误判为已完成
-    r.status = "extracting"
-    r.error = None
-    session.add(r)
-    session.commit()
-
-    background.add_task(_run_recompile_bg, report_id)
-    return {
-        "ok": True,
-        "report_id": report_id,
-        "status": "queued",
-        "filename": r.original_filename,
-    }
-
-
-def _run_recompile_bg(report_id: int) -> None:
-    """BackgroundTasks 入口函数。重跑 LLM 编译（不重抽 PDF）。"""
-    from datetime import datetime as _dt, timezone as _tz
-    from app.models.db import session_scope
-    from app.services.ingest import _compile_with_llm
-    from app.services.pdf_extract import ExtractResult, ExtractedPage
-
-    with session_scope() as s:
-        r = s.get(Report, report_id)
-        if r is None:
-            return
-        pages = s.query(Page).filter(Page.report_id == r.id).order_by(Page.page_no).all()
-        extract = ExtractResult(
-            report_path=None,  # type: ignore
-            sha256=r.sha256,
-            page_count=len(pages),
-            pages=[
-                ExtractedPage(
-                    page_no=p.page_no, text=p.text,
-                    ocr_used=p.ocr_used, ocr_engine=p.ocr_engine,
-                    char_count=p.char_count,
-                )
-                for p in pages
-            ],
-            metadata={"broker": r.broker, "title": r.title,
-                      "report_date": r.report_date.isoformat() if r.report_date else "",
-                      "page_count": r.page_count},
-        )
-        try:
-            _compile_with_llm(s, r, extract)
-            r.status = "compiled"
-            r.error = None
-            r.ingested_at = _dt.now(_tz.utc)
-            s.add(r); s.commit()
-        except Exception as e:  # noqa: BLE001
-            log.exception("[recompile-bg] 失败 r.id=%d", report_id)
-            r2 = s.get(Report, report_id)
-            if r2 is not None:
-                r2.status = "pending_llm_retry"
-                r2.error = repr(e)
-                s.add(r2); s.commit()
+    extract = ExtractResult(
+        report_path=None,  # type: ignore
+        sha256=r.sha256,
+        page_count=len(pages),
+        pages=[
+            ExtractedPage(
+                page_no=p.page_no, text=p.text,
+                ocr_used=p.ocr_used, ocr_engine=p.ocr_engine,
+                char_count=p.char_count,
+            )
+            for p in pages
+        ],
+        metadata={"broker": r.broker, "title": r.title,
+                  "report_date": r.report_date.isoformat() if r.report_date else "",
+                  "page_count": r.page_count},
+    )
+    try:
+        _compile_with_llm(session, r, extract)
+        r.status = "compiled"
+        r.error = None
+        r.ingested_at = dt.datetime.now(dt.UTC)
+        session.add(r)
+        session.commit()
+        return {"ok": True, "report_id": r.id, "status": r.status, "filename": r.original_filename}
+    except Exception as e:  # noqa: BLE001
+        log.exception("recompile 失败")
+        r.status = "pending_llm_retry"
+        r.error = repr(e)
+        session.add(r)
+        session.commit()
+        return {"ok": False, "report_id": r.id, "error": repr(e), "filename": r.original_filename}
 
 
 @router.get("/status/{report_id}", response_model=IngestStatusResponse)

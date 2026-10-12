@@ -99,81 +99,34 @@
             xhr.onload = () => {
                 if (xhr.status >= 200 && xhr.status < 300) {
                     let data; try { data = JSON.parse(xhr.responseText); } catch (_) { data = {}; }
-                    // 上传成功 → 立即进入"已排队"状态，不再等同步 LLM
                     ui.setStep("done", 1);
-                    ui.setProgress(100);
-                    // 找第一个 ok 的 report_id；若有则开始轮询
-                    let reportId = null;
-                    if (data && Array.isArray(data.results)) {
-                        const ok = data.results.find(r => r && r.ok);
-                        if (ok) reportId = ok.report_id;
-                    } else if (data && data.report_id) {
-                        reportId = data.report_id;
-                    }
-                    if (reportId) {
-                        ui.bindReport(reportId);
-                        startStatusPoll(reportId);
-                    } else {
-                        ui.done("已上传", null);
-                    }
-                    // 立即刷新库面板（让"未摄入"行变成"编译中"）
-                    htmx.ajax("GET", "/api/ingest/library/pane",
-                        {target: "#library-pane", swap: "innerHTML"});
-                    // **不再** location.reload()：上传完成不会打断用户
-                } else {
-                    ui.fail(`HTTP ${xhr.status}`);
-                }
-            };
-            xhr.onerror = () => ui.fail("网络错误");
-            xhr.send(fd);
-        } catch (err) {
-            ui.fail(err.message || "上传失败");
-        }
-    }
-
-    // 轮询某份 Report 的状态，4 秒一次，直到非 extracting/pending_llm_retry
-    const _pollers = new Map();  // report_id → intervalId
-    function startStatusPoll(reportId) {
-        // 防多开
-        if (_pollers.has(reportId)) return;
-        const tick = async () => {
-            try {
-                const r = await fetch(`/api/ingest/status/${reportId}`);
-                if (!r.ok) return;
-                const data = await r.json();
-                if (data.status === "compiled" || data.status === "failed") {
-                    const card = document.querySelector(`[data-progress-report="${reportId}"]`);
-                    if (card) {
-                        card.querySelector(".done-line").innerHTML =
-                            `状态：<b>${data.status}</b>${data.title ? ` · ${escapeHTML(data.title)}` : ""} · <a href="/audit">查看</a> · <a href="#" data-close>关闭</a>`;
-                    }
-                    clearInterval(_pollers.get(reportId));
-                    _pollers.delete(reportId);
-                    htmx.ajax("GET", "/api/ingest/library/pane",
-                        {target: "#library-pane", swap: "innerHTML"});
-                } else if (data.status === "pending_llm_retry") {
-                    const card = document.querySelector(`[data-progress-report="${reportId}"]`);
-                    if (card) {
-                        card.querySelector(".done-line").innerHTML =
-                            `⚠ LLM 编译失败 · ${escapeHTML((data.error || "").slice(0, 80))} · <a href="/api/ingest/recompile?report_id=${reportId}" onclick="return false">重编译</a> · <a href="#" data-close>关闭</a>`;
-                        card.querySelector("[data-recompile-link]")?.addEventListener("click", () => {
-                            fetch(`/api/ingest/recompile?report_id=${reportId}`, {method: "POST"}).then(r => r.json()).then(d => {
-                                flash && flash(d.ok ? "重编译已启动" : "重编译失败：" + d.error);
-                            });
-                        });
-                    }
-                } else if (data.status === "extracting") {
-                    const card = document.querySelector(`[data-progress-report="${reportId}"]`);
-                    if (card) card.querySelector(".done-line").innerHTML =
-                        `⏳ 后台编译中…（r.id=${reportId}） · <a href="#" data-close>关闭</a>`;
-                }
-            } catch (_) { /* 网络抖动，下一轮再试 */ }
-        };
-        const iv = setInterval(tick, 4000);
-        _pollers.set(reportId, iv);
-        // 立即跑一次不等 4 秒
-        setTimeout(tick, 500);
-    }
+                    ui.setStep("active", 2);
+                    ui.setProgress(70);
+                    setTimeout(() => {
+                        ui.setStep("done", 2);
+                        ui.setStep("active", 3);
+                        ui.setProgress(95);
+                        setTimeout(() => {
+                            ui.setStep("done", 3);
+                            ui.setProgress(100);
+                            let link = null;
+                            if (data && Array.isArray(data.results)) {
+                                const ok = data.results.find(r => r && r.ok);
+                                if (ok && ok.report_id) link = `/audit`;
+                            } else if (data && data.report_id) {
+                                link = `/audit`;
+                            }
+                            const msg = (data && data.count > 1)
+                                ? `批量完成 ${data.ok_count}/${data.count}`
+                                : ((data && data.results && data.results[0])
+                                    ? (data.results[0].status || "完成")
+                                    : "完成");
+                            ui.done(msg, link);
+                            htmx.ajax("GET", "/api/ingest/library/pane",
+                                {target: "#library-pane", swap: "innerHTML"});
+                            setTimeout(() => { location.reload(); }, 800);
+                        }, 300);
+                    }, 250);
                 } else {
                     ui.fail(`HTTP ${xhr.status}`);
                 }
@@ -191,17 +144,20 @@
         root.innerHTML = `
             <h4>摄取 ${escapeHtml(name)}</h4>
             <div class="bar"><div></div></div>
-            <div class="done-line" style="margin-top:8px;font-size:12px;">⏳ 上传中…</div>`;
+            <ul class="steps">
+                <li data-step="1"><span class="dot"></span>上传</li>
+                <li data-step="2"><span class="dot"></span>抽取 + 提炼</li>
+                <li data-step="3"><span class="dot"></span>落库</li>
+            </ul>
+            <div class="done-line" style="margin-top:8px;font-size:12px;"></div>`;
         document.body.appendChild(root);
         const bar = root.querySelector(".bar > div");
         const doneLine = root.querySelector(".done-line");
-        const setStep = (_state, _n) => { /* 已无步骤条，保留接口不报错 */ };
-        const setProgress = (p) => { bar.style.width = Math.max(0, Math.min(100, p)) + "%"; };
-        const bindReport = (reportId) => {
-            root.setAttribute("data-progress-report", String(reportId));
-            doneLine.innerHTML = `✓ 已上传 · 后台编译中（r.id=${reportId}）· <a href="#" data-close>关闭</a>`;
-            doneLine.querySelector("[data-close]").onclick = (e) => { e.preventDefault(); root.remove(); };
+        const setStep = (state, n) => {
+            const li = root.querySelector(`li[data-step="${n}"]`);
+            if (li) { li.classList.remove("active","done"); li.classList.add(state); }
         };
+        const setProgress = (p) => { bar.style.width = Math.max(0, Math.min(100, p)) + "%"; };
         const done = (status, link) => {
             doneLine.innerHTML = `状态：<b>${escapeHtml(status)}</b>${link ? ` · <a href="${link}">查看</a>` : ""} · <a href="#" data-close>关闭</a>`;
             doneLine.querySelector("[data-close]").onclick = (e) => { e.preventDefault(); root.remove(); };
@@ -211,7 +167,7 @@
             doneLine.innerHTML = `失败：${escapeHtml(msg)} · <a href="#" data-close>关闭</a>`;
             doneLine.querySelector("[data-close]").onclick = (e) => { e.preventDefault(); root.remove(); };
         };
-        return { setStep, setProgress, done, fail, bindReport };
+        return { setStep, setProgress, done, fail };
     }
 
     function escapeHtml(s) {
@@ -234,21 +190,18 @@
         if (ingestBtn) {
             e.preventDefault();
             const fname = ingestBtn.getAttribute("data-ingest-path");
-            if (!confirm(`确认摄取 ${fname}？\n（已切换为异步：摄取过程在后台跑，前端不卡）`)) return;
+            if (!confirm(`确认摄取 ${fname}？`)) return;
             ingestBtn.disabled = true;
-            ingestBtn.textContent = "排队中…";
+            ingestBtn.textContent = "摄取中…";
             try {
                 const r = await fetch(`/api/ingest/trigger?filename=${encodeURIComponent(fname)}`,
                     {method: "POST"});
                 const data = await r.json();
                 if (data && data.ok) {
-                    flash(`已排队 r.id=${data.report_id}，后台编译中`);
+                    flash(`摄取完成：r.id=${data.report_id} · ${data.status}`);
                     htmx.ajax("GET", "/api/ingest/library/pane",
                         {target: "#library-pane", swap: "innerHTML"});
-                    // 开个轮询直到 status 终态
-                    if (data.report_id && typeof startStatusPoll === "function") {
-                        startStatusPoll(data.report_id);
-                    }
+                    setTimeout(() => location.reload(), 600);
                 } else {
                     flash(`摄取失败：${(data && data.error) || r.status}`);
                 }
@@ -265,20 +218,18 @@
         if (reBtn) {
             e.preventDefault();
             const rid = reBtn.getAttribute("data-reingest-report");
-            if (!confirm(`确认重编译 r.id=${rid}？\n（不重抽 PDF，直接走 LLM；异步不卡页）`)) return;
+            if (!confirm(`确认重编译 r.id=${rid}？（不重抽 PDF，直接走 LLM）`)) return;
             reBtn.disabled = true;
-            reBtn.textContent = "排队中…";
+            reBtn.textContent = "重编译中…";
             try {
                 const r = await fetch(`/api/ingest/recompile?report_id=${encodeURIComponent(rid)}`,
                     {method: "POST"});
                 const data = await r.json();
                 if (data && data.ok) {
-                    flash(`已排队 r.id=${rid}，后台重编译中`);
+                    flash(`重编译成功：r.id=${rid} · ${data.status}`);
                     htmx.ajax("GET", "/api/ingest/library/pane",
                         {target: "#library-pane", swap: "innerHTML"});
-                    if (typeof startStatusPoll === "function") {
-                        startStatusPoll(Number(rid));
-                    }
+                    setTimeout(() => location.reload(), 600);
                 } else {
                     flash(`重编译失败：${(data && data.error) || r.status}`);
                 }
@@ -348,47 +299,11 @@
         try {
             const r = await fetch(`/api/pages/quote?file=${encodeURIComponent(file)}&page=${page}`);
             const data = await r.json();
-            const quoteEl = pop.querySelector(".pop-quote");
-            const footEl = pop.querySelector(".pop-foot");
-            if (data.status === "ok") {
-                quoteEl.textContent = data.quote || "(该页无文本)";
-            } else if (data.status === "report_missing") {
-                quoteEl.innerHTML = `<div class="warn">⚠ ${escapeHTML(data.hint || "源文件已删除")}</div>`;
-                if (data.on_disk) {
-                    const btn = document.createElement("button");
-                    btn.className = "btn sm primary";
-                    btn.style.marginTop = "8px";
-                    btn.textContent = "🔄 重新摄取此 PDF";
-                    btn.onclick = async (e) => {
-                        e.stopPropagation();
-                        btn.disabled = true;
-                        btn.textContent = "摄取中…";
-                        try {
-                            const tr = await fetch(`/api/ingest/trigger?filename=${encodeURIComponent(file)}`, {method: "POST"});
-                            const td = await tr.json();
-                            if (td && td.ok) {
-                                btn.textContent = "✓ 已摄取，正在编译…";
-                                htmx.ajax("GET", "/api/ingest/library/pane",
-                                    {target: "#library-pane", swap: "innerHTML"});
-                                setTimeout(() => show(el), 1200);  // 重试 quote
-                            } else {
-                                btn.textContent = "摄取失败：" + ((td && td.error) || tr.status);
-                            }
-                        } catch (err) {
-                            btn.textContent = "网络错误：" + err.message;
-                        }
-                    };
-                    quoteEl.appendChild(btn);
-                }
-                footEl.textContent = data.recoverable ? "硬盘上 PDF 还在，可一键恢复" : "硬盘上也没有，请检查文件是否被挪走";
-            } else if (data.status === "page_missing") {
-                quoteEl.innerHTML = `<div class="warn">⚠ ${escapeHTML(data.hint || "该页不存在")}</div>`;
-                if (data.report_id) {
-                    footEl.innerHTML = `r.id=${data.report_id} · status=${data.report_status || "?"}`;
-                }
-            } else {
-                quoteEl.textContent = (data.detail || data.hint || "未找到该页").trim();
+            if (!r.ok) {
+                pop.querySelector(".pop-quote").textContent = (data.detail || "未找到该页").trim();
+                return;
             }
+            pop.querySelector(".pop-quote").textContent = data.quote || "(该页无文本)";
         } catch (e) {
             pop.querySelector(".pop-quote").textContent = "请求失败: " + e.message;
         }
