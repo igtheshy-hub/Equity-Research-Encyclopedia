@@ -95,6 +95,15 @@ def find(target):
     abort(404)
 
 
+@app.route("/ingest")
+def ingest_page():
+    """已摄入管理：列出 manifest 里的报告，可单条删除。"""
+    from .. import admin as admin_mod
+    items = admin_mod.list_ingested()
+    raw_uningested = admin_mod.list_uningested()
+    return render_template("ingest.html", items=items, raw_uningested=raw_uningested)
+
+
 @app.route("/ask")
 def ask_page():
     return render_template("ask.html")

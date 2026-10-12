@@ -81,6 +81,12 @@ button.primary:hover { background: #2450c4; }
 button.ghost { background: var(--card); border: 1px solid var(--line); color: var(--ink-2); }
 button.ghost:hover { border-color: var(--accent); color: var(--accent); }
 button.sm { padding: 4px 10px; font-size: 13px; }
+button.danger { background: #c0392b; color: #fff; border-color: #c0392b; }
+button.danger:hover { background: #962d22; border-color: #962d22; }
+
+.flash { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+.flash.ok { background: #e6f4ea; color: #137333; border: 1px solid #b7e1c0; }
+.flash.err { background: #fce8e6; color: #c0392b; border: 1px solid #f5c2c0; }
 .icon-btn {
   background: transparent; color: var(--ink-2); padding: 2px 8px; font-size: 14px;
 }

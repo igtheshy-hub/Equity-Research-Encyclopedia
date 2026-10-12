@@ -3,6 +3,7 @@ from pathlib import Path
 
 from flask import Blueprint, jsonify, request
 
+from .. import admin as admin_mod
 from .. import ask as ask_mod
 from .. import audit as audit_mod
 from .. import config, llm, wiki
@@ -290,6 +291,43 @@ def api_audit_fix():
     tid = tasks.start("fix", lambda t: {"notes": fix_mod.apply_fixes(actions, task_id=t)},
                       total=len(actions), label=f"按审校报告修复 {len(actions)} 项")
     return jsonify({"task_id": tid})
+
+
+# ---------- 已摄入管理（删除 / 列表）----------
+
+@api.get("/api/ingest/list")
+def api_ingest_list():
+    """列出所有已摄入报告（用于删除 UI）。"""
+    items = []
+    for f in admin_mod.list_ingested():
+        items.append({
+            "file": f.get("file"),
+            "sha256": f.get("sha256"),
+            "path": f.get("path"),
+            "ingested_at": f.get("ingested_at"),
+            "topics_touched": f.get("topics_touched") or [],
+            "entries_count": f.get("entries_count"),
+            "source_type": f.get("source_type"),
+        })
+    return jsonify({"items": items})
+
+
+@api.post("/api/ingest/delete")
+def api_ingest_delete():
+    """删除一份已摄入报告（manifest + 来源页 + 主题页 sources 联动）。"""
+    data = request.get_json(force=True, silent=True) or {}
+    filename = (data.get("file") or "").strip()
+    sha = (data.get("sha256") or "").strip()
+    if not filename and not sha:
+        return jsonify({"error": "必须传 file 或 sha256"}), 400
+    try:
+        result = admin_mod.delete_ingested(filename=filename or None, sha256=sha or None)
+    except Exception as e:
+        log_exception = True
+        return jsonify({"error": f"删除失败: {e}"}), 500
+    if not result.get("found"):
+        return jsonify({"error": result.get("message") or "未找到"}), 404
+    return jsonify({"ok": True, **result})
 
 
 # ---------- 任务 ----------
