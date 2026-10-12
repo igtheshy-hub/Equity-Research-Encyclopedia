@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}摄入管理 · 投研百科{% endblock %}
+{% block page %}ingest{% endblock %}
+{% block content %}
+<section class="table-card" style="margin-top: 18px;">
+  <h2 style="margin: 0 0 6px;">已摄入报告</h2>
+  <p class="muted">manifest.json 跟踪的所有报告。删除会联动清理 wiki/sources/ 对应页，并把该文件从主题页 <code>sources:</code> 数组里移除。</p>
+
+  {% if items %}
+  <table>
+    <thead><tr>
+      <th>文件名</th><th>类型</th><th>触及主题</th><th>条目</th><th>摄入时间</th><th></th>
+    </tr></thead>
+    <tbody>
+    {% for f in items %}
+      <tr data-filename="{{ f.file }}" data-sha="{{ f.sha256 }}">
+        <td><code>{{ f.file }}</code></td>
+        <td class="muted tiny">{{ f.source_type or '—' }}</td>
+        <td class="muted tiny">{% for t in f.topics_touched %}<span class="tag">{{ t }}</span>{% endfor %}</td>
+        <td class="muted tiny">{{ f.entries_count or '—' }}</td>
+        <td class="muted tiny">{{ f.ingested_at or '—' }}</td>
+        <td>
+          <button class="sm" data-delete-report="{{ f.file }}" style="color: #c0392b; border-color: #c0392b;">删除</button>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">还没有任何已摄入报告。</p>
+  {% endif %}
+</section>
+
+{% if raw_uningested %}
+<section class="table-card" style="margin-top: 24px;">
+  <h3 style="margin: 0 0 6px;">未摄入文件（raw/）</h3>
+  <p class="muted">硬盘上有但还没进入 manifest。运行 <code>python manage.py ingest --all</code> 或网页上传后会自动跑 sort → ingest。</p>
+  <ul class="muted tiny" style="padding-left: 20px;">
+    {% for u in raw_uningested %}
+      <li><code>{{ u.path }}</code> ({{ u.size_kb }} KB · {{ u.kind }})</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<div id="ingest-flash" class="flash" hidden style="position: fixed; top: 80px; right: 20px;
+     padding: 10px 16px; border-radius: 6px; z-index: 1000; font-size: 13px;"></div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='ingest.js') }}" defer></script>
+{% endblock %}

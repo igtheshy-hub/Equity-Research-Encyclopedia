@@ -2,6 +2,7 @@ import argparse
 import importlib
 import sys
 import time
+from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -133,6 +134,71 @@ def cmd_ask(args):
     return 0
 
 
+def cmd_delete_report(args):
+    """删除一份已摄入报告：manifest 条目 + 来源页 + 主题页 sources 联动。"""
+    from src.admin import delete_ingested, list_ingested
+    config.ensure_dirs()
+
+    if args.all:
+        targets = list_ingested()
+        if not targets:
+            print("没有已摄入的报告。")
+            return 0
+        print(f"将删除 {len(targets)} 份报告（manifest + 来源页 + 主题页 sources 联动）。")
+        for f in targets:
+            print(f"  {f['file']}  sha={f.get('sha256','')[:12]}...")
+        try:
+            ans = input("确认? 输入 yes 继续: ").strip()
+        except EOFError:
+            ans = ""
+        if ans != "yes":
+            print("取消。")
+            return 0
+        ok, fail = 0, 0
+        for f in targets:
+            r = delete_ingested(filename=f["file"])
+            if r.get("found"):
+                ok += 1
+                print(f"  [删] {r['filename']}  sources清理={r.get('topic_pages_touched')}  锚点={r.get('anchors_removed')}")
+            else:
+                fail += 1
+                print(f"  [跳] {f['file']}: {r.get('message')}")
+        print(f"\n完成：成功 {ok} / 跳过 {fail}")
+        return 0
+
+    if not args.file and not args.sha:
+        print("用法: python manage.py delete-report --file <文件名>")
+        print("      python manage.py delete-report --sha <sha256>")
+        print("      python manage.py delete-report --all  (默认会交互确认)")
+        return 1
+
+    if args.dry_run:
+        # dry-run 模式：仅显示要删什么，不真删
+        from src.admin import _find_manifest_entry
+        e = _find_manifest_entry(filename=args.file, sha256=args.sha)
+        if e is None:
+            print(f"[dry-run] manifest 中未找到 {args.file or args.sha}")
+            return 1
+        print(f"[dry-run] 将删除：")
+        print(f"  文件: {e['file']}")
+        print(f"  path: {e.get('path')}")
+        print(f"  sha256: {e.get('sha256')}")
+        print(f"  触及主题: {', '.join(e.get('topics_touched') or [])}")
+        print(f"  提取缓存: data/extracts/{Path(e['file']).stem}.units.json")
+        return 0
+
+    r = delete_ingested(filename=args.file, sha256=args.sha)
+    if not r.get("found"):
+        print(f"[删] {r.get('message')}")
+        return 1
+    print(f"已删除：{r['filename']}")
+    print(f"  manifest 条目: {'删' if r['manifest_removed'] else '未变'}")
+    print(f"  来源页 wiki/sources/: {'删' if r['source_page_deleted'] else '无'}")
+    print(f"  主题页联动清理: {r['topic_pages_touched']} 个")
+    print(f"  正文锚点清理: {r['anchors_removed']} 处")
+    return 0
+
+
 def cmd_audit(args):
     from src import audit
     r = audit.run()
@@ -184,6 +250,13 @@ def main():
 
     p = sub.add_parser("audit", help="四类审校")
     p.set_defaults(func=cmd_audit)
+
+    p = sub.add_parser("delete-report", help="删除一份已摄入报告（联动清理 sources + 锚点）")
+    p.add_argument("--file", help="按文件名删除")
+    p.add_argument("--sha", help="按 sha256 删除")
+    p.add_argument("--all", action="store_true", help="批量；默认会交互确认")
+    p.add_argument("--dry-run", action="store_true", help="只看会删什么，不真删")
+    p.set_defaults(func=cmd_delete_report)
 
     p = sub.add_parser("validate", help="全库格式校验")
     p.set_defaults(func=cmd_validate)
