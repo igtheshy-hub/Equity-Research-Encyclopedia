@@ -62,55 +62,6 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_status(args: argparse.Namespace) -> int:
-    """列出所有 Report 的当前状态，便于排查 stuck / extracting / pending_llm_retry。"""
-    from app.models.db import init_db, session_scope
-    from app.models.orm import Report
-    from collections import Counter
-
-    init_db()
-    with session_scope() as s:
-        reports = s.query(Report).order_by(Report.id).all()
-        if not reports:
-            print("没有任何 Report。")
-            return 0
-        now = dt.datetime.now(dt.UTC)
-        print(f"{'ID':>4}  {'状态':<22}  {'页':>3}  {'最后动作':<10}  文件")
-        print("-" * 90)
-        for r in reports:
-            last = r.ingested_at or r.created_at
-            age = ""
-            if last:
-                # SQLite 返回 naive，标准化为 aware 后再算差
-                if last.tzinfo is None:
-                    last_aware = last.replace(tzinfo=dt.UTC)
-                else:
-                    last_aware = last
-                delta = now - last_aware
-                if delta.days > 0:
-                    age = f"{delta.days}d前"
-                elif delta.seconds > 3600:
-                    age = f"{delta.seconds // 3600}h前"
-                elif delta.seconds > 60:
-                    age = f"{delta.seconds // 60}m前"
-                else:
-                    age = "刚才"
-            err = (r.error or "")[:60]
-            print(f"{r.id:>4}  {r.status:<22}  {r.page_count:>3}  {age:<10}  {r.original_filename}")
-            if r.status == "pending_llm_retry" and err:
-                print(f"      ↳ 错误: {err}")
-            if r.status == "extracting":
-                print(f"      ↳ 后台编译中… 若 5 分钟没动，可 `python manage.py reingest --report-id {r.id}`")
-        cnt = Counter(r.status for r in reports)
-        print()
-        print("状态汇总:", dict(cnt))
-        if cnt.get("extracting", 0) > 0:
-            print(f"  → {cnt['extracting']} 份后台编译中（正常）。")
-        if cnt.get("pending_llm_retry", 0) > 0:
-            print(f"  → {cnt['pending_llm_retry']} 份 LLM 失败，重试: `python manage.py reingest --report-id N`")
-    return 0
-
-
 def cmd_audit(args: argparse.Namespace) -> int:
     """立即跑一次审校。"""
     from app.config import settings
@@ -462,7 +413,6 @@ def main() -> int:
     sub.add_parser("audit", help="立即跑一次审校").set_defaults(func=cmd_audit)
     sub.add_parser("init-db", help="建表（含轻量 ALTER 迁移）").set_defaults(func=cmd_init_db)
     sub.add_parser("rebuild-fts", help="重建 FTS5 索引").set_defaults(func=cmd_rebuild_fts)
-    sub.add_parser("status", help="列出所有 Report 当前状态（排查 stuck/extracting）").set_defaults(func=cmd_status)
 
     p_del = sub.add_parser("delete-report", help="删除一份已摄入的 Report（连带 Pages / Citations）")
     p_del.add_argument("--id", dest="report_id", type=int, default=None)

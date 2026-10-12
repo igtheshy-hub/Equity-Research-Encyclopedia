@@ -1,59 +1,6 @@
 {% extends "base.html" %}
-{% block title %}{{ file }} · 第 {{ requested_page or page.page_no }} 页 — {{ site_name }}{% endblock %}
+{% block title %}{{ file }} · 第 {{ page.page_no }} 页 — {{ site_name }}{% endblock %}
 {% block body %}
-
-{% if missing_report %}
-<div class="row between" style="margin-bottom: 12px;">
-    <a href="javascript:history.back()" class="muted tiny">← 返回</a>
-</div>
-
-<h2 style="margin: 8px 0 6px; font-size: 22px;">⚠ 源文件已删除</h2>
-
-<div class="card">
-    <p>引用的 PDF 文件 <code>{{ file }}</code> 在库里已没有对应的 Report 行。</p>
-    {% if on_disk %}
-    <p class="muted">硬盘上 <code>data/reports/{{ file }}</code> 还在。可以点下面的按钮让系统重新摄取，LLM 编译会在后台异步跑（不会卡页面）。</p>
-    <div class="row" style="gap: 8px; margin-top: 12px;">
-        <button class="btn primary" id="re-ingest-btn">🔄 重新摄取此 PDF</button>
-        <span class="muted tiny" id="re-ingest-status"></span>
-    </div>
-    {% else %}
-    <p class="warn">硬盘上 <code>data/reports/{{ file }}</code> 也不在了。无法自动恢复，请确认源文件是否被移动或删除。</p>
-    <p class="muted tiny">如果是从别的机器同步过来，把 PDF 放回 <code>data/reports/</code> 后再点摄取。</p>
-    {% endif %}
-</div>
-
-<script>
-(function () {
-    const btn = document.getElementById('re-ingest-btn');
-    if (!btn) return;
-    btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        btn.textContent = '排队中…';
-        const status = document.getElementById('re-ingest-status');
-        try {
-            const r = await fetch(`/api/ingest/trigger?filename=${encodeURIComponent("{{ file }}")}`,
-                {method: "POST"});
-            const data = await r.json();
-            if (data && data.ok) {
-                btn.textContent = '✓ 已加入后台编译';
-                if (status) status.textContent = `r.id=${data.report_id} · 等待 status 终态…`;
-                // 3 秒后跳回本页（编译应该差不多有 Page 行了）
-                setTimeout(() => { location.reload(); }, 4000);
-            } else {
-                btn.textContent = '✗ 失败';
-                if (status) status.textContent = (data && data.error) || ('HTTP ' + r.status);
-                btn.disabled = false;
-            }
-        } catch (e) {
-            btn.textContent = '✗ 网络错误';
-            btn.disabled = false;
-        }
-    });
-})();
-</script>
-
-{% else %}
 
 <div class="row between" style="margin-bottom: 12px;">
     <a href="javascript:history.back()" class="muted tiny">← 返回</a>
@@ -122,9 +69,6 @@
     </details>
 </div>
 
-{% endif %}
-{% endblock %}
-
 <script>
 function goQuick() {
     const v = document.getElementById('quick-page').value;
@@ -167,3 +111,4 @@ document.getElementById('quick-page').addEventListener('keydown', (e) => {
     mark.scrollIntoView({block: 'center'});
 })();
 </script>
+{% endblock %}

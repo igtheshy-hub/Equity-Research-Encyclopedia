@@ -195,48 +195,24 @@ def api_pages_quote(
 ) -> dict:
     """给 citation.js 悬浮引用用的接口。
 
-    三种返回状态（HTTP 都 200，状态由 status 字段体现）：
-    - status="ok"             Report + Page 都找到 → 返回原文摘录
-    - status="page_missing"   Report 在，该页没抽到 → 报告丢失的那页
-    - status="report_missing" Report 不存在（被删 / 还没摄入）→ 看硬盘上 PDF 是否还在
-                              on_disk=true 时前端可一键重新摄取；false 时只能人工恢复
+    返回该页的简短摘录；超长时截断 200 字。
     """
     report: Report | None = (
         session.query(Report).filter(Report.original_filename == file).one_or_none()
     )
     if not report:
-        # Report 缺失：判断硬盘上 PDF 是否还在，给前端一个"恢复入口"
-        pdf_path = settings.wiki_data_dir / "reports" / file
-        on_disk = pdf_path.is_file()
-        return {
-            "status": "report_missing",
-            "file": file,
-            "page": page,
-            "on_disk": on_disk,
-            "recoverable": on_disk,
-            "hint": "源文件已删除。" + ("硬盘上还有原 PDF，可点「重新摄取」。" if on_disk else "硬盘上也没有，无法自动恢复。"),
-        }
-
+        raise HTTPException(status_code=404, detail=f"未找到文件名: {file}")
     p: PageORM | None = (
         session.query(PageORM)
         .filter(PageORM.report_id == report.id, PageORM.page_no == page)
         .one_or_none()
     )
     if not p:
-        return {
-            "status": "page_missing",
-            "file": file,
-            "page": page,
-            "report_id": report.id,
-            "report_status": report.status,
-            "hint": "Report 在但该页不在。可能是 pending_llm_retry 还没抽取到该页。",
-        }
-
+        raise HTTPException(status_code=404, detail=f"未找到 {file} 第 {page} 页")
     snippet = (p.text or "")[:240]
     if len(p.text or "") > 240:
         snippet += "…"
     return {
-        "status": "ok",
         "file": file,
         "page_no": page,
         "report_id": report.id,
@@ -256,30 +232,12 @@ def viewer(
 
     - ?file=X&page=N&highlight=<quote>：高亮首个匹配 quote 的片段
     - 不依赖 PDF 阅读器，纯文本即可核对（PDF 文件本身可走 `/api/reports/{file}/pdf` 下载）
-    - 当 Report 不存在时（被删 / 没摄入），展示恢复入口而非 404：
-      - 硬盘上有同名 PDF → 一键触发重新摄取
-      - 硬盘上也没有 → 提示用户检查文件
     """
     report: Report | None = (
         session.query(Report).filter(Report.original_filename == file).one_or_none()
     )
     if not report:
-        pdf_path = settings.wiki_data_dir / "reports" / file
-        on_disk = pdf_path.is_file()
-        return templates.TemplateResponse(
-            request,
-            "viewer.html",
-            _ctx(
-                request,
-                report=None,
-                page=None,
-                all_pages=[],
-                file=file,
-                missing_report=True,
-                on_disk=on_disk,
-                requested_page=page,
-            ),
-        )
+        raise HTTPException(status_code=404, detail=f"未找到文件名: {file}")
     pg: PageORM | None = (
         session.query(PageORM)
         .filter(PageORM.report_id == report.id, PageORM.page_no == page)
