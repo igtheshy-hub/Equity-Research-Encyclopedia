@@ -38,9 +38,10 @@ def _run_ask(cid, mid, question, history):
         raise
     if result["kind"] == "report":
         title = result["title"]
+        domain = result.get("domain") or "general"
 
         def _report_run(t):
-            p = report_mod.generate(title, question, task_id=t)
+            p = report_mod.generate(title, question, task_id=t, domain=domain)
             return {"file": p.name}
         rid = tasks.start("report", _report_run, label=f"报告《{title}》")
         sessions.update_message(cid, mid, status="done", kind="report_ack",

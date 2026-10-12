@@ -59,8 +59,8 @@ iter_pdfs = iter_raw_files
 
 def source_kind(path):
     rel = path.relative_to(config.RAW_DIR).as_posix()
-    for kind in ("report", "filing", "policy"):
-        if rel.startswith(kind + "s/"):
+    for kind, prefix in (("report", "reports/"), ("filing", "filings/"), ("policy", "policies/")):
+        if rel.startswith(prefix):
             return kind
     return "unknown"
 
@@ -280,7 +280,7 @@ def _apply_create(decision, topic, extra_sources, note_prefix):
     return path, count
 
 
-def _write_source_page(path, topic_titles, report_date, entries_count):
+def _write_source_page(path, topic_titles, report_date, entries_count, extra=None):
     title = path.stem
     out_path = config.TYPE_DIRS["source"] / f"{title}.md"
     rel = path.relative_to(config.ROOT).as_posix()
@@ -291,6 +291,7 @@ def _write_source_page(path, topic_titles, report_date, entries_count):
         f"报告日期：{report_date or '未识别'}",
         f"知识条目：{entries_count} 条",
     ]
+    info.extend(extra or [])
     links = "、".join(f"[[{t}]]" for t in topic_titles)
     sections = {"材料信息": info, "贡献": [f"贡献主题页：{links}" if links else "贡献主题页：无"]}
     meta = {"title": title, "type": "source", "sources": [rel], "updated": config.today_str()}
@@ -312,6 +313,10 @@ def ingest_one(path, manifest):
     if not any(u["text"] for u in units):
         print("  [拒] 未提取到任何文字，不编译")
         return None
+    if source_kind(path) == "filing":
+        # 财报走专用流程（结构化科目 + 勾稽 + 派生指标），见 schema/财报摄取-skill.md
+        from . import filing as filing_mod
+        return filing_mod.ingest_filing(path, units, unit_kind, manifest, sha)
     compiled = compile_file(path, units, unit_kind)
     topics = compiled["topics"]
     existing = wiki.load_pages()

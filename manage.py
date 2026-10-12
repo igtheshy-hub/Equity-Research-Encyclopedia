@@ -104,7 +104,7 @@ def cmd_ask(args):
     if result["kind"] == "report":
         from src import report as report_mod
         print(f"识别为报告请求《{result['title']}》，开始生成…")
-        path = report_mod.generate(result["title"], args.question)
+        path = report_mod.generate(result["title"], args.question, domain=result.get("domain") or "general")
         print(f"报告已存：{path.relative_to(config.ROOT).as_posix()}")
         return 0
     sel = result["step1"]

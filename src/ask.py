@@ -4,11 +4,13 @@ from .pdf_extract import extract_to_store, load_cached, raw_file_index
 
 REFUSAL = "知识库中未找到与该问题相关的页面，无法回答。"
 
-INTENT_PROMPT = """判断用户这条消息的意图，只输出 JSON：
-{"intent": "chat 或 report", "title": "report 时给一个不超过 16 字的报告标题，chat 给空字符串"}
+INTENT_PROMPT = """判断用户这条消息的意图与领域，只输出 JSON：
+{"intent": "chat 或 report", "title": "report 时给一个不超过 16 字的报告标题，chat 给空字符串", "domain": "finstmt 或 general"}
 
 chat = 普通问答、追问、信息咨询，包括「怎么样/多少/为什么/怎么看/什么观点/对比一下」这类问法。
 report = 用户明确要求生成一份可保存的成文档交付物，措辞中带有「写一份/生成一份/帮我出一份/做一份报告/对比分析报告/财务报告」等明确的成文动作。只是打听情况、数据或观点，哪怕话题很专业，也算 chat。
+finstmt = 问题涉及财务报表数据的分析理解：比率、盈利、毛利、现金流、资产负债、ROE/ROA/ROIC、偿债、周转（应收/存货/应付账款天数）、营收利润增速、财报地雷或造假嫌疑、审计意见等。只要问题需要读报表数字才能回答就算 finstmt，漏判比误判伤害大，拿不准给 finstmt。
+general = 其余所有问题。
 
 用户消息：{Q}"""
 
@@ -28,17 +30,30 @@ ANSWER_PROMPT = """你是投研知识库的问答员，只能用给定页面内�
 - 页面没有的信息，明说「知识库中没有该信息」
 - 不允许出现没有任何锚点的数据性陈述
 - 回答用中文，markdown 格式
-
+{FIN}
 {HISTORY}--- 页面内容开始 ---
 {PAGES}
 --- 页面内容结束 ---
 
 用户问题：{Q}"""
 
+# 财报分析类问题的附加纪律，浓缩自 schema/财报问答-skill.md；{FIN} 占位符按 domain 注入
+FIN_ANALYSIS_BLOCK = """
+本次问题属财报分析类，再遵守以下纪律（方法论来源：financial-statement-reading skill，张明辉、Berman 等三本书整合）：
+- 先盘点给定内容中已有的财报数据再下判断：wiki 页面里的【数据】行是报表原值、【指标】行是固定口径的派生值、【管理层】行是原文摘录；原始材料则直接读报表数字。数据缺失的项明说「无法核验」，不用自身知识补
+- 引用任何指标必须带口径标签与报告期（如 ROE(归母平均)@2025FY），中途换口径必须说明理由
+- 引用判断阈值必须注明出处（张明辉方法），并说明其为台湾市场经验值，在 A 股的适用性需按行业实际分布校准
+- 分析顺序：资产负债表（结构、周转、杠杆、流动性）→ 损益表（成长、盈利结构分层、费用、非经常性）→ 现金流量表（获现比、FCF 口径声明、三大活动形态）→ 比率（ROE 杜邦拆解、ROIC）
+- 地雷六特征逐项过数并给数值对照：DSO 过高、DIO 过低、应收存货应付同时异常增长、毛利率偏离同业、自由现金流长期为负、OCI 异常大；命中两项以上结论升级。六大警讯（高管与会计师更换等）属库外信息，只列待查项不编造
+- 参考阈值：DSO < 90 天、DIO 30-60 天且 < 20 天可疑、流动比率 > 120%、获现比持续 < 1 是盈利质量警报
+- 结论按证据强度分层：数据支持充分 / 部分支持 / 数据不足不下结论
+"""
+
 DISTILL_PROMPT = """判断这次问答是否产生了值得沉淀进知识库的新知识：跨页面综合得出、任何单个页面都没有明确写出的结论才算新知识，单页已有内容的复述不算。
 
 只输出 JSON：
 {"new_knowledge": true 或 false, "topic": "主题名（中文，新知识为 true 时给）", "type": "concept|company|industry", "summary": "一句话摘要", "lines": ["可沉淀的结论句，句尾锚点只能原样复用答案中已出现的锚点"]}
+lines 规则：答案中属财报分析判断的行以【观点】前缀开头（格式：【观点】报告期 判断句，报告期如 2025FY），普通事实结论不加前缀。
 
 问题：{Q}
 答案：{A}"""
@@ -59,7 +74,7 @@ DEEP_ANSWER_PROMPT = """你是投研助手，只能用给定的原始材料片�
 - 片段标记形如「[文件名 | 第3页]」，请原样使用其中的文件名与序号
 - 不允许出现没有任何锚点的数据性陈述
 - 回答用中文，markdown 格式
-
+{FIN}
 {HISTORY}--- 材料片段开始 ---
 {UNITS}
 --- 材料片段结束 ---
@@ -88,10 +103,11 @@ def _detect_intent(question):
             response_json=True,
         )
     except llm.LLMError:
-        return "chat", ""
+        return "chat", "", "general"
+    domain = "finstmt" if out.get("domain") == "finstmt" else "general"
     if out.get("intent") == "report":
-        return "report", str(out.get("title") or "").strip()[:16] or "未命名报告"
-    return "chat", ""
+        return "report", str(out.get("title") or "").strip()[:16] or "未命名报告", domain
+    return "chat", "", domain
 
 
 def _violations(answer, allowed):
@@ -271,11 +287,14 @@ def deep_ask(question, history=None, files=None):
     result = {"kind": "answer", "deep": True, "question": question,
               "step1": {"selected": [], "reason": reason},
               "answer_md": "", "validation": {"ok": True, "violations": []}, "proposal": None}
+    _, _, domain = _detect_intent(question)
     pieces, allowed = _collect_deep_units(question, files=files)
     if not pieces:
         result["answer_md"] = "没有从 raw 文件提取到可用于回答的文字（可能均为扫描版或文件已移走）。"
         return result
+    fin = FIN_ANALYSIS_BLOCK if domain == "finstmt" else ""
     messages = [{"role": "user", "content": DEEP_ANSWER_PROMPT
+                 .replace("{FIN}", fin)
                  .replace("{HISTORY}", _history_block(history))
                  .replace("{UNITS}", "\n\n".join(pieces))
                  .replace("{Q}", question)}]
@@ -300,9 +319,9 @@ def ask(question, history=None, propose=True):
     result = {"kind": "answer", "question": question,
               "step1": {"selected": [], "reason": ""},
               "answer_md": "", "validation": {"ok": True, "violations": []}, "proposal": None}
-    intent, title = _detect_intent(question)
+    intent, title, domain = _detect_intent(question)
     if intent == "report":
-        return {"kind": "report", "question": question, "title": title}
+        return {"kind": "report", "question": question, "title": title, "domain": domain}
 
     pages, slugs, reason = _select_pages(question, history)
     result["step1"] = {"selected": slugs, "reason": reason}
@@ -323,7 +342,9 @@ def ask(question, history=None, propose=True):
     pages_text = "\n\n".join(
         f"### {p['meta'].get('title', p['slug'])}（slug: {p['slug']}）\n{p['body']}" for p in sel_pages
     )
+    fin = FIN_ANALYSIS_BLOCK if domain == "finstmt" else ""
     messages = [{"role": "user", "content": ANSWER_PROMPT
+                 .replace("{FIN}", fin)
                  .replace("{HISTORY}", _history_block(history))
                  .replace("{PAGES}", pages_text)
                  .replace("{Q}", question)}]
@@ -388,19 +409,23 @@ def _propose_distill(question, answer):
 
 
 def apply_distill(proposal, chosen_lines=None):
-    """把提案（可只取部分行）写入 wiki，返回 {page, action, lines}。"""
+    """把提案（可只取部分行）写入 wiki，返回 {page, action, lines}。【观点】行进「分析观点」节。"""
     lines = list(proposal["lines"])
     if chosen_lines:
         keep = [ln for ln in chosen_lines if ln in lines]
         if not keep:
             return None
         lines = keep
+    sections = {}
+    for ln in lines:
+        bucket = "分析观点" if ln.startswith("【观点】") else "其他"
+        sections.setdefault(bucket, []).append(ln)
     topic = {
         "title": proposal["title"],
         "type": proposal["type"],
         "aliases": [],
         "summary": proposal.get("summary") or "",
-        "sections": {"其他": lines},
+        "sections": sections,
     }
     pages = wiki.load_pages()
     hit = None

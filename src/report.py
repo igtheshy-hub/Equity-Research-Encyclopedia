@@ -1,5 +1,5 @@
 from . import config, llm, wiki
-from .ask import _allowed_from_pages, _select_pages, _violations
+from .ask import FIN_ANALYSIS_BLOCK, _allowed_from_pages, _select_pages, _violations
 from .classify import sanitize
 
 REPORT_PROMPT = """你是投研分析师，基于知识库页面内容撰写一份结构化报告。
@@ -10,7 +10,7 @@ REPORT_PROMPT = """你是投研分析师，基于知识库页面内容撰写一�
 - 锚点格式 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]]，只能引用给定页面中出现过的来源文件
 - 不允许出现没有任何锚点的数据性陈述
 - 用中文，markdown 格式
-
+{FIN}
 --- 页面内容开始 ---
 {PAGES}
 --- 页面内容结束 ---
@@ -25,8 +25,8 @@ def _tick(task_id, current, detail):
         tasks.update(task_id, current=current, detail=detail)
 
 
-def generate(title, question, task_id=None):
-    """从 wiki 页面生成报告并存 outputs/，返回文件 Path。进度按 0-100 报。"""
+def generate(title, question, task_id=None, domain="general"):
+    """从 wiki 页面生成报告并存 outputs/，返回文件 Path。进度按 0-100 报。domain=finstmt 时注入财报分析纪律。"""
     _tick(task_id, 5, "凭索引选页")
     pages, slugs, reason = _select_pages(question, history=None)
     if not slugs:
@@ -36,7 +36,9 @@ def generate(title, question, task_id=None):
         f"### {p['meta'].get('title', p['slug'])}（slug: {p['slug']}）\n{p['body']}" for p in sel_pages
     )
     _tick(task_id, 25, f"已选 {len(sel_pages)} 页，正在撰写")
+    fin = FIN_ANALYSIS_BLOCK if domain == "finstmt" else ""
     messages = [{"role": "user", "content": REPORT_PROMPT
+                 .replace("{FIN}", fin)
                  .replace("{PAGES}", pages_text)
                  .replace("{TITLE}", title)
                  .replace("{Q}", question)}]

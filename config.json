@@ -12,6 +12,7 @@
     "merge": 0.0,
     "audit": 0.1,
     "compile": 0.2,
+    "filing": 0.0,
     "answer": 0.2,
     "summary": 0.3
   },
@@ -25,6 +26,7 @@
   },
   "ingest": {
     "compile_chunk_pages": 20,
-    "min_chars_per_page": 50
+    "min_chars_per_page": 50,
+    "filing_check_tol": 0.005
   }
 }

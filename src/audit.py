@@ -117,6 +117,31 @@ def run(task_id=None):
         if d is None or (today - d).days > stale_days:
             stale.append({"slug": p["slug"], "title": str(p["meta"].get("title") or p["slug"])})
 
+    # 观点老化 lint：【观点】行依据报告期早于页内最新【数据】报告期 → 列入过期待复核
+    pk_re = re.compile(r"^【(数据|观点)】(\d{4})(FY|H1|Q1|Q3) ")
+    pk_order = {"Q1": 0, "H1": 1, "Q3": 2, "FY": 3}
+    for p in pages:
+        latest = None
+        opinions = []
+        for ln in p["body"].splitlines():
+            m = pk_re.match(ln.strip().removeprefix("- ").strip())
+            if not m:
+                continue
+            key = (int(m.group(2)), pk_order[m.group(3)])
+            if m.group(1) == "数据":
+                latest = max(latest, key) if latest else key
+            else:
+                opinions.append((key, ln.strip().removeprefix("- ").strip()))
+        if latest is None:
+            continue
+        for key, ln in opinions:
+            if key < latest:
+                stale.append({
+                    "slug": p["slug"],
+                    "title": str(p["meta"].get("title") or p["slug"]),
+                    "note": f"观点依据期早于最新数据期，待复核：{ln[:60]}",
+                })
+
     known = {f["file"] for f in manifest["files"]}
     missing_files = [p for p in iter_pdfs() if p.name not in known]
 
@@ -182,7 +207,7 @@ def run(task_id=None):
     out_lines.append("")
 
     out_lines += [f"## 过期（{len(stale)}）"]
-    out_lines += [f"- {s['title']}" for s in stale] or ["（无）"]
+    out_lines += [f"- {s['title']}" + (f"（{s['note']}）" if s.get("note") else "") for s in stale] or ["（无）"]
     out_lines.append("")
 
     out_lines += [f"## 未摄入（文件 {len(missing_files)}，内容缺口 {len(gaps_by_page)} 页）"]

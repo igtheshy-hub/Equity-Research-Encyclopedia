@@ -28,6 +28,7 @@ OUTPUTS_DIR = ROOT / "outputs"
 
 DATA_DIR = ROOT / "data"
 EXTRACTS_DIR = DATA_DIR / "extracts"
+FIN_DIR = DATA_DIR / "fin"
 MANIFEST_PATH = DATA_DIR / "manifest.json"
 LLM_LOG_PATH = DATA_DIR / "llm_log.jsonl"
 
@@ -39,14 +40,14 @@ TYPE_DIRS = {
 }
 
 SECTION_ENUMS = {
-    "company": ["公司概况", "行业格局", "经营与财务", "盈利预测", "估值", "风险提示", "其他"],
+    "company": ["公司概况", "行业格局", "经营与财务", "盈利预测", "估值", "分析观点", "风险提示", "其他"],
     "industry": ["行业概况", "行业格局", "经营与财务", "盈利预测", "估值", "风险提示", "其他"],
     "concept": ["定义与口径", "方法要点", "政策背景", "应用示例", "其他"],
 }
 
 
 def ensure_dirs():
-    for d in (INBOX_DIR, REPORTS_DIR, FILINGS_DIR, POLICIES_DIR, *TYPE_DIRS.values(), OUTPUTS_DIR, EXTRACTS_DIR):
+    for d in (INBOX_DIR, REPORTS_DIR, FILINGS_DIR, POLICIES_DIR, *TYPE_DIRS.values(), OUTPUTS_DIR, EXTRACTS_DIR, FIN_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 
