@@ -1,0 +1,71 @@
+{# 局部模板：library pane。#}
+{% set counts = lib.by_status or {} %}
+{% set files = lib.files or [] %}
+
+<div class="row between" style="margin: 4px 0 12px; gap: 12px; flex-wrap: wrap;">
+    <div class="row tiny muted" style="gap: 10px; flex-wrap: wrap;">
+        <span><b>{{ lib.total }}</b> 份文件</span>
+        {% if counts.get('compiled') %}<span class="badge ok">已编译 {{ counts.compiled }}</span>{% endif %}
+        {% if counts.get('pending_llm_retry') %}<span class="badge warn">等 LLM 重试 {{ counts.pending_llm_retry }}</span>{% endif %}
+        {% if counts.get('failed') %}<span class="badge danger">失败 {{ counts.failed }}</span>{% endif %}
+        {% if counts.get('duplicate') %}<span class="badge warn">重复 {{ counts.duplicate }}</span>{% endif %}
+        {% if counts.get('not_ingested') %}<span class="badge">未摄入 {{ counts.not_ingested }}</span>{% endif %}
+    </div>
+    <button class="btn sm" onclick="htmx.ajax('GET', '/api/ingest/library', {target:'#library-pane', swap:'innerHTML'})">↻ 刷新</button>
+</div>
+
+<table class="t">
+    <thead><tr><th>文件名</th><th>大小</th><th>状态</th><th>关联标题</th><th>操作</th></tr></thead>
+    <tbody>
+    {% for f in files %}
+        <tr>
+            <td>
+                <code class="muted">{{ f.filename }}</code>
+                {% if f.note %}<div class="tiny muted">{{ f.note }}</div>{% endif %}
+            </td>
+            <td class="muted tiny">{{ f.size_kb }} KB</td>
+            <td>
+                {% set st = f.status %}
+                {% if st == 'compiled' %}<span class="badge ok">已编译</span>
+                {% elif st == 'pending_llm_retry' %}<span class="badge warn">等 LLM 重试</span>
+                {% elif st == 'failed' %}<span class="badge danger">失败</span>
+                {% elif st == 'duplicate' %}<span class="badge warn">重复</span>
+                {% elif st == 'not_ingested' %}<span class="badge">未摄入</span>
+                {% elif st == 'unreadable' %}<span class="badge danger">不可读</span>
+                {% else %}<span class="badge muted">{{ st }}</span>{% endif %}
+            </td>
+            <td class="tiny">
+                {% if f.report_id %}
+                    <span class="muted">r.id={{ f.report_id }} · {{ f.title or '' }}{% if f.broker %} · {{ f.broker }}{% endif %}</span>
+                {% else %}
+                    <span class="muted">—</span>
+                {% endif %}
+            </td>
+            <td class="row tiny" style="gap: 6px;">
+                {% if st == 'not_ingested' or st == 'duplicate' %}
+                    <button class="btn sm primary"
+                        data-ingest-path="{{ f.filename }}"
+                        title="从硬盘摄取此文件">摄取</button>
+                {% endif %}
+                {% if f.report_id %}
+                    <button class="btn sm" data-reingest-report="{{ f.report_id }}"
+                        title="重跑 LLM 编译（不重抽 PDF）">重编译</button>
+                    {% if st == 'compiled' %}
+                    <button class="btn sm danger"
+                        data-delete-report="{{ f.report_id }}"
+                        data-filename="{{ f.filename }}"
+                        title="删除此 Report 与关联 Pages / Citations">删除</button>
+                    {% endif %}
+                {% endif %}
+            </td>
+        </tr>
+    {% else %}
+        <tr><td colspan="5">
+            <div class="empty">
+                <div class="icon">📂</div>
+                <p style="margin: 8px 0;">data/reports/ 里还没 PDF。拖文件到上面或直接放进去。</p>
+            </div>
+        </td></tr>
+    {% endfor %}
+    </tbody>
+</table>

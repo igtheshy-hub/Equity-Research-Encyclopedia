@@ -1,0 +1,27 @@
+[
+  {
+    "id": "page_number_off_by_one",
+    "description": "LLM 把第 5 页的论断标到第 6 页（错位 1 页）",
+    "page_text_p5": "公司 2026 Q1 营收 100 亿元，归母净利润 15 亿元，同比增长 8%。",
+    "page_text_p6": "毛利率 32%，环比改善 1.2 pct。",
+    "body_md": "公司 2026 Q1 营收 100 亿元，归母净利润 15 亿元。[[mis.pdf#p6]]",
+    "expected_note_substring": "原文比对",
+    "rationale": "数字正确但页码错位，program 校验应能发现 quote 不在引用页。"
+  },
+  {
+    "id": "fabricated_quote",
+    "description": "LLM 编造页码 + 编造 quote，整段都是幻觉",
+    "page_text_p3": "资产负债表显示公司现金流改善。",
+    "body_md": "公司分析师认为 2026 年净利润将翻倍。[[mis.pdf#p3]]",
+    "expected_note_substring": "原文比对",
+    "rationale": "quote 与 page_text 完全不一致，校验必须报错。"
+  },
+  {
+    "id": "filename_with_typo",
+    "description": "LLM 把文件名写错一个小数点",
+    "page_text_p1": "光伏行业进入新周期。",
+    "body_md": "光伏行业进入新周期。[[report_v2.pdf#p1]]",
+    "expected_note_substring": "文件名未注册",
+    "rationale": "若该文件不存在于 Report 表，应直接报'文件名未注册'而不是默默放过。"
+  }
+]

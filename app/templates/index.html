@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}{{ site_name }}{% endblock %}
+
+{% block body %}
+<section class="hero">
+    <h1>把研报沉淀为<span class="text-gradient">句句可核对</span>的团队百科</h1>
+    <p>通用 AI 一次问答即弃知识；机构 RAG 检索答案却留不下。我们走第三条路：把 PDF 编译成知识页，每句话末尾标页码，鼠标悬停即看见原文摘录。</p>
+    <div class="cta-row">
+        <button class="btn lg primary" hx-post="/api/demo" hx-target="#demo-feedback" hx-swap="innerHTML" hx-indicator="#demo-spin">
+            ✨ 一键导入示例研报
+        </button>
+        <a href="/ingest" class="btn lg">📄 拖入你自己的 PDF</a>
+        <a href="/qa" class="btn lg ghost">先去提问 →</a>
+        <span id="demo-spin" class="htmx-indicator tiny muted" style="margin-left:8px;">正在准备示例…</span>
+    </div>
+    <div id="demo-feedback" style="margin-top: 16px;"></div>
+</section>
+
+<div class="role-grid">
+    <a class="role-card" href="/ingest">
+        <div class="icon">📥</div>
+        <h3>摄入</h3>
+        <p>PDF 逐页抽取，LLM 编译成知识页，每句话自动带上页码引用。</p>
+    </a>
+    <a class="role-card" href="/qa">
+        <div class="icon">💬</div>
+        <h3>问答</h3>
+        <p>在已沉淀的知识页里挑相关页面综合回答，每句话都点回原文页。</p>
+    </a>
+    <a class="role-card" href="/audit">
+        <div class="icon">🩺</div>
+        <h3>审校</h3>
+        <p>每天自动扫矛盾 / 过期 / 未摄入 / 孤立四类健康报告，附双方原文。</p>
+    </a>
+</div>
+
+{% if kpages %}
+<h2 class="section-title">
+    <span>最新知识页</span>
+    <a href="/qa" class="btn sm">去看看问答 →</a>
+</h2>
+<div class="row wrap" style="gap: 12px;">
+    {% for kp in kpages[:8] %}
+    <a href="/k/{{ kp.slug }}" class="card" style="flex: 1 1 280px; max-width: 360px; padding: 18px 20px;">
+        <div class="row" style="justify-content: space-between;">
+            <strong style="font-size: 15px;">{{ kp.title }}</strong>
+            <span class="badge muted">v{{ kp.version }}</span>
+        </div>
+        <p class="muted tiny mt-2" style="margin: 8px 0 0;">
+            {{ kp.brief[:80] if kp.brief else '点击查看正文' }}
+        </p>
+        <div class="row mt-2" style="flex-wrap: wrap; gap: 4px;">
+            {% for t in (kp.topic_tags or [])[:4] %}<span class="badge muted">{{ t }}</span>{% endfor %}
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="card mt-8">
+    <div class="empty">
+        <div class="icon">📭</div>
+        <h3>知识库还是空的</h3>
+        <p>点击上方"一键导入示例研报"或拖一份 PDF 进来，就能看到完整跑通的效果。</p>
+    </div>
+</div>
+{% endif %}
+
+<h2 class="section-title">
+    <span>主题</span>
+    <span class="muted tiny">{% if tags|length %}{{ tags|length }} 个{% else %}暂无标签{% endif %}</span>
+</h2>
+<div class="card">
+    {% if tags %}
+        <div class="tag-cloud">
+            {% for t, n in tags %}<a href="/qa?q={{ t|urlencode }}">{{ t }} <span class="muted">· {{ n }}</span></a>{% endfor %}
+        </div>
+    {% else %}
+        <p class="muted" style="margin: 0;">知识库还没标签——运行一次摄入就会有了。</p>
+    {% endif %}
+</div>
+
+<div class="row mt-8" style="justify-content: space-between; color: var(--fg-subtle); font-size: 13px;">
+    <span>知识页 <strong>{{ kpage_count }}</strong> · 待审校 <strong>{{ finding_count }}</strong></span>
+    <span>本地 · 单机自用</span>
+</div>
+{% endblock %}

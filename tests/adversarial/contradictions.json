@@ -1,0 +1,24 @@
+[
+  {
+    "id": "baijiu_2025q4_vs_2026q1",
+    "topic": "白酒行业周期",
+    "kpage_a_title": "2025 Q4 旧观点",
+    "kpage_a_body_md": "公司白酒业务进入新周期，高端化加速。[[baijiu_old.pdf#p3]]",
+    "kpage_a_page_text": "公司白酒业务进入新周期，高端化加速。下半年推新品，预计收入同比+18%。",
+    "kpage_b_title": "2026 Q1 新观点",
+    "kpage_b_body_md": "白酒行业去库存压力大，公司高端化减速。[[baijiu_new.pdf#p2]]",
+    "kpage_b_page_text": "白酒行业去库存压力大，公司高端化减速。预计 2026 H2 业绩压力较大。",
+    "expectation": "审计应识别此对矛盾并落 quote 双方原文"
+  },
+  {
+    "id": "nev_chain_2026h1_vs_2026h2",
+    "topic": "新能源车产业链",
+    "kpage_a_title": "上半年报告",
+    "kpage_a_body_md": "新能源车渗透率突破 50%。[[nev_h1.pdf#p5]]",
+    "kpage_a_page_text": "新能源车渗透率突破 50%，产业链整体量增价稳，毛利率温和回升。",
+    "kpage_b_title": "下半年报告",
+    "kpage_b_body_md": "新能源车渗透率回落至 42%，行业进入价格战。[[nev_h2.pdf#p8]]",
+    "kpage_b_page_text": "新能源车渗透率回落至 42%，行业进入价格战，整车厂毛利承压。",
+    "expectation": "应被识别为矛盾，quote 双方原文比对成功"
+  }
+]
