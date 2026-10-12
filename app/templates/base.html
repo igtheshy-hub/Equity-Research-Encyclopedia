@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>{% block title %}{{ site_name }}{% endblock %}</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="theme-color" content="#FAFAF9">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="https://cdn.jsdelivr.net/npm/htmx.org@1.9.12/dist/htmx.min.js" defer></script>
+    <script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+    <div class="topbar-inner">
+        <a href="/" class="brand">
+            <span class="dot"></span>
+            <span>{{ site_name }}</span>
+        </a>
+        <nav class="nav">
+            <a href="/" class="{% if request.url.path == '/' %}active{% endif %}">首页</a>
+            <a href="/ingest" class="{% if request.url.path.startswith('/ingest') %}active{% endif %}">摄入</a>
+            <a href="/qa" class="{% if request.url.path.startswith('/qa') %}active{% endif %}">问答</a>
+            <a href="/audit" class="{% if request.url.path.startswith('/audit') %}active{% endif %}">审校</a>
+        </nav>
+        <div class="spacer"></div>
+        <button class="icon-btn" data-theme-toggle title="切换主题">☾</button>
+        <a href="/ingest" class="cta">＋ 拖入研报</a>
+    </div>
+</header>
+<main class="shell {% block shell_class %}{% endblock %}">
+{% block body %}{% endblock %}
+</main>
+</body>
+</html>

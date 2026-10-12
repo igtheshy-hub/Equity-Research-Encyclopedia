@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block shell_class %}narrow{% endblock %}
+{% block title %}{{ kpage.title }} — {{ site_name }}{% endblock %}
+{% block body %}
+<div class="row between" style="margin-bottom: 12px;">
+    <a href="/" class="muted tiny">← 首页</a>
+    <div class="row" style="gap: 8px;">
+        <button class="btn sm" data-copy="{{ request.url }}">复制链接</button>
+        <a class="btn sm" href="/k/{{ kpage.slug }}/export.md">下载 Markdown</a>
+    </div>
+</div>
+
+<h1 style="font-size: 30px; letter-spacing: -0.02em; margin: 8px 0 12px;">{{ kpage.title }}</h1>
+
+<div class="muted mt-2" style="margin-bottom: 16px;">
+    v{{ kpage.version }} · slug <code>{{ kpage.slug }}</code>
+    {% if kpage.updated_at %}· 更新于 {{ kpage.updated_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+</div>
+
+{% if kpage.topic_tags or kpage.brief %}
+<div class="card mt-2">
+    {% for t in kpage.topic_tags or [] %}<span class="badge">{{ t }}</span>{% endfor %}
+    {% if kpage.brief %}<p class="mt-2" style="margin-bottom: 0;">{{ kpage.brief }}</p>{% endif %}
+</div>
+{% endif %}
+
+{% for sec in kpage.sections %}
+<div class="card mt-4">
+    <h2 style="margin-top: 0; font-size: 20px;">{{ sec.heading or ('第 ' ~ loop.index ~ ' 节') }}</h2>
+    <div class="md-body">{{ sec.body_md|md|safe }}</div>
+</div>
+{% else %}
+<div class="card mt-4"><div class="empty"><div class="icon">📝</div><p>本页暂无内容。</p></div></div>
+{% endfor %}
+
+{% if related %}
+<h2 class="section-title"><span>相关知识页</span></h2>
+<div class="card">
+    <ul style="margin: 0; padding-left: 18px;">
+    {% for r in related %}
+        <li style="padding: 6px 0;">
+            <a href="/k/{{ r.slug }}">{{ r.title }}</a>
+            {% for t in (r.topic_tags or [])[:4] %}<span class="badge muted">{{ t }}</span>{% endfor %}
+        </li>
+    {% endfor %}
+    </ul>
+</div>
+{% endif %}
+{% endblock %}

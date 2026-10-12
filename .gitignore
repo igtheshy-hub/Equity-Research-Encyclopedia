@@ -1,19 +1,21 @@
-# 密钥（安全红线，绝不入库）
-.env
-
-# 原始资料：研报/财报/政策原文有版权，不入公开仓库
-raw/
-
-# 提取中间产物：含研报全文文本，同上
-data/extracts/
-
-# 网页本地运行状态（收件台/摄入页的最近结果）
-data/ui_state.json
-
-# Python
 __pycache__/
 *.pyc
-
-# 系统杂项
-.DS_Store
-Thumbs.db
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+.pytest_cache/
+.coverage
+htmlcov/
+data/reports/*.pdf
+data/wiki.sqlite
+data/wiki.sqlite-*
+data/pdf_cache/
+data/exports/
+.idea/
+.vscode/
+*.log

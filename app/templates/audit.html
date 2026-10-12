@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}审校 — {{ site_name }}{% endblock %}
+{% block body %}
+<h2 class="section-title">
+    <span>知识库审校</span>
+    <button class="btn primary" hx-post="/api/audit/run" hx-target="#audit-result" hx-swap="innerHTML">运行审校</button>
+</h2>
+
+<div class="card">
+    <div id="audit-result"></div>
+    {% if latest_run %}
+        {% set summary = latest_run.summary or {} %}
+        <div class="row" style="gap: 16px; flex-wrap: wrap;">
+            <div class="row"><span class="muted tiny">最近运行</span><strong>#{{ latest_run.id }}</strong></div>
+            <div class="row"><span class="muted tiny">状态</span><strong>{{ latest_run.status }}</strong></div>
+            <div class="row"><span class="muted tiny">总发现</span><strong>{{ summary.get('finding_count', 0) }}</strong></div>
+            <div class="row" style="gap: 4px;">
+                <span class="badge danger">矛盾 {{ (summary.get('by_kind') or {}).get('contradiction', 0) }}</span>
+                <span class="badge warn">过期 {{ (summary.get('by_kind') or {}).get('outdated', 0) }}</span>
+                <span class="badge muted">未摄入 {{ (summary.get('by_kind') or {}).get('uningested', 0) }}</span>
+                <span class="badge muted">孤立 {{ (summary.get('by_kind') or {}).get('isolated', 0) }}</span>
+            </div>
+        </div>
+    {% else %}
+        <div class="muted" style="padding: 8px 0;">尚未运行审校。点上方按钮立即跑一次。</div>
+    {% endif %}
+</div>
+
+{% if latest_run and findings %}
+<h2 class="section-title"><span>矛盾（必须复核）</span></h2>
+<div>
+{% set contradictions = findings|selectattr('kind', 'equalto', 'contradiction')|list %}
+{% for f in contradictions %}
+    <div class="finding {{ f.severity }}">
+        <div class="row between">
+            <strong>{{ f.summary }}</strong>
+            <span class="badge {{ 'danger' if f.severity == 'high' else ('warn' if f.severity == 'medium' else '') }}">{{ f.severity }}</span>
+        </div>
+        <div class="row between mt-2"><span class="muted tiny">A 方</span><span class="muted tiny">[{{ f.cite_a or '' }}]</span></div>
+        <div class="quote">A. {{ f.quote_a or '' }}</div>
+        <div class="row between mt-2"><span class="muted tiny">B 方</span><span class="muted tiny">[{{ f.cite_b or '' }}]</span></div>
+        <div class="quote">B. {{ f.quote_b or '' }}</div>
+        {% if f.verification_note %}<div class="muted tiny mt-2">⚠ {{ f.verification_note }}</div>{% endif %}
+    </div>
+{% else %}
+    <div class="muted">本次审校未发现矛盾。</div>
+{% endfor %}
+</div>
+{% endif %}
+
+{% if latest_run and findings %}
+<h2 class="section-title"><span>过期</span></h2>
+{% set outdated = findings|selectattr('kind', 'equalto', 'outdated')|list %}
+{% for f in outdated %}
+    <div class="finding {{ f.severity }}">
+        <strong>{{ f.summary }}</strong>
+        <div class="quote">旧：{{ f.quote_a or '' }}</div>
+        <div class="quote">新：{{ f.quote_b or '' }}</div>
+    </div>
+{% else %}
+    <div class="muted">本次审校未发现过期。</div>
+{% endfor %}
+{% endif %}
+
+{% if latest_run and findings %}
+<h2 class="section-title"><span>未摄入</span></h2>
+{% set uningested = findings|selectattr('kind', 'equalto', 'uningested')|list %}
+{% for f in uningested %}
+    <div class="finding low">
+        <div>{{ f.summary }}</div>
+        {% if f.report_ids %}<div class="muted tiny mt-2">涉及 report_ids = {{ (f.report_ids or [])|join(', ') }}</div>{% endif %}
+    </div>
+{% else %}
+    <div class="muted">没有未摄入的 PDF。</div>
+{% endfor %}
+{% endif %}
+
+{% if latest_run and findings %}
+<h2 class="section-title"><span>孤立（建议合并或下线）</span></h2>
+{% set isolated = findings|selectattr('kind', 'equalto', 'isolated')|list %}
+{% for f in isolated %}
+    <div class="finding low">{{ f.summary }}</div>
+{% else %}
+    <div class="muted">没有孤立的页面。</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

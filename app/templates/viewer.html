@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}{{ file }} · 第 {{ requested_page or page.page_no }} 页 — {{ site_name }}{% endblock %}
+{% block body %}
+
+{% if missing_report %}
+<div class="row between" style="margin-bottom: 12px;">
+    <a href="javascript:history.back()" class="muted tiny">← 返回</a>
+</div>
+
+<h2 style="margin: 8px 0 6px; font-size: 22px;">⚠ 源文件已删除</h2>
+
+<div class="card">
+    <p>引用的 PDF 文件 <code>{{ file }}</code> 在库里已没有对应的 Report 行。</p>
+    {% if on_disk %}
+    <p class="muted">硬盘上 <code>data/reports/{{ file }}</code> 还在。可以点下面的按钮让系统重新摄取，LLM 编译会在后台异步跑（不会卡页面）。</p>
+    <div class="row" style="gap: 8px; margin-top: 12px;">
+        <button class="btn primary" id="re-ingest-btn">🔄 重新摄取此 PDF</button>
+        <span class="muted tiny" id="re-ingest-status"></span>
+    </div>
+    {% else %}
+    <p class="warn">硬盘上 <code>data/reports/{{ file }}</code> 也不在了。无法自动恢复，请确认源文件是否被移动或删除。</p>
+    <p class="muted tiny">如果是从别的机器同步过来，把 PDF 放回 <code>data/reports/</code> 后再点摄取。</p>
+    {% endif %}
+</div>
+
+<script>
+(function () {
+    const btn = document.getElementById('re-ingest-btn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        btn.textContent = '排队中…';
+        const status = document.getElementById('re-ingest-status');
+        try {
+            const r = await fetch(`/api/ingest/trigger?filename=${encodeURIComponent("{{ file }}")}`,
+                {method: "POST"});
+            const data = await r.json();
+            if (data && data.ok) {
+                btn.textContent = '✓ 已加入后台编译';
+                if (status) status.textContent = `r.id=${data.report_id} · 等待 status 终态…`;
+                // 3 秒后跳回本页（编译应该差不多有 Page 行了）
+                setTimeout(() => { location.reload(); }, 4000);
+            } else {
+                btn.textContent = '✗ 失败';
+                if (status) status.textContent = (data && data.error) || ('HTTP ' + r.status);
+                btn.disabled = false;
+            }
+        } catch (e) {
+            btn.textContent = '✗ 网络错误';
+            btn.disabled = false;
+        }
+    });
+})();
+</script>
+
+{% else %}
+
+<div class="row between" style="margin-bottom: 12px;">
+    <a href="javascript:history.back()" class="muted tiny">← 返回</a>
+    <div class="row" style="gap: 8px;">
+        <a class="btn sm" href="/api/reports/{{ file }}/pdf#page={{ page.page_no }}" target="_blank">📄 在 PDF 阅读器打开</a>
+    </div>
+</div>
+
+<h2 style="margin: 8px 0 6px; font-size: 22px;">
+    {{ report.title or file }}
+    <span class="muted tiny" style="font-weight: normal;">— 第 {{ page.page_no }} / {{ report.page_count }} 页</span>
+</h2>
+<div class="muted tiny" style="margin-bottom: 16px;">
+    <code>{{ file }}</code>
+    {% if report.broker %} · {{ report.broker }}{% endif %}
+    {% if report.report_date %} · {{ report.report_date }}{% endif %}
+    {% if page.ocr_used %}<span class="badge warn" title="本页由 OCR 抽取，文字可能有错">OCR</span>{% endif %}
+</div>
+
+<div class="card">
+    <div class="row between tiny muted" style="margin-bottom: 8px;">
+        <div class="row" style="gap: 6px;">
+            {% if page.page_no > 1 %}
+                <a class="btn sm" href="/viewer?file={{ file }}&page={{ page.page_no - 1 }}">‹ 上一页</a>
+            {% else %}
+                <span class="btn sm muted" style="opacity: 0.4;">‹ 首页</span>
+            {% endif %}
+            <span class="badge">{{ page.page_no }} / {{ report.page_count }}</span>
+            {% if page.page_no < report.page_count %}
+                <a class="btn sm" href="/viewer?file={{ file }}&page={{ page.page_no + 1 }}">下一页 ›</a>
+            {% else %}
+                <span class="btn sm muted" style="opacity: 0.4;">末页 ›</span>
+            {% endif %}
+        </div>
+        <div class="row" style="gap: 6px;">
+            <input id="quick-page" type="number" min="1" max="{{ report.page_count }}" value="{{ page.page_no }}"
+                   style="width: 70px;" class="mono">
+            <button class="btn sm" onclick="goQuick()">Go</button>
+        </div>
+    </div>
+
+    {% if page.text %}
+            <pre id="page-text" class="viewer-text" data-page="{{ page.page_no }}"
+                 data-file="{{ file }}">{{ page.text }}</pre>
+        {% else %}
+            <div class="empty">
+                <div class="icon">📄</div>
+                <p style="margin: 8px 0;">该页无文本（可能整页是图表）。</p>
+            </div>
+        {% endif %}
+</div>
+
+{# 所有页码跳转器（折叠） #}
+<div class="card mt-6">
+    <details>
+        <summary class="muted tiny" style="cursor: pointer;">📑 跳转到任意页（共 {{ report.page_count }} 页）</summary>
+        <div class="row" style="flex-wrap: wrap; gap: 4px; margin-top: 12px;">
+        {% for p in all_pages %}
+            <a href="/viewer?file={{ file }}&page={{ p.page_no }}"
+               class="badge {% if p.page_no == page.page_no %}primary{% else %}muted{% endif %}"
+               style="text-decoration: none; padding: 4px 8px;">
+                {{ p.page_no }}
+            </a>
+        {% endfor %}
+        </div>
+    </details>
+</div>
+
+{% endif %}
+{% endblock %}
+
+<script>
+function goQuick() {
+    const v = document.getElementById('quick-page').value;
+    if (!v) return;
+    const target = window.location.pathname + '?file={{ file | urlencode }}&page=' + encodeURIComponent(v);
+    window.location.href = target;
+}
+document.getElementById('quick-page').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') goQuick();
+});
+
+// 高亮 ?highlight= 参数对应的 quote（仅在该页 §0 找不到时滑锚）
+(function() {
+    const url = new URL(window.location.href);
+    const q = url.searchParams.get('highlight');
+    if (!q) return;
+    const pre = document.getElementById('page-text');
+    if (!pre) return;
+    const text = pre.textContent;
+    const idx = text.indexOf(q);
+    if (idx < 0) {
+        // 退化：忽略空白匹配
+        const normText = text.replace(/\s+/g, '');
+        const normQ = q.replace(/\s+/g, '');
+        const ni = normText.indexOf(normQ);
+        if (ni < 0) return;
+        // 无法精确定位时不强高亮（用户体验差不偿失）
+        return;
+    }
+    const before = text.slice(0, idx);
+    const match = text.slice(idx, idx + q.length);
+    const after = text.slice(idx + q.length);
+    pre.innerHTML = '';
+    pre.appendChild(document.createTextNode(before));
+    const mark = document.createElement('mark');
+    mark.className = 'cite-highlight';
+    mark.textContent = match;
+    pre.appendChild(mark);
+    pre.appendChild(document.createTextNode(after));
+    mark.scrollIntoView({block: 'center'});
+})();
+</script>

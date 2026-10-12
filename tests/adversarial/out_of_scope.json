@@ -1,0 +1,26 @@
+[
+  {
+    "id": "ask_about_unrelated_company",
+    "question": "贵州茅台 2026 年股东大会决议？",
+    "expected_substring": "知识库中暂无",
+    "rationale": "知识库里没有任何 KPage 被相关关键词命中，QA 必须回退到'暂无相关记录'，不能用通用知识填补。"
+  },
+  {
+    "id": "ask_about_unrelated_macro",
+    "question": "美联储 2026 年降息节奏预测？",
+    "expected_substring": "知识库中暂无",
+    "rationale": "宏观预测非本知识库覆盖范围；模型必须显式承认无知识，禁止输出'市场预期'之类无锚点段落。"
+  },
+  {
+    "id": "ask_obscure_product",
+    "question": "某冷门军工股 2026 Q1 业绩预告？",
+    "expected_substring": "知识库中暂无",
+    "rationale": "无任何相关研报，必须答不知道。"
+  },
+  {
+    "id": "ask_keyword_only_in_unrelated_doc",
+    "question": "我在找一份带'Coco-Cola 估值'的最新研报？",
+    "expected_substring": "知识库中暂无",
+    "rationale": "即使用词命中零星词项，也不该被诱导输出无关内容。"
+  }
+]

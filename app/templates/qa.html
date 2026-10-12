@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}问答 — {{ site_name }}{% endblock %}
+{% block body %}
+<h2 class="section-title">
+    <span>研究问答</span>
+    <button class="btn sm" data-copy="{{ '// 把这里替换成你想问的问题' }}">复制 prompt 模板</button>
+</h2>
+
+<div class="card qa-input">
+    <h3 style="margin-top: 0;">提一个问题</h3>
+    <textarea class="text" name="question" id="qa-question"
+              placeholder="例如：招商证券对 2026 Q1 A 股策略的核心观点是？"></textarea>
+    <div class="row mt-4" style="justify-content: space-between;">
+        <span class="muted tiny">回答会基于已沉淀的知识页，每句话末尾的 <code>[来源:...]</code> 鼠标悬停查看原文摘录。</span>
+        <button class="btn primary" id="qa-submit">提交问题 →</button>
+    </div>
+</div>
+
+<div id="qa-answer" class="qa-answer" style="display:none;"></div>
+
+<h2 class="section-title">
+    <span>历史问答</span>
+    <span class="muted tiny">{{ history|length }} 条</span>
+</h2>
+
+<div class="card">
+    {% for q in history %}
+        <div style="padding: 14px 0; border-bottom: 1px solid var(--line);">
+            <div class="row between">
+                <strong>{{ q.question }}</strong>
+                <div class="row" style="gap: 6px;">
+                    {% if (q.verification or {}).get('out_of_scope') %}
+                        <span class="badge warn">知识库外</span>
+                    {% else %}
+                        <span class="badge ok">已答</span>
+                    {% endif %}
+                    <button class="btn sm" data-copy="{{ q.answer_md or '' }}">复制</button>
+                </div>
+            </div>
+            <div class="muted tiny mt-2">{{ q.asked_at.strftime('%Y-%m-%d %H:%M') if q.asked_at else '' }} · {{ q.asked_by }}</div>
+            {% if q.answer_md %}
+                <details style="margin-top: 8px;">
+                    <summary class="muted" style="cursor: pointer;">查看回答</summary>
+                    <div class="md-body mt-4">{{ q.answer_md|md|safe }}</div>
+                </details>
+            {% endif %}
+        </div>
+    {% else %}
+        <div class="empty"><div class="icon">💬</div><p>还没有问答记录。</p></div>
+    {% endfor %}
+</div>
+
+<script>
+document.getElementById("qa-submit").addEventListener("click", submitQA);
+function submitQA() {
+    const q = document.getElementById("qa-question").value.trim();
+    if (!q) return;
+    const out = document.getElementById("qa-answer");
+    out.style.display = "block";
+    out.innerHTML = '<div class="muted">回答中…</div>';
+    fetch("/api/qa", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({question: q, asked_by: "user"})
+    }).then(r => r.json()).then(d => {
+        const out_of_scope = d.out_of_scope;
+        const citations = (d.citations || []).map(c => {
+            const flag = c.verified ? "ok" : (c.report_id === null ? "danger" : "warn");
+            return `<span class="badge ${flag}" style="margin-right:4px;">${c.filename}:${c.page_no}${flag === "ok" ? " ✓" : ""}</span>`;
+        }).join("");
+        out.innerHTML = `
+            <div class="muted tiny">${out_of_scope ? "知识库无相关内容" : "基于知识库的回答"}</div>
+            <div class="md-body" style="margin-top:8px;">${d.answer_md.replace(/\n/g, "<br>")}</div>
+            <div class="mt-4" style="font-size: 12px;">${citations || '<span class="muted">无引用</span>'}</div>
+            <div class="row mt-4" style="gap: 8px;">
+                <button class="btn sm" data-copy="${escapeAttr(d.answer_md || '')}">复制回答</button>
+            </div>`;
+    }).catch(err => {
+        out.innerHTML = `<div class="badge danger">请求失败：${escapeAttr(err.message || String(err))}</div>`;
+    });
+}
+function escapeAttr(s) {
+    return String(s).replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+</script>
+{% endblock %}

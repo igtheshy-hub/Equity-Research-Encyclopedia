@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}摄入 — {{ site_name }}{% endblock %}
+{% block body %}
+<h2 class="section-title">
+    <span>摄取研报</span>
+    <button class="btn sm" hx-post="/api/demo" hx-swap="none">✨ 用示例研报体验</button>
+</h2>
+
+<div class="card">
+    <h3 style="margin-top: 0;">拖入 PDF（支持多文件）</h3>
+    <p class="muted">也可以点击下面按钮选文件。SHA256 已有的报告会直接复用。每份文件会单独走完一遍"上传 → 抽取 → LLM 编译"。</p>
+    <div id="pick-zone" style="margin: 12px 0;">
+        <label class="btn primary">
+            选择 PDF 文件（可多选）
+            <input type="file" accept=".pdf" multiple style="display:none" id="pdf-picker">
+        </label>
+        <span class="muted tiny" style="margin-left: 12px;">或拖到页面任意位置（全局拖拽已启用）</span>
+    </div>
+    <div id="ingest-result" class="mt-4"></div>
+</div>
+
+<div class="card mt-6">
+    <h3 style="margin-top: 0;">最近的研报（DB）</h3>
+    <table class="t">
+        <thead><tr><th>报告</th><th>券商</th><th>状态</th><th>页数</th><th>入录时间</th><th></th></tr></thead>
+        <tbody>
+        {% for r in reports %}
+            <tr>
+                <td>
+                    <code class="muted">{{ r.original_filename }}</code>
+                    <div>{{ r.title or '' }}</div>
+                </td>
+                <td class="muted">{{ r.broker or '—' }}</td>
+                <td>
+                    {% set s = r.status %}
+                    {% if s == 'compiled' %}<span class="badge ok">已编译</span>
+                    {% elif s == 'pending_llm_retry' %}<span class="badge warn">等 LLM 重试</span>
+                    {% elif s == 'failed' %}<span class="badge danger">失败</span>
+                    {% else %}<span class="badge muted">{{ s }}</span>{% endif %}
+                </td>
+                <td>{{ r.page_count }}</td>
+                <td class="muted tiny">{{ r.created_at.strftime('%m-%d %H:%M') if r.created_at else '' }}</td>
+                <td>
+                    <button class="btn sm danger" data-delete-report="{{ r.id }}"
+                        data-filename="{{ r.original_filename }}">删除</button>
+                </td>
+            </tr>
+        {% else %}
+            <tr><td colspan="6">
+                <div class="empty">
+                    <div class="icon">📄</div>
+                    <p style="margin: 8px 0;">还没有任何研报。从拖一份 PDF 开始吧。</p>
+                </div>
+            </td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="card mt-6">
+    <h3 style="margin-top: 0;">硬盘文件库 <span class="muted tiny">data/reports/</span></h3>
+    <p class="muted tiny">
+        这里直接读 <code>{{ reports_dir }}</code> 下的 <code>*.pdf</code>，对照 DB 标"已摄入 / 未摄入 / 重复"。
+        已摄入的可以直接调「重编译」（无需重抽）；未摄入的一键（不超载同进程串行）。
+    </p>
+    <div id="library-pane" hx-get="/api/ingest/library" hx-trigger="load, refresh-from:body" hx-swap="innerHTML">
+        <div class="muted tiny">加载中…</div>
+    </div>
+</div>
+{% endblock %}
