@@ -1,72 +1,6 @@
 {
  "files": [
   {
-   "file": "中国汽车流通协会乘用车市场信息联席分会_乘用车市场研报_20260717.pdf",
-   "path": "raw/reports/汽车/中国汽车流通协会乘用车市场信息联席分会_乘用车市场研报_20260717.pdf",
-   "sha256": "8824701ccfa75efffa7696d5f1c4fdc5577ecd65200d8fa029f01800f74168a5",
-   "unit": "page",
-   "count": 19,
-   "report_date": "2026-07-17",
-   "source_type": "report",
-   "ingested_at": "2026-10-12T20:27:15",
-   "topics_touched": [
-    "乘用车市场"
-   ],
-   "entries_count": 14
-  },
-  {
-   "file": "东吴证券_智能汽车研报_20260928.pdf",
-   "path": "raw/reports/智能汽车/东吴证券_智能汽车研报_20260928.pdf",
-   "sha256": "7e657f181950bca0c0d0571149eeb9e5e00456de4082b082adf283954416671f",
-   "unit": "page",
-   "count": 19,
-   "report_date": "2026-09-28",
-   "source_type": "report",
-   "ingested_at": "2026-10-12T20:29:02",
-   "topics_touched": [
-    "智能汽车",
-    "文远知行",
-    "小鹏汽车",
-    "速腾聚创",
-    "蔚来",
-    "黑芝麻智能",
-    "嬴彻科技",
-    "希迪智驾",
-    "新石器",
-    "滴滴出行",
-    "特斯拉",
-    "Waymo",
-    "伯特利",
-    "佑驾创新",
-    "博泰车联网",
-    "上汽大通",
-    "耐世特",
-    "汽车软件质量与缺陷管理规范"
-   ],
-   "entries_count": 46
-  },
-  {
-   "file": "东吴证券_整车研报_20260921.pdf",
-   "path": "raw/reports/汽车/东吴证券_整车研报_20260921.pdf",
-   "sha256": "1b83dc468caba79966381138618b77d651058aee77de1f97444bd3f788742b36",
-   "unit": "page",
-   "count": 20,
-   "report_date": "2026-09-21",
-   "source_type": "report",
-   "ingested_at": "2026-10-12T20:30:16",
-   "topics_touched": [
-    "乘用车市场",
-    "重卡行业",
-    "客车行业",
-    "摩托车行业",
-    "广汽集团",
-    "赛力斯",
-    "整车上游原材料",
-    "汇率波动"
-   ],
-   "entries_count": 40
-  },
-  {
    "file": "东吴证券_智能汽车研报_20260921.pdf",
    "path": "raw/reports/智能汽车/东吴证券_智能汽车研报_20260921.pdf",
    "sha256": "3f7f0a46e59ab92550a12a94f865cef2e74d1a24ef331b34742aee4192a9128c",
@@ -74,25 +8,25 @@
    "count": 18,
    "report_date": "2026-09-21",
    "source_type": "report",
-   "ingested_at": "2026-10-12T20:31:41",
+   "ingested_at": "2026-10-13T22:05:53",
    "topics_touched": [
-    "智能汽车",
-    "小鹏汽车",
-    "速腾聚创",
-    "黑芝麻智能",
-    "智界",
-    "理想汽车",
-    "智谱",
-    "博雷顿",
-    "保隆科技",
-    "禾赛",
-    "经纬恒润",
-    "华阳集团",
-    "知行科技",
-    "L3级自动驾驶",
-    "L2组合驾驶辅助强标"
+    "智能汽车"
    ],
-   "entries_count": 40
+   "entries_count": 33
+  },
+  {
+   "file": "中国汽车流通协会乘用车市场信息联席分会_乘用车市场研报_20260717.pdf",
+   "path": "raw/reports/汽车/中国汽车流通协会乘用车市场信息联席分会_乘用车市场研报_20260717.pdf",
+   "sha256": "8824701ccfa75efffa7696d5f1c4fdc5577ecd65200d8fa029f01800f74168a5",
+   "unit": "page",
+   "count": 19,
+   "report_date": "2026-07-17",
+   "source_type": "report",
+   "ingested_at": "2026-10-13T22:06:47",
+   "topics_touched": [
+    "中国乘用车市场"
+   ],
+   "entries_count": 23
   },
   {
    "file": "比亚迪财报_20260300.pdf",
@@ -102,11 +36,11 @@
    "count": 268,
    "report_date": "2025-12-31",
    "source_type": "filing",
-   "ingested_at": "2026-10-13T00:34:40",
+   "ingested_at": "2026-10-13T22:14:10",
    "topics_touched": [
     "比亚迪"
    ],
-   "entries_count": 177
+   "entries_count": 175
   }
  ]
 }

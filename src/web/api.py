@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from queue import Queue
 
 from flask import Blueprint, jsonify, request
 
@@ -9,8 +10,8 @@ from .. import config, llm, wiki
 from .. import fix as fix_mod
 from .. import report as report_mod
 from .. import sessions, tasks
+from .. import ingest as ingest_mod
 from ..classify import classify_one, sanitize, unique_target
-from ..ingest import run_all as ingest_run_all
 from ..pdf_extract import SUPPORTED_SUFFIXES
 from .render import anchor_pretty, render_md
 
@@ -227,37 +228,56 @@ def api_distill_apply():
 
 # ---------- 上传与摄入链 ----------
 
-def _classify_task(names):
-    def run(tid):
-        results, targets = [], []
-        for i, name in enumerate(names, 1):
-            tasks.update(tid, current=i - 1, detail=f"第 {i}/{len(names)} 份：{name} 正在取名并进入资料库")
-            p = config.INBOX_DIR / name
-            if not p.exists():
-                results.append({"ok": False, "file": name, "error": "文件不在收件台"})
-                continue
-            try:
-                r = classify_one(p)
-            except Exception as e:
-                r = {"ok": False, "file": name, "error": str(e)}
-            results.append(r)
-            if r.get("ok"):
-                targets.append(config.ROOT / r["target"])
+def _pipeline(names):
+    """取名线与摄入线并行：取名线每入库一份就把路径塞进队列，摄入线同时取走摄入，两条线互不等待。"""
+    queue = Queue()
+
+    def classify_line(tid):
+        results = []
+        try:
+            for i, name in enumerate(names, 1):
+                tasks.update(tid, current=i - 1, detail=f"第 {i}/{len(names)} 份：{name} 正在取名并进入资料库")
+                p = config.INBOX_DIR / name
+                if not p.exists():
+                    results.append({"ok": False, "file": name, "error": "文件不在收件台"})
+                    continue
+                try:
+                    r = classify_one(p)
+                except Exception as e:
+                    r = {"ok": False, "file": name, "error": str(e)}
+                results.append(r)
+                if r.get("ok"):
+                    queue.put(config.ROOT / r["target"])
+                tasks.update(tid, current=i)
+        finally:
+            queue.put(None)  # 收工信号：摄入线做完队列里剩下的就退出
         tasks.update(tid, current=len(names), detail="")
-        if targets:
-            tasks.start("ingest", _ingest_task(targets), total=len(targets), label=f"摄入 {len(targets)} 份")
         return results
-    return run
 
-
-def _ingest_task(paths):
-    def run(tid):
-        def progress(i, name):
-            tasks.update(tid, current=i - 1, detail=f"第 {i}/{len(paths)} 份：{name} 正在摄入")
-        results = ingest_run_all(paths, progress=progress)
-        tasks.update(tid, current=len(paths), detail="")
+    def ingest_line(tid):
+        manifest = ingest_mod.load_manifest()
+        results = []
+        done = 0
+        while True:
+            target = queue.get()
+            if target is None:
+                break
+            done += 1
+            tasks.update(tid, current=done - 1, detail=f"第 {done} 份：{target.name} 正在摄入知识点")
+            try:
+                r = ingest_mod.ingest_one(target, manifest)
+            except Exception as e:
+                print(f"  摄入失败: {e}")
+                r = {"file": target.name, "error": str(e)}
+            if r:
+                results.append(r)
+            ingest_mod.save_manifest(manifest)  # 逐份落盘，中途失败不丢已完成的部分
+            tasks.update(tid, current=done)
+        tasks.update(tid, current=len(names), detail="")
+        ingest_mod.finish(manifest, [r for r in results if "error" not in r])
         return results
-    return run
+
+    return classify_line, ingest_line
 
 
 @api.post("/api/upload")
@@ -279,7 +299,9 @@ def api_upload():
         saved.append(dest.name)
     if not saved:
         return jsonify({"error": "只接受 PDF 与 Word(.docx) 文件", "rejected": rejected}), 400
-    tid = tasks.start("classify", _classify_task(saved), total=len(saved), label=f"取名入库 {len(saved)} 份")
+    classify_line, ingest_line = _pipeline(saved)
+    tid = tasks.start("classify", classify_line, total=len(saved), label=f"取名入库 {len(saved)} 份")
+    tasks.start("ingest", ingest_line, total=len(saved), label=f"摄入 {len(saved)} 份")
     return jsonify({"task_id": tid, "saved": saved, "rejected": rejected})
 
 

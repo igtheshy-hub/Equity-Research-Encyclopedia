@@ -368,6 +368,24 @@ def ingest_one(path, manifest):
     }
 
 
+def finish(manifest, results):
+    """摄入收尾：落盘清单、重建索引、写日志、全库校验。逐份流水线每轮结束后调用一次。"""
+    save_manifest(manifest)
+    wiki.rebuild_index_md(wiki.load_pages())
+    if results:
+        summary = "；".join(f"{r['file']}（{r['entries_count']} 条）：{r['log']}" for r in results)
+        wiki.append_log("ingest", summary)
+    from . import validate
+    problems = validate.validate_all()
+    if problems:
+        print(f"\n[校验] 全库存在 {len(problems)} 个问题：")
+        for x in problems:
+            print(f"  - {x}")
+    else:
+        print("\n[校验] 全库校验通过")
+    return problems
+
+
 def run_all(paths, progress=None):
     manifest = load_manifest()
     results = []
@@ -384,17 +402,5 @@ def run_all(paths, progress=None):
         if r:
             results.append(r)
         save_manifest(manifest)  # 逐文件落盘，中途失败不丢已完成的部分
-    save_manifest(manifest)
-    wiki.rebuild_index_md(wiki.load_pages())
-    if results:
-        summary = "；".join(f"{r['file']}（{r['entries_count']} 条）：{r['log']}" for r in results)
-        wiki.append_log("ingest", summary)
-    from . import validate
-    problems = validate.validate_all()
-    if problems:
-        print(f"\n[校验] 全库存在 {len(problems)} 个问题：")
-        for x in problems:
-            print(f"  - {x}")
-    else:
-        print("\n[校验] 全库校验通过")
+    finish(manifest, results)
     return results

@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}投研百科{% endblock %}</title>
+<title>{% block title %}行业知识库{% endblock %}</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body data-page="{% block page %}{% endblock %}">
 <header class="topbar">
-  <div class="brand"><a href="/">投研百科</a><span class="sub">句句标注出处的研报知识库</span></div>
+  <div class="brand"><a href="/">行业知识库</a><span class="sub">研报、财报、政策进来，拆成带出处的知识</span></div>
   <nav id="main-nav">
     <a href="/" data-nav="home">首页</a>
     <a href="/ask" data-nav="ask">问答</a>
@@ -22,7 +22,7 @@
 <main>
 {% block content %}{% endblock %}
 </main>
-<footer>投研百科 · 本地单机 · 数据在 raw/ 与 wiki/ 目录</footer>
+<footer>行业知识库 · 本地单机 · 数据在 raw/ 与 wiki/ 目录</footer>
 
 <div class="modal-backdrop" id="extract-modal" hidden>
   <div class="modal">

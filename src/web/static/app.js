@@ -1,4 +1,4 @@
-/* 投研百科 全局脚本：任务轮询与角标、提取弹窗、原文对照面板、表格过滤 */
+/* 行业知识库 全局脚本：任务轮询与角标、提取弹窗、原文对照面板、表格过滤 */
 
 /* ---------- 小工具 ---------- */
 
@@ -78,8 +78,13 @@ App.doneText = function (t) {
       return "全部文件都已取名并进入资料库";
     }
     if (t.kind === "ingest" && Array.isArray(r)) {
-      if (!r.length) return "完成：没有文件产出条目（可能已摄入过或是扫描版）";
-      return "全部文件都已摄入：" + r.map((x) => `${x.file}（${x.entries_count} 条）`).join("、");
+      const ok = r.filter((x) => !x.error);
+      const bad = r.filter((x) => x.error);
+      const parts = [];
+      if (ok.length) parts.push("已摄入：" + ok.map((x) => `${x.file}（${x.entries_count} 条）`).join("、"));
+      else parts.push("没有文件产出条目（可能取名未通过、已摄入过或是扫描版）");
+      if (bad.length) parts.push("摄入失败：" + bad.map((x) => `${x.file}（${x.error}）`).join("、"));
+      return parts.join("；");
     }
     if (t.kind === "report" && r && r.file) {
       return `报告已生成：<a href="/outputs/${encodeURIComponent(r.file)}" target="_blank" rel="noopener">${App.escapeHtml(r.file)}</a>`;
