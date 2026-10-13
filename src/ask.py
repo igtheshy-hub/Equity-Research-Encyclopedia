@@ -1,8 +1,28 @@
+import re
+
 from . import config, llm, wiki
 from .ingest import _apply_create, _apply_merge, load_manifest
 from .pdf_extract import extract_to_store, load_cached, raw_file_index
 
 REFUSAL = "知识库中未找到与该问题相关的页面，无法回答。"
+
+# GLM 关闭思考后偶发在正文里混入一串无空格 ASCII 乱码（实测一例：<<+?"98?).CF"3-!#%1>'=)%@&）。
+# 按特征剔除：连续>=8个可打印 ASCII 且不含空格、非字母数字占比>=0.4、含>=2个正文罕见符号。
+# 锚点（#p11 只含1个罕见符号）、markdown 表格线（|-不在罕见集）不受影响。
+_GLITCH_RARE = set("<>=?!#%&@~^$\\")
+
+
+def strip_glitch(text):
+    out, pos = [], 0
+    for m in re.finditer(r"[\x21-\x7e]{8,}", text):
+        seg = m.group()
+        punct = sum(1 for c in seg if not c.isalnum())
+        rare = sum(1 for c in seg if c in _GLITCH_RARE)
+        if punct * 10 >= len(seg) * 4 and rare >= 2:
+            out.append(text[pos:m.start()])
+            pos = m.end()
+    out.append(text[pos:])
+    return "".join(out)
 
 INTENT_PROMPT = """判断用户这条消息的意图与领域，只输出 JSON：
 {"intent": "chat 或 report", "title": "report 时给一个不超过 16 字的报告标题，chat 给空字符串", "domain": "finstmt 或 general"}
@@ -54,15 +74,19 @@ INDEX_ANSWER_PROMPT = """你是投研知识库的问答员，用户问的是知�
 
 用户问题：{Q}"""
 
-# 财报分析类问题的附加纪律，浓缩自 schema/财报问答-skill.md；{FIN} 占位符按 domain 注入
+# 财报分析类问题的附加纪律，浓缩自 schema/财报问答-skill.md v1.1；{FIN} 占位符按 domain 注入
 FIN_ANALYSIS_BLOCK = """
 本次问题属财报分析类，再遵守以下纪律（方法论来源：financial-statement-reading skill，张明辉、Berman 等三本书整合）：
+- 呈现顺序倒金字塔：第一屏直接回答用户问题。问单一数据或事实时直接给数带口径；问分析、评价、风险类问题时，先给 3-5 条一句话判断（每条独立一行，句后括注一句依据），再给综合结论，六步框架的详细盘点放在其后展开，展开部分不重复抄写判断清单里已给的数字
 - 先盘点给定内容中已有的财报数据再下判断：wiki 页面里的【数据】行是报表原值、【指标】行是固定口径的派生值、【管理层】行是原文摘录；原始材料则直接读报表数字。数据缺失的项明说「无法核验」，不用自身知识补
 - 引用任何指标必须带口径标签与报告期（如 ROE(归母平均)@2025FY），中途换口径必须说明理由
 - 引用判断阈值必须注明出处（张明辉方法），并说明其为台湾市场经验值，在 A 股的适用性需按行业实际分布校准
+- 流动性判断先分负债成色再下结论：应付账款/应付票据/其他应付款/合同负债是无息经营占款，短期借款/一年内到期非流动负债才是有息短债。流动比率、速动比率低于阈值时必须补算类现金资产（货币资金+交易性金融资产+应收款项融资）对有息短期负债的覆盖倍数，DPO 高、CCC 为负的占款模式企业禁止只凭未校准的流动比率断言短期偿债压力大
 - 分析顺序：资产负债表（结构、周转、杠杆、流动性）→ 损益表（成长、盈利结构分层、费用、非经常性）→ 现金流量表（获现比、FCF 口径声明、三大活动形态）→ 比率（ROE 杜邦拆解、ROIC）
+- 三个机械信号必查并给数值：现金存量变动（期末现金及现金等价物较年初增减额与幅度）、利润补助依赖（其他收益 ÷ 营业利润）、藏杠杆工具（其他权益工具/永续债期末余额及本期发行赎回净额），异常项列入风险清单
 - 地雷六特征逐项过数并给数值对照：DSO 过高、DIO 过低、应收存货应付同时异常增长、毛利率偏离同业、自由现金流长期为负、OCI 异常大；命中两项以上结论升级。六大警讯（高管与会计师更换等）属库外信息，只列待查项不编造
-- 参考阈值：DSO < 90 天、DIO 30-60 天且 < 20 天可疑、流动比率 > 120%、获现比持续 < 1 是盈利质量警报
+- 参考阈值：DSO < 90 天、DIO 30-60 天且 < 20 天可疑、流动比率 > 120%（用前须先按负债成色校准）、获现比持续 < 1 是盈利质量警报
+- 数字呈现：金额换算为亿元保留两位小数（803,964,958,000 元写作 8039.65 亿元），比率、天数、倍数用原值；每个数据点的锚点只挂在首次出现处，后文再次提到不再重复带锚点
 - 结论按证据强度分层：数据支持充分 / 部分支持 / 数据不足不下结论
 """
 
@@ -165,7 +189,7 @@ def _answer_from_index(question, history):
                  .replace("{HISTORY}", _history_block(history))
                  .replace("{INDEX}", idx_text)
                  .replace("{Q}", question)}]
-    answer = llm.chat(messages, task="answer")
+    answer = strip_glitch(llm.chat(messages, task="answer"))
     if "UNANSWERABLE" in answer:
         return None
     bad = _index_violations(answer)
@@ -174,7 +198,7 @@ def _answer_from_index(question, history):
         messages.append({"role": "user", "content": (
             "以下内容违规，索引回答不允许出现任何锚点，请修正后重新输出完整答案：\n- " + "\n- ".join(bad)
         )})
-        answer = llm.chat(messages, task="answer")
+        answer = strip_glitch(llm.chat(messages, task="answer"))
         if "UNANSWERABLE" in answer:
             return None
         bad = _index_violations(answer)
@@ -351,14 +375,14 @@ def deep_ask(question, history=None, files=None):
                  .replace("{HISTORY}", _history_block(history))
                  .replace("{UNITS}", "\n\n".join(pieces))
                  .replace("{Q}", question)}]
-    answer = llm.chat(messages, task="answer")
+    answer = strip_glitch(llm.chat(messages, task="answer"))
     bad = _violations(answer, allowed)
     if bad:
         messages.append({"role": "assistant", "content": answer})
         messages.append({"role": "user", "content": (
             "以下锚点违规，请修正后重新输出完整答案（只改锚点相关内容）：\n- " + "\n- ".join(bad)
         )})
-        answer = llm.chat(messages, task="answer")
+        answer = strip_glitch(llm.chat(messages, task="answer"))
         bad = _violations(answer, allowed)
     result["answer_md"] = answer
     result["validation"] = {"ok": not bad, "violations": bad}
@@ -415,7 +439,7 @@ def ask(question, history=None, propose=True):
                  .replace("{HISTORY}", _history_block(history))
                  .replace("{PAGES}", pages_text)
                  .replace("{Q}", question)}]
-    answer = llm.chat(messages, task="answer")
+    answer = strip_glitch(llm.chat(messages, task="answer"))
     allowed = _allowed_from_pages(sel_pages)
     bad = _violations(answer, allowed)
     if bad:
@@ -423,7 +447,7 @@ def ask(question, history=None, propose=True):
         messages.append({"role": "user", "content": (
             "以下锚点违规，请修正后重新输出完整答案（只改锚点相关内容）：\n- " + "\n- ".join(bad)
         )})
-        answer = llm.chat(messages, task="answer")
+        answer = strip_glitch(llm.chat(messages, task="answer"))
         bad = _violations(answer, allowed)
     result["answer_md"] = answer
     result["validation"] = {"ok": not bad, "violations": bad}

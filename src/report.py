@@ -1,5 +1,5 @@
 from . import config, llm, wiki
-from .ask import FIN_ANALYSIS_BLOCK, _allowed_from_pages, _select_pages, _violations
+from .ask import FIN_ANALYSIS_BLOCK, _allowed_from_pages, _select_pages, _violations, strip_glitch
 from .classify import sanitize
 
 REPORT_PROMPT = """你是投研分析师，基于知识库页面内容撰写一份结构化报告。
@@ -42,7 +42,7 @@ def generate(title, question, task_id=None, domain="general"):
                  .replace("{PAGES}", pages_text)
                  .replace("{TITLE}", title)
                  .replace("{Q}", question)}]
-    answer = llm.chat(messages, task="answer")
+    answer = strip_glitch(llm.chat(messages, task="answer"))
     _tick(task_id, 75, "锚点校验")
     allowed = _allowed_from_pages(sel_pages)
     bad = _violations(answer, allowed)
@@ -51,7 +51,7 @@ def generate(title, question, task_id=None, domain="general"):
         messages.append({"role": "user", "content": (
             "以下锚点违规，请修正后重新输出完整报告（只改锚点相关内容）：\n- " + "\n- ".join(bad)
         )})
-        answer = llm.chat(messages, task="answer")
+        answer = strip_glitch(llm.chat(messages, task="answer"))
         bad = _violations(answer, allowed)
     if bad:
         answer += "\n\n> 注：本报告部分锚点未通过程序校验，请人工复核。"
