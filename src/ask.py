@@ -20,7 +20,8 @@ SELECT_PROMPT = """你是知识库检索员。下面是知识库索引（每行�
 {HISTORY}用户问题：{Q}
 
 选出回答该问题所需的页面，最多 {MAXP} 页，宁缺毋滥；问题与所有页面主题都不相关时给空数组。slug 必须来自索引。
-只输出 JSON：{"selected": ["slug", ...], "reason": "一句话理由"}"""
+问题问的是知识库自身整体情况（库里都有什么、是否都属于某行业、覆盖哪些主题、有多少页面），或需要横跨大部分页面做总览、不针对某个具体页面时，use_index 给 true 且 selected 给空数组，这类问题将直接用索引作答。
+只输出 JSON：{"selected": ["slug", ...], "use_index": true 或 false, "reason": "一句话理由"}"""
 
 ANSWER_PROMPT = """你是投研知识库的问答员，只能用给定页面内容回答。
 
@@ -34,6 +35,22 @@ ANSWER_PROMPT = """你是投研知识库的问答员，只能用给定页面内�
 {HISTORY}--- 页面内容开始 ---
 {PAGES}
 --- 页面内容结束 ---
+
+用户问题：{Q}"""
+
+# 索引直答：问题针对知识库整体时用，索引无页码故不允许锚点
+INDEX_ANSWER_PROMPT = """你是投研知识库的问答员，用户问的是知识库自身的整体情况（覆盖范围、内容构成、页面数量等）或跨页总览，只能用给定的知识库总索引回答（每行：slug | 类型 | 别名 | 摘要）。
+
+规则：
+- 只用索引信息回答，禁止使用你自己的知识补全
+- 索引没有的信息，明说「知识库索引中看不出」
+- 提到具体条目时用页面名（如「比亚迪」「智能汽车」），不用 slug
+- 索引不含页码，回答中不允许出现任何 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]] 形式的锚点
+- 索引信息不足以回答时，只输出 UNANSWERABLE 一个词，不输出其他内容
+- 回答用中文，markdown 格式
+{HISTORY}--- 知识库索引开始 ---
+{INDEX}
+--- 知识库索引结束 ---
 
 用户问题：{Q}"""
 
@@ -128,6 +145,42 @@ def _violations(answer, allowed):
     return bad
 
 
+def _index_violations(answer):
+    return [f"出现了索引回答不允许的锚点 {f}#{loc}" for f, loc in wiki.ANCHOR_RE.findall(answer)]
+
+
+def _answer_from_index(question, history):
+    """索引直答：以总索引为上下文作答，返回 (answer, violations) 或 None（索引答不了）。"""
+    _, entries = _index_pages()
+    if not entries:
+        return None
+    idx_text = wiki.compact_index_text(entries)
+    # 页面计数机械算好放头部，不让模型自己数长列表
+    counts = {}
+    for e in entries:
+        counts[e["type"]] = counts.get(e["type"], 0) + 1
+    parts = "、".join(f"{t} {c}" for t, c in sorted(counts.items()))
+    idx_text = f"（索引共 {len(entries)} 页：{parts}，另有来源摘要页未列入本索引）\n" + idx_text
+    messages = [{"role": "user", "content": INDEX_ANSWER_PROMPT
+                 .replace("{HISTORY}", _history_block(history))
+                 .replace("{INDEX}", idx_text)
+                 .replace("{Q}", question)}]
+    answer = llm.chat(messages, task="answer")
+    if "UNANSWERABLE" in answer:
+        return None
+    bad = _index_violations(answer)
+    if bad:
+        messages.append({"role": "assistant", "content": answer})
+        messages.append({"role": "user", "content": (
+            "以下内容违规，索引回答不允许出现任何锚点，请修正后重新输出完整答案：\n- " + "\n- ".join(bad)
+        )})
+        answer = llm.chat(messages, task="answer")
+        if "UNANSWERABLE" in answer:
+            return None
+        bad = _index_violations(answer)
+    return answer, bad
+
+
 def _index_pages():
     pages = wiki.load_pages()
     entries = [wiki.build_index_entry(p) for p in pages if p["type"] != "source"]
@@ -150,7 +203,7 @@ def _allowed_from_pages(sel_pages):
 def _select_pages(question, history):
     pages, entries = _index_pages()
     if not entries:
-        return pages, [], ""
+        return pages, [], "", False
     idx_text = wiki.compact_index_text(entries)
     sel = llm.chat(
         [{"role": "user", "content": SELECT_PROMPT
@@ -163,7 +216,7 @@ def _select_pages(question, history):
     )
     valid_slugs = {e["slug"] for e in entries}
     slugs = [s for s in (sel.get("selected") or []) if s in valid_slugs]
-    return pages, slugs, str(sel.get("reason") or "")
+    return pages, slugs, str(sel.get("reason") or ""), bool(sel.get("use_index"))
 
 
 def _suggest_raw_files(question):
@@ -315,7 +368,7 @@ def deep_ask(question, history=None, files=None):
 
 
 def ask(question, history=None, propose=True):
-    """两步问答。选页为空时走 raw 文件名回退；返回 kind=answer/referral/report。"""
+    """两步问答。问知识库整体的问题走索引直答；选页为空时先以索引兜底，再走 raw 文件名回退；返回 kind=answer/referral/report。"""
     result = {"kind": "answer", "question": question,
               "step1": {"selected": [], "reason": ""},
               "answer_md": "", "validation": {"ok": True, "violations": []}, "proposal": None}
@@ -323,19 +376,33 @@ def ask(question, history=None, propose=True):
     if intent == "report":
         return {"kind": "report", "question": question, "title": title, "domain": domain}
 
-    pages, slugs, reason = _select_pages(question, history)
+    pages, slugs, reason, use_index = _select_pages(question, history)
     result["step1"] = {"selected": slugs, "reason": reason}
+    if use_index:
+        got = _answer_from_index(question, history)
+        if got is not None:
+            answer, bad = got
+            result["answer_md"] = answer
+            result["validation"] = {"ok": not bad, "violations": bad}
+            return result
     if not slugs:
+        got = None
+        if not use_index:
+            got = _answer_from_index(question, history)
+        if got is not None:
+            answer, bad = got
+            result["answer_md"] = answer
+            result["validation"] = {"ok": not bad, "violations": bad}
+            result["step1"]["reason"] = "选页为空，改用知识库总索引直答"
+            return result
         candidates = _suggest_raw_files(question)
         if candidates:
             names = "、".join(f"「{c['file']}」" for c in candidates)
-            result["kind"] = "referral"
             result["answer_md"] = REFERRAL_SOME.replace("{FILES}", names)
-            result["candidates"] = candidates
         else:
-            result["kind"] = "referral"
             result["answer_md"] = REFERRAL_NONE
-            result["candidates"] = []
+        result["kind"] = "referral"
+        result["candidates"] = candidates
         return result
 
     sel_pages = [p for p in pages if p["slug"] in slugs and p["type"] != "source"]

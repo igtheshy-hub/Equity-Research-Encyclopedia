@@ -28,7 +28,7 @@ def _tick(task_id, current, detail):
 def generate(title, question, task_id=None, domain="general"):
     """从 wiki 页面生成报告并存 outputs/，返回文件 Path。进度按 0-100 报。domain=finstmt 时注入财报分析纪律。"""
     _tick(task_id, 5, "凭索引选页")
-    pages, slugs, reason = _select_pages(question, history=None)
+    pages, slugs, reason, _use_index = _select_pages(question, history=None)
     if not slugs:
         raise ValueError(f"知识库中没有与「{title}」相关的页面，无法生成报告（{reason or '索引无匹配'}）")
     sel_pages = [p for p in pages if p["slug"] in slugs and p["type"] != "source"]
