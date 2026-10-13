@@ -93,11 +93,23 @@ FIN_ANALYSIS_BLOCK = """
 DISTILL_PROMPT = """判断这次问答是否产生了值得沉淀进知识库的新知识：跨页面综合得出、任何单个页面都没有明确写出的结论才算新知识，单页已有内容的复述不算。
 
 只输出 JSON：
-{"new_knowledge": true 或 false, "topic": "主题名（中文，新知识为 true 时给）", "type": "concept|company|industry", "summary": "一句话摘要", "lines": ["可沉淀的结论句，句尾锚点只能原样复用答案中已出现的锚点"]}
-lines 规则：答案中属财报分析判断的行以【观点】前缀开头（格式：【观点】报告期 判断句，报告期如 2025FY），普通事实结论不加前缀。
+{"new_knowledge": true 或 false, "topic": "主题名（中文，新知识为 true 时给）", "type": "concept|company|industry", "summary": "一句话摘要", "lines": ["可沉淀的结论句"]}
+lines 规则：
+- 每行句尾必须带至少一个锚点，格式 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]]，只能原样复用答案中已出现的锚点，禁止新造；判断句综合多个数据、无法精确对应单个数据点时，挂到支撑该判断最核心的数据所在锚点
+- 答案中属财报分析判断的行以【观点】前缀开头（格式：【观点】报告期 判断句，报告期如 2025FY），普通事实结论不加前缀
 
 问题：{Q}
 答案：{A}"""
+
+# 倒金字塔呈现下，答案顶部的综合判断行常不带锚点（锚点只在展开盘点里），沉淀行照抄就会缺锚点；
+# 此时把答案中出现过的合法锚点清单交回模型补挂一轮，句子本身不改
+ANCHOR_REPAIR_PROMPT = """下面这些结论句要沉淀进知识库，但句尾缺少溯源锚点。给每行句尾补上锚点，只能从清单中原样选用，禁止新造；每行至少一个，可给多个支撑该判断的锚点，判断综合多个数据时挂最核心数据的锚点。句子本身一字不改，只补锚点。只输出 JSON：{"lines": ["补好锚点后的原句", ...]}
+
+可用锚点清单（原样选用）：
+{ANCHORS}
+
+结论句：
+{LINES}"""
 
 RAW_SUGGEST_PROMPT = """用户在投研知识库里提问，但知识库页面无法回答。下面是 raw 原始资料库的文件清单（每行：文件名 | 相对路径 | 已摄入页的一句话摘要或「未摄入」）：
 {FILES}
@@ -456,6 +468,28 @@ def ask(question, history=None, propose=True):
     return result
 
 
+def _anchor_ok_lines(lines, valid_anchors):
+    # 行内至少一个锚点且全部来自答案出现过的锚点集
+    return [ln for ln in lines
+            if wiki.ANCHOR_RE.findall(ln) and set(wiki.ANCHOR_RE.findall(ln)) <= valid_anchors]
+
+
+def _repair_anchors(lines, valid_anchors):
+    """按答案锚点清单补挂一轮锚点，返回修复后的行（是否合格仍由过滤器把关）。"""
+    anchor_list = "、".join(f"[[{f}#{loc}]]" for f, loc in sorted(valid_anchors))
+    try:
+        out = llm.chat(
+            [{"role": "user", "content": ANCHOR_REPAIR_PROMPT
+              .replace("{ANCHORS}", anchor_list)
+              .replace("{LINES}", "\n".join(lines))}],
+            task="audit",
+            response_json=True,
+        )
+    except llm.LLMError:
+        return []
+    return [str(x).strip() for x in (out.get("lines") or []) if str(x).strip()]
+
+
 def _propose_distill(question, answer):
     """判定并构造沉淀提案，只算不写盘。"""
     try:
@@ -468,9 +502,11 @@ def _propose_distill(question, answer):
         return None
     if not out.get("new_knowledge"):
         return None
-    lines = [str(x).strip() for x in (out.get("lines") or []) if str(x).strip()]
+    raw_lines = [str(x).strip() for x in (out.get("lines") or []) if str(x).strip()]
     valid_anchors = set(wiki.ANCHOR_RE.findall(answer))
-    lines = [ln for ln in lines if wiki.ANCHOR_RE.findall(ln) and set(wiki.ANCHOR_RE.findall(ln)) <= valid_anchors]
+    lines = _anchor_ok_lines(raw_lines, valid_anchors)
+    if not lines and raw_lines and valid_anchors:
+        lines = _anchor_ok_lines(_repair_anchors(raw_lines, valid_anchors), valid_anchors)
     if not lines:
         return None
     ptype = out.get("type") if out.get("type") in ("company", "industry", "concept") else "concept"
