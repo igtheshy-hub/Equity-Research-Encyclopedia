@@ -6,7 +6,8 @@ from .pdf_extract import extract_to_store, load_cached, raw_file_index
 
 REFUSAL = "知识库中未找到与该问题相关的页面，无法回答。"
 
-# GLM 关闭思考后偶发在正文里混入一串无空格 ASCII 乱码（实测一例：<<+?"98?).CF"3-!#%1>'=)%@&）。
+# 历史补丁：GLM 关闭思考后偶发在正文里混入一串无空格 ASCII 乱码（实测一例：<<+?"98?).CF"3-!#%1>'=)%@&）。
+# 换用其他模型后此问题未复现，但剔除逻辑代价极低，保留作保险。
 # 按特征剔除：连续>=8个可打印 ASCII 且不含空格、非字母数字占比>=0.4、含>=2个正文罕见符号。
 # 锚点（#p11 只含1个罕见符号）、markdown 表格线（|-不在罕见集）不受影响。
 _GLITCH_RARE = set("<>=?!#%&@~^$\\")
@@ -56,7 +57,9 @@ ANSWER_PROMPT = """你是投研知识库的问答员，只能用给定页面内�
 {PAGES}
 --- 页面内容结束 ---
 
-用户问题：{Q}"""
+用户问题：{Q}
+
+输出前自检：正文每个含数据的句子句尾是否都带了 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]] 锚点？锚点只能取自上方页面里出现过的来源文件。倒金字塔第一屏的判断句同样要带锚点，不能只写「（依据：…）」而不挂锚点。有缺的补上再输出。"""
 
 # 索引直答：问题针对知识库整体时用，索引无页码故不允许锚点
 INDEX_ANSWER_PROMPT = """你是投研知识库的问答员，用户问的是知识库自身的整体情况（覆盖范围、内容构成、页面数量等）或跨页总览，只能用给定的知识库总索引回答（每行：slug | 类型 | 别名 | 摘要）。
@@ -176,8 +179,10 @@ def _violations(answer, allowed):
             bad.append(f"锚点 {f}#{loc} 单元类型不对（应为{'段落' if unit_kind == 'para' else '页'}）")
         elif not 1 <= wiki.loc_num(loc) <= count:
             bad.append(f"锚点 {f}#{loc} 序号超出范围")
-    if "知识库中没有" in answer and wiki.ANCHOR_RE.search(answer):
-        bad.append("答案既称知识库中没有又带锚点，口径混乱")
+    # 长提示词下模型偶发整篇漏挂锚点（实测同一提示词时而 0 个时而 41 个），此处补一道存在性检查触发既有重试。
+    # 只在有锚点可用、且答案确实含数据陈述时判违规，纯说明类与「知识库中没有」类短答不误伤。
+    if allowed and not wiki.ANCHOR_RE.search(answer) and len(re.findall(r"\d+(?:\.\d+)?", answer)) >= 3:
+        bad.append("全文没有任何锚点，含数据的陈述句句尾必须带锚点")
     return bad
 
 
