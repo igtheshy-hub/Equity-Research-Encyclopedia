@@ -7,6 +7,11 @@
   <p class="tagline">把研报读薄，把出处留住</p>
   <form id="home-ask" class="ask-box">
     <input id="home-q" type="text" placeholder="输入您的问题或要求" autocomplete="off">
+    <select id="model-select" class="model-select" title="选择回答用的大模型" aria-label="选择回答用的大模型">
+      {% for m in MODEL_CHOICES %}
+      <option value="{{ m.id }}"{% if m.id == DEFAULT_MODEL %} selected{% endif %}>{{ m.label }}</option>
+      {% endfor %}
+    </select>
     <button type="submit" class="primary">提问</button>
   </form>
 </section>

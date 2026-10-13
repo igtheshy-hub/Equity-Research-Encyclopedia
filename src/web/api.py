@@ -30,7 +30,22 @@ def _msg_out(m):
 
 # ---------- 问答 ----------
 
-def _run_ask(cid, mid, question, history):
+def _model_arg(data):
+    """请求里带的模型 id，返回 (模型 id 或 None, 错误响应)。空 = 用 config.json 的默认模型。"""
+    name = str(data.get("model") or "").strip()
+    if not name or name == config.DEFAULT_MODEL:
+        return None, None
+    if name not in config.MODEL_PROFILES:
+        return None, (jsonify({"error": f"未知模型：{name}"}), 400)
+    return name, None
+
+
+def _run_ask(cid, mid, question, history, model):
+    with llm.use_model(model):
+        return _ask_body(cid, mid, question, history, model)
+
+
+def _ask_body(cid, mid, question, history, model):
     try:
         result = ask_mod.ask(question, history=history, propose=True)
     except Exception as e:
@@ -41,7 +56,8 @@ def _run_ask(cid, mid, question, history):
         domain = result.get("domain") or "general"
 
         def _report_run(t):
-            p = report_mod.generate(title, question, task_id=t, domain=domain)
+            with llm.use_model(model):
+                p = report_mod.generate(title, question, task_id=t, domain=domain)
             return {"file": p.name}
         rid = tasks.start("report", _report_run, label=f"报告《{title}》")
         sessions.update_message(cid, mid, status="done", kind="report_ack",
@@ -49,7 +65,8 @@ def _run_ask(cid, mid, question, history):
         return {"kind": "report", "report_task": rid}
     fields = dict(status="done", kind=result["kind"], content=result["answer_md"],
                   selected=result["step1"]["selected"], reason=result["step1"]["reason"],
-                  validation=result["validation"], proposal=result.get("proposal"))
+                  validation=result["validation"], proposal=result.get("proposal"),
+                  model=llm.active_model())
     if result["kind"] == "referral":
         fields["candidates"] = result.get("candidates") or []
     if result.get("deep"):
@@ -58,15 +75,17 @@ def _run_ask(cid, mid, question, history):
     return {"kind": result["kind"]}
 
 
-def _run_deep(cid, mid, question, files, history):
-    try:
-        result = ask_mod.deep_ask(question, history=history, files=files)
-    except Exception as e:
-        sessions.update_message(cid, mid, status="error", kind="error", content=f"深查失败：{e}")
-        raise
-    sessions.update_message(cid, mid, status="done", kind="answer", deep=True,
-                            content=result["answer_md"], selected=[], reason=result["step1"]["reason"],
-                            validation=result["validation"], proposal=result.get("proposal"))
+def _run_deep(cid, mid, question, files, history, model):
+    with llm.use_model(model):
+        try:
+            result = ask_mod.deep_ask(question, history=history, files=files)
+        except Exception as e:
+            sessions.update_message(cid, mid, status="error", kind="error", content=f"深查失败：{e}")
+            raise
+        sessions.update_message(cid, mid, status="done", kind="answer", deep=True,
+                                content=result["answer_md"], selected=[], reason=result["step1"]["reason"],
+                                validation=result["validation"], proposal=result.get("proposal"),
+                                model=llm.active_model())
     return {"kind": "answer", "deep": True}
 
 
@@ -76,17 +95,23 @@ def api_ask():
     question = str(data.get("question") or "").strip()
     if not question:
         return jsonify({"error": "问题不能为空"}), 400
+    model, err = _model_arg(data)
+    if err:
+        return err
     conv = sessions.get(data.get("conv_id") or "") or sessions.create()
     sessions.append_message(conv["id"], {"role": "user", "content": question})
     history = sessions.history_for_ask(conv["id"], config.CFG["ask"].get("history_turns", 4))
     ph = sessions.append_message(conv["id"], {"role": "assistant", "content": "", "status": "running", "kind": "pending"})
-    tid = tasks.start("ask", lambda t: _run_ask(conv["id"], ph["id"], question, history))
+    tid = tasks.start("ask", lambda t: _run_ask(conv["id"], ph["id"], question, history, model))
     return jsonify({"conv_id": conv["id"], "msg_id": ph["id"], "task_id": tid})
 
 
 @api.post("/api/deep")
 def api_deep():
     data = request.get_json(force=True, silent=True) or {}
+    model, err = _model_arg(data)
+    if err:
+        return err
     conv = sessions.get(data.get("conv_id") or "")
     msg = next((m for m in (conv or {}).get("messages", []) if m["id"] == data.get("msg_id")), None)
     if not conv or not msg:
@@ -96,7 +121,7 @@ def api_deep():
     files = data.get("files") or None
     history = sessions.history_for_ask(conv["id"], config.CFG["ask"].get("history_turns", 4))
     ph = sessions.append_message(conv["id"], {"role": "assistant", "content": "", "status": "running", "kind": "pending"})
-    tid = tasks.start("ask", lambda t: _run_deep(conv["id"], ph["id"], question, files, history))
+    tid = tasks.start("ask", lambda t: _run_deep(conv["id"], ph["id"], question, files, history, model))
     return jsonify({"conv_id": conv["id"], "msg_id": ph["id"], "task_id": tid})
 
 

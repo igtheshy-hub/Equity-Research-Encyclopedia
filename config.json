@@ -1,10 +1,24 @@
 {
   "llm": {
-    "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-    "model": "glm-4.6",
-    "read_timeout_s": 180,
+    "default": "glm-5.1",
+    "max_tokens": 16384,
+    "read_timeout_s": 300,
     "max_retries": 3,
-    "disable_thinking": true
+    "extra_body": {"thinking": {"type": "disabled"}},
+    "models": {
+      "glm-5.1": {
+        "label": "GLM-5.1",
+        "provider": "智谱",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        "model": "glm-5.1"
+      },
+      "deepseek-v4.1-flash": {
+        "label": "DeepSeek-V4.1-Flash",
+        "provider": "火山方舟",
+        "base_url": "https://ark.cn-beijing.volces.com/api/plan/v1/messages",
+        "model": "deepseek-v4.1-flash"
+      }
+    }
   },
   "temperature": {
     "select": 0.0,

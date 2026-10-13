@@ -19,27 +19,38 @@ def cmd_selftest(args):
             ok = False
             print(f"  [缺] {mod}: {e}")
     print("== 配置检查 ==")
-    if config.ZHIPU_API_KEY:
-        print("  [好] 已从 .env 读到 ZHIPU_API_KEY")
+    if config.LLM_API_KEY:
+        prof = config.model_profile()
+        print(f"  [好] 已从 .env 读到 {config.LLM_API_KEY_ENV}，默认模型 {prof['model']}（{prof['base_url'].split('/')[2]}）")
     else:
         ok = False
-        print("  [缺] ZHIPU_API_KEY 为空：复制 .env.example 为 .env 并填入智谱 API Key（https://open.bigmodel.cn）")
+        print(f"  [缺] {config.LLM_API_KEY_ENV} 为空：复制 .env.example 为 .env 并填入模型服务商的 API Key")
     config.ensure_dirs()
     print("  [好] 目录结构就绪")
     if not ok:
         print("\nselftest 未通过（见上），修好后重跑。")
         return 1
-    print("== GLM 连通性 ==")
+    print("== 模型连通性 ==")
     from src import llm
-    t0 = time.monotonic()
-    try:
-        reply = llm.chat([{"role": "user", "content": "请只回复两个字：正常"}], task="select")
-    except llm.LLMError as e:
-        print(f"  [败] {e}")
-        print("  若为模型名问题，改 config.json 的 llm.model 后重试。")
+    bad_models = []
+    for pid in config.MODEL_PROFILES:
+        p = config.model_profile(pid)
+        if not p["key"]:
+            print(f"  [缺] {p['label']}（{pid}）：.env 里没读到 {p['key_env']}")
+            bad_models.append(pid)
+            continue
+        t0 = time.monotonic()
+        try:
+            reply = llm.chat([{"role": "user", "content": "请只回复两个字：正常"}], task="select", model=pid)
+        except llm.LLMError as e:
+            print(f"  [败] {p['label']}（{pid}）：{e}")
+            print(f"  报 401/403：.env 的 {p['key_env']} 与 config.json 里该模型的 base_url 不是同一家服务商。")
+            bad_models.append(pid)
+            continue
+        print(f"  [好] {p['label']}（{pid}）响应 {time.monotonic() - t0:.1f}s：{reply.strip()[:30]}")
+    if config.DEFAULT_MODEL in bad_models:
+        print(f"\n默认模型 {config.DEFAULT_MODEL} 不通，selftest 未通过。改 config.json 的 llm.default 或修好上面的 key。")
         return 1
-    dt = time.monotonic() - t0
-    print(f"  [好] {config.CFG['llm']['model']} 响应 {dt:.1f}s：{reply.strip()[:30]}")
     print("== 库外问答检查 ==")
     from src import ask as ask_mod
     r = ask_mod.ask("马斯克的火星殖民计划最新进展如何？", propose=False)
@@ -166,7 +177,7 @@ def main():
     ap = argparse.ArgumentParser(prog="manage.py", description="研报百科管理入口")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("selftest", help="体检：依赖、配置、GLM 连通")
+    p = sub.add_parser("selftest", help="体检：依赖、配置、模型连通")
     p.set_defaults(func=cmd_selftest)
 
     p = sub.add_parser("sort", help="收件台：归类 raw/inbox/ 中的新文件")

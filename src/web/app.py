@@ -22,7 +22,9 @@ def _md_filter(text):
 
 @app.context_processor
 def _inject():
-    return {"TYPE_LABELS": TYPE_LABELS}
+    return {"TYPE_LABELS": TYPE_LABELS,
+            "MODEL_CHOICES": config.model_choices(),
+            "DEFAULT_MODEL": config.DEFAULT_MODEL}
 
 
 @app.route("/")

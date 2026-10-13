@@ -3,11 +3,20 @@
 document.addEventListener("DOMContentLoaded", () => {
   const form = document.getElementById("home-ask");
   const input = document.getElementById("home-q");
+  const modelSel = document.getElementById("model-select");
+  if (modelSel) {
+    // 选择记在本地，下次打开还是它；问答页也读同一个键
+    const saved = localStorage.getItem("askModel");
+    if (saved && Array.from(modelSel.options).some((o) => o.value === saved)) modelSel.value = saved;
+    modelSel.addEventListener("change", () => localStorage.setItem("askModel", modelSel.value));
+  }
   if (form) {
     form.addEventListener("submit", (e) => {
       e.preventDefault();
       const q = (input.value || "").trim();
-      if (q) location.href = "/ask?q=" + encodeURIComponent(q);
+      if (!q) return;
+      const model = modelSel ? modelSel.value : "";
+      location.href = "/ask?q=" + encodeURIComponent(q) + "&model=" + encodeURIComponent(model);
     });
   }
 

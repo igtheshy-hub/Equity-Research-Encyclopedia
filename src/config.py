@@ -2,6 +2,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -10,9 +11,54 @@ ENV_PATH = ROOT / ".env"
 CONFIG_PATH = ROOT / "config.json"
 
 load_dotenv(ENV_PATH)
-ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "")
 
 CFG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+
+# 各服务商的 key 变量名，按 config.json 配的端点主机名自动选，多家 key 可并存于 .env。
+# 主机名不在表里、或对应变量为空时退回通用变量 LLM_API_KEY，换服务商只改 config.json 的 llm 段。
+_PROVIDER_KEY_ENV = {
+    "open.bigmodel.cn": "ZHIPU_API_KEY",           # 智谱
+    "ark.cn-beijing.volces.com": "ARK_API_KEY",    # 火山方舟
+}
+
+_LLM = CFG["llm"]
+MODEL_PROFILES = _LLM["models"]
+DEFAULT_MODEL = _LLM.get("default") or next(iter(MODEL_PROFILES))
+# 各模型可省略、从 llm 段继承的公共参数
+_SHARED_LLM_KEYS = ("max_tokens", "read_timeout_s", "max_retries", "extra_body")
+
+
+def _resolve_api_key(base_url):
+    host = urlparse(base_url).netloc
+    names = ([_PROVIDER_KEY_ENV[host]] if host in _PROVIDER_KEY_ENV else []) + ["LLM_API_KEY"]
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return name, value
+    return names[0], ""
+
+
+def model_profile(name=None):
+    """取模型档案：并入 llm 段的公共参数，带上该端点对应的 key。name 为空用默认模型。"""
+    pid = name or DEFAULT_MODEL
+    if pid not in MODEL_PROFILES:
+        raise KeyError(f"config.json 的 llm.models 里没有模型 {pid}")
+    prof = {"id": pid, **MODEL_PROFILES[pid]}
+    for k in _SHARED_LLM_KEYS:
+        prof.setdefault(k, _LLM.get(k))
+    prof["key_env"], prof["key"] = _resolve_api_key(prof["base_url"])
+    return prof
+
+
+def model_choices():
+    """网页下拉用的模型清单，顺序同 config.json。"""
+    return [{"id": pid, "label": p.get("label") or pid, "provider": p.get("provider") or ""}
+            for pid, p in MODEL_PROFILES.items()]
+
+
+# 默认模型的 key，selftest 等单模型场景直接取用
+_DEFAULT_PROFILE = model_profile()
+LLM_API_KEY_ENV, LLM_API_KEY = _DEFAULT_PROFILE["key_env"], _DEFAULT_PROFILE["key"]
 
 RAW_DIR = ROOT / "raw"
 INBOX_DIR = RAW_DIR / "inbox"

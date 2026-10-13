@@ -1,5 +1,10 @@
 /* 问答页：聊天气泡流、独立轮询、进一步查询、提取、双栏分屏 */
 
+/* 当前选用的大模型（首页下拉选的，存在本地）；空串 = 用 config.json 的默认模型 */
+function askModel() {
+  return localStorage.getItem("askModel") || "";
+}
+
 const PANE_HTML = `
   <div class="pane-head">
     <select class="conv-select" title="切换会话"></select>
@@ -79,7 +84,7 @@ function makePane(el) {
       pane.$send.disabled = true;
       fetch("/api/ask", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q, conv_id: convId }),
+        body: JSON.stringify({ question: q, conv_id: convId, model: askModel() }),
       })
         .then((r) => r.json())
         .then((d) => {
@@ -161,6 +166,7 @@ function renderMsg(m) {
 function renderAnswer(m) {
   const bits = [];
   if (m.deep) bits.push(`<span class="tag deep">原文深查</span>`);
+  if (m.model) bits.push(`<span class="meta-bit">模型：${App.escapeHtml(m.model)}</span>`);
   if (m.selected && m.selected.length) {
     bits.push(`<span class="meta-bit">参考页面：${App.escapeHtml(m.selected.join("、"))}${m.reason ? "（" + App.escapeHtml(m.reason) + "）" : ""}</span>`);
   }
@@ -201,7 +207,7 @@ document.addEventListener("click", (e) => {
   const mid = btn.dataset.mid;
   const convId = panes.find((p) => p.el === paneEl).convId;
   const checked = msgsEl ? Array.from(msgsEl.querySelectorAll(".cand input:checked")).map((c) => c.value) : [];
-  const body = { conv_id: convId, msg_id: mid };
+  const body = { conv_id: convId, msg_id: mid, model: askModel() };
   if (checked.length) body.files = checked;
   btn.disabled = true;
   btn.textContent = "正在深查 raw 原文，约半分钟…";
@@ -281,8 +287,11 @@ document.addEventListener("DOMContentLoaded", () => {
   panes[0].loadConvs();
   if (localStorage.getItem("askSplit") === "1") setSplit(true, true);
 
-  /* 首页跳转带 ?q= 时：新会话自动开问 */
-  const q = new URLSearchParams(location.search).get("q");
+  /* 首页跳转带 ?q= 时：新会话自动开问（带上首页选的模型） */
+  const params = new URLSearchParams(location.search);
+  const model = params.get("model");
+  if (model) localStorage.setItem("askModel", model);
+  const q = params.get("q");
   if (q) {
     history.replaceState(null, "", "/ask");
     const p0 = panes[0];
