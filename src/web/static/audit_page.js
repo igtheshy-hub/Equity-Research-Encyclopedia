@@ -2,9 +2,15 @@
 
 let lastAuditTid = null;
 
+function setLastTime(text) {
+  const el = document.getElementById("last-audit-time");
+  if (el) el.textContent = "上次审校时间：" + text;
+}
+
 function loadLatest() {
   fetch("/api/audit/latest").then((r) => r.json()).then((d) => {
-    if (d.error) return;
+    if (d.error) { setLastTime("暂无"); return; }
+    setLastTime(d.ts_pretty || "未知");
     renderSummary(d);
     window.__latestAudit = d;
   }).catch(() => {});

@@ -21,6 +21,7 @@ KIND_LABELS = {
     "audit": "审校",
     "fix": "修复",
     "report": "报告",
+    "delete": "删除原文件",
 }
 
 

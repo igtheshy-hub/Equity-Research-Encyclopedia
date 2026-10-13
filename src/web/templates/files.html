@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}原文件 · 行业知识库{% endblock %}
+{% block page %}files{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>原文件</h1>
+  <span class="muted">共 {{ rows | length }} 份</span>
+  <span class="spacer"></span>
+  <button class="primary" id="files-delete" disabled>删除所选</button>
+</div>
+<p class="muted">这里列出已经改名入库的材料，点文件名在新标签页打开原件（PDF 定位到页，Word 按段落）。删除会一并清掉这份材料带来的知识条目、来源页、提取缓存与财报结构化数据；被清空的页面整页移除，操作不可撤销。</p>
+<div id="files-progress" class="task-area"></div>
+{% if rows %}
+<div class="table-card">
+<table>
+  <thead><tr>
+    <th class="num col-check"><input type="checkbox" id="files-check-all" title="全选"></th>
+    <th>文件</th><th>类型</th><th>报告日期</th>
+    <th class="num">知识条目</th><th class="num">被引用</th><th>摄入时间</th><th></th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr class="row" data-name="{{ r.name }}">
+      <td class="num"><input type="checkbox" class="files-check" value="{{ r.name }}" aria-label="选中 {{ r.name }}"></td>
+      <td>
+        {% if r.missing %}
+        <span class="files-name">{{ r.name }}</span>
+        <div class="muted">原文件已不在 raw/ 中，只剩清单与知识条目残留</div>
+        {% else %}
+        <a href="/viewer?file={{ r.name | urlencode }}" target="_blank" rel="noopener">{{ r.name }}</a>
+        <div class="muted">{{ r.path }}</div>
+        {% endif %}
+      </td>
+      <td>{{ r.kind_label }}</td>
+      <td>{{ r.report_date or '—' }}</td>
+      <td class="num">{{ r.entries_count or '—' }}</td>
+      <td class="num">{{ r.statements }}</td>
+      <td>{{ r.ingested_at.replace('T', ' ') if r.ingested_at else '—' }}</td>
+      <td><button class="ghost sm files-del-one" data-name="{{ r.name }}">删除</button></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">（还没有入库的原文件，回首页拖文件进来即可）</p>
+{% endif %}
+
+<script id="files-data" type="application/json">{{ rows | tojson }}</script>
+
+<div class="modal-backdrop" id="del-modal" hidden>
+  <div class="modal modal-wide">
+    <div class="modal-head">
+      <b>确认删除</b>
+      <button class="icon-btn" data-close="del-modal" title="关闭">✕</button>
+    </div>
+    <p class="modal-note muted">下面这些原文件以及它们带来的知识会一并从知识库里删掉，删完无法恢复。</p>
+    <div class="modal-body" id="del-body"></div>
+    <div class="modal-foot">
+      <button class="ghost" data-close="del-modal">取消</button>
+      <button class="danger" id="del-confirm">确认删除</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='files_page.js') }}" defer></script>{% endblock %}

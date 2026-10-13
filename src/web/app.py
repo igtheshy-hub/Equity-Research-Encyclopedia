@@ -3,7 +3,7 @@ import re
 from flask import (Flask, abort, redirect, render_template, request,
                    send_file, url_for)
 
-from .. import config, wiki
+from .. import config, purge, wiki
 from ..docx_html import docx_to_html
 from ..pdf_extract import raw_file_index
 from .api import api
@@ -86,6 +86,11 @@ def viewer():
         abort(404)
     is_docx = name.lower().endswith(".docx")
     return render_template("viewer.html", file=name, loc=loc, hl=hl, is_docx=is_docx)
+
+
+@app.route("/files")
+def files_page():
+    return render_template("files.html", rows=purge.file_entries())
 
 
 @app.route("/find/<path:target>")

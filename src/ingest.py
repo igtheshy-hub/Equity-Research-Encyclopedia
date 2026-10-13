@@ -1,10 +1,14 @@
 import json
 import re
+import threading
 from pathlib import Path
 
 from . import config, llm, wiki
 from .classify import sha256_of, sanitize
 from .pdf_extract import SUPPORTED_SUFFIXES, extract_to_store, unit_kind_of
+
+# 清单落盘的串行锁：摄入线只追加条目、删除线只删条目，两条线都在锁内 load-modify-save，互不覆盖
+MANIFEST_LOCK = threading.RLock()
 
 COMPILE_PROMPT = """你是投研知识编辑，把一份材料的逐单元文本编译成 wiki 知识条目。单元{UNIT_WORD}，每单元文字前有形如「[第3页]」「[第3段]」的序号标记；锚点格式 {ANCHOR_FORM}，序号必须取该内容所在单元的实际序号。
 
@@ -72,8 +76,22 @@ def load_manifest():
 
 
 def save_manifest(m):
-    config.MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    config.MANIFEST_PATH.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+    with MANIFEST_LOCK:
+        config.MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        config.MANIFEST_PATH.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def append_manifest(entries):
+    """只把新条目追加进盘上的清单，不整份覆盖：并发的删除改动不会被冲掉。"""
+    if not entries:
+        return
+    with MANIFEST_LOCK:
+        m = load_manifest()
+        have = {(f["file"], f["sha256"]) for f in m["files"]}
+        for e in entries:
+            if (e["file"], e["sha256"]) not in have:
+                m["files"].append(e)
+        save_manifest(m)
 
 
 def _norm(s):

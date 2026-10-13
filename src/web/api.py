@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from pathlib import Path
 from queue import Queue
 
@@ -8,6 +9,7 @@ from .. import ask as ask_mod
 from .. import audit as audit_mod
 from .. import config, llm, wiki
 from .. import fix as fix_mod
+from .. import purge as purge_mod
 from .. import report as report_mod
 from .. import sessions, tasks
 from .. import ingest as ingest_mod
@@ -255,7 +257,6 @@ def _pipeline(names):
         return results
 
     def ingest_line(tid):
-        manifest = ingest_mod.load_manifest()
         results = []
         done = 0
         while True:
@@ -264,6 +265,8 @@ def _pipeline(names):
                 break
             done += 1
             tasks.update(tid, current=done - 1, detail=f"第 {done} 份：{target.name} 正在摄入知识点")
+            manifest = ingest_mod.load_manifest()
+            before = {f["sha256"] for f in manifest["files"]}
             try:
                 r = ingest_mod.ingest_one(target, manifest)
             except Exception as e:
@@ -271,10 +274,11 @@ def _pipeline(names):
                 r = {"file": target.name, "error": str(e)}
             if r:
                 results.append(r)
-            ingest_mod.save_manifest(manifest)  # 逐份落盘，中途失败不丢已完成的部分
+            # 逐份落盘，且只追加本轮新增的条目：删除线并发删掉的条目不会被这份旧清单冲回来
+            ingest_mod.append_manifest([f for f in manifest["files"] if f["sha256"] not in before])
             tasks.update(tid, current=done)
         tasks.update(tid, current=len(names), detail="")
-        ingest_mod.finish(manifest, [r for r in results if "error" not in r])
+        ingest_mod.finish(ingest_mod.load_manifest(), [r for r in results if "error" not in r])
         return results
 
     return classify_line, ingest_line
@@ -305,6 +309,24 @@ def api_upload():
     return jsonify({"task_id": tid, "saved": saved, "rejected": rejected})
 
 
+# ---------- 原文件 ----------
+
+@api.get("/api/files")
+def api_files():
+    return jsonify({"items": purge_mod.file_entries()})
+
+
+@api.post("/api/files/delete")
+def api_files_delete():
+    data = request.get_json(force=True, silent=True) or {}
+    names = [str(n).strip() for n in (data.get("files") or []) if str(n).strip()]
+    if not names:
+        return jsonify({"error": "没有选中要删除的文件"}), 400
+    tid = tasks.start("delete", lambda t: purge_mod.purge_files(names, task_id=t),
+                      total=len(names), label=f"删除 {len(names)} 份原文件")
+    return jsonify({"task_id": tid})
+
+
 # ---------- 审校与修复 ----------
 
 @api.post("/api/audit/run")
@@ -316,12 +338,21 @@ def api_audit_run():
     return jsonify({"task_id": tid})
 
 
+def _ts_pretty(ts):
+    """审校文件名里的时间戳 20261013-222015 → 2026-10-13 22:20。"""
+    try:
+        return datetime.strptime(str(ts), "%Y%m%d-%H%M%S").strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return ""
+
+
 @api.get("/api/audit/latest")
 def api_audit_latest():
     files = sorted(config.DATA_DIR.glob("audit-*.json"))
     if not files:
         return jsonify({"error": "还没有审校结果"}), 404
     data = json.loads(files[-1].read_text(encoding="utf-8"))
+    data["ts_pretty"] = _ts_pretty(data.get("ts"))
     data["pages"] = [{
         "slug": p["slug"], "type": p["type"],
         "title": str(p["meta"].get("title") or p["slug"]),

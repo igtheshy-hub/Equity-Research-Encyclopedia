@@ -86,6 +86,19 @@ App.doneText = function (t) {
       if (bad.length) parts.push("摄入失败：" + bad.map((x) => `${x.file}（${x.error}）`).join("、"));
       return parts.join("；");
     }
+    if (t.kind === "delete" && Array.isArray(r)) {
+      const ok = r.filter((x) => !x.error);
+      const bad = r.filter((x) => x.error);
+      const parts = [];
+      if (ok.length) {
+        parts.push("已删除：" + ok.map((x) => {
+          const pages = (x.pages_deleted || []).length ? `，移除页面 ${x.pages_deleted.join("、")}` : "";
+          return `${x.file}（-${x.statements} 条${pages}）`;
+        }).join("、"));
+      }
+      if (bad.length) parts.push("失败：" + bad.map((x) => `${x.file}（${x.error}）`).join("、"));
+      return parts.join("；");
+    }
     if (t.kind === "report" && r && r.file) {
       return `报告已生成：<a href="/outputs/${encodeURIComponent(r.file)}" target="_blank" rel="noopener">${App.escapeHtml(r.file)}</a>`;
     }
