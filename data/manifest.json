@@ -41,6 +41,27 @@
     "比亚迪"
    ],
    "entries_count": 175
+  },
+  {
+   "file": "东吴证券_整车研报_20260921.pdf",
+   "path": "raw/reports/汽车/东吴证券_整车研报_20260921.pdf",
+   "sha256": "1b83dc468caba79966381138618b77d651058aee77de1f97444bd3f788742b36",
+   "unit": "page",
+   "count": 20,
+   "report_date": "2026-09-21",
+   "source_type": "report",
+   "ingested_at": "2026-10-13T22:47:55",
+   "topics_touched": [
+    "中国乘用车市场",
+    "重卡行业",
+    "客车行业",
+    "摩托车行业",
+    "广汽集团",
+    "赛力斯",
+    "整车上游原材料",
+    "汇率波动"
+   ],
+   "entries_count": 41
   }
  ]
 }
