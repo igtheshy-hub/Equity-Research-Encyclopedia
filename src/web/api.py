@@ -230,9 +230,10 @@ def api_distill_apply():
 
 # ---------- 上传与摄入链 ----------
 
-def _pipeline(names):
+def _pipeline(names, focus=None):
     """取名线与摄入线并行：取名线每入库一份就把路径塞进队列，摄入线同时取走摄入，两条线互不等待。"""
     queue = Queue()
+    focus = focus or []
 
     def classify_line(tid):
         results = []
@@ -268,7 +269,7 @@ def _pipeline(names):
             manifest = ingest_mod.load_manifest()
             before = {f["sha256"] for f in manifest["files"]}
             try:
-                r = ingest_mod.ingest_one(target, manifest)
+                r = ingest_mod.ingest_one(target, manifest, focus=focus)
             except Exception as e:
                 print(f"  摄入失败: {e}")
                 r = {"file": target.name, "error": str(e)}
@@ -289,6 +290,17 @@ def api_upload():
     files = request.files.getlist("files")
     if not files:
         return jsonify({"error": "没有收到文件"}), 400
+
+    # 关注点（可选）：前端勾选「按关注点优先提炼」才带
+    focus = []
+    if request.form.get("use_focus"):
+        try:
+            parsed = json.loads(request.form.get("focus") or "[]")
+            if isinstance(parsed, list):
+                focus = [str(x).strip() for x in parsed if str(x).strip()]
+        except (ValueError, TypeError):
+            focus = []
+
     config.INBOX_DIR.mkdir(parents=True, exist_ok=True)
     saved, rejected = [], []
     for f in files:
@@ -303,10 +315,10 @@ def api_upload():
         saved.append(dest.name)
     if not saved:
         return jsonify({"error": "只接受 PDF 与 Word(.docx) 文件", "rejected": rejected}), 400
-    classify_line, ingest_line = _pipeline(saved)
+    classify_line, ingest_line = _pipeline(saved, focus)
     tid = tasks.start("classify", classify_line, total=len(saved), label=f"取名入库 {len(saved)} 份")
     tasks.start("ingest", ingest_line, total=len(saved), label=f"摄入 {len(saved)} 份")
-    return jsonify({"task_id": tid, "saved": saved, "rejected": rejected})
+    return jsonify({"task_id": tid, "saved": saved, "rejected": rejected, "focus": focus})
 
 
 # ---------- 原文件 ----------

@@ -120,6 +120,40 @@ def outputs_page():
     return render_template("outputs.html", reports=reports)
 
 
+@app.route("/export", methods=["GET", "POST"])
+def export_page():
+    """Excel 导出：财报科目 / 派生指标 / 知识条目 / 来源汇总。
+
+    GET  渲染勾选表单
+    POST 按勾选生成 xlsx 并作为附件下载
+    """
+    import io as _io
+
+    from ..excel_export import available_companies, build_workbook
+
+    companies, periods = available_companies()
+
+    if request.method == "POST":
+        data = build_workbook(
+            sheets=request.form.getlist("sheets") or ["items", "indicators", "entries", "sources"],
+            types=request.form.getlist("types") or ["company", "industry", "concept"],
+            keyword=request.form.get("keyword", "").strip(),
+            date_from=request.form.get("date_from", "").strip(),
+            date_to=request.form.get("date_to", "").strip(),
+            companies=request.form.getlist("companies") or None,
+            periods=request.form.getlist("periods") or None,
+        )
+        fname = f"wiki_export_{config.today_str().replace('-', '')}.xlsx"
+        return send_file(
+            _io.BytesIO(data),
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name=fname,
+        )
+
+    return render_template("export.html", companies=companies, periods=periods)
+
+
 @app.route("/outputs/<name>")
 def show_output(name):
     if "/" in name or "\\" in name or ".." in name:
