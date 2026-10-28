@@ -23,6 +23,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const dz = document.getElementById("dropzone");
   const fileInput = document.getElementById("file-input");
   const hint = document.getElementById("upload-hint");
+  const focusInput = document.getElementById("focus-input");
+  const focusEnabled = document.getElementById("focus-enabled");
   if (!dz || !fileInput) return;
 
   const send = (fileList) => {
@@ -40,6 +42,17 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!ok.length) return;
     const fd = new FormData();
     ok.forEach((f) => fd.append("files", f));
+
+    // 关注点：填了内容且勾了开关才带上
+    const focusText = (focusInput && focusInput.value || "").trim();
+    if (focusText && focusEnabled && focusEnabled.checked) {
+      const lines = focusText.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      if (lines.length) {
+        fd.append("focus", JSON.stringify(lines));
+        fd.append("use_focus", "1");
+      }
+    }
+
     hint.textContent = `已接收 ${ok.length} 份，正在开始处理…`;
     fetch("/api/upload", { method: "POST", body: fd })
       .then((r) => r.json().then((d) => ({ status: r.status, body: d })))

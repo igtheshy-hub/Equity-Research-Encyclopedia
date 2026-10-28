@@ -21,7 +21,7 @@ COMPILE_PROMPT = """你是投研知识编辑，把一份材料的逐单元文本
 - 主题名与别名用中文规范名（英文材料也译成中文通用名；证券代码等专有缩写可保留英文）
 - 分节只能用这些节名——公司/行业页：公司概况、行业格局、经营与财务、盈利预测、估值、风险提示、其他；概念页：定义与口径、方法要点、政策背景、应用示例、其他
 - 每个主题给一句不超过 40 字的 summary
-
+{FOCUS_RULE}
 只输出 JSON，不要解释：
 {
   "report_date": "材料中的报告日期 YYYY-MM-DD，识别不出给空字符串",
@@ -31,7 +31,8 @@ COMPILE_PROMPT = """你是投研知识编辑，把一份材料的逐单元文本
       "type": "company|industry|concept",
       "aliases": ["别名或代码，没有给空数组"],
       "summary": "一句话摘要",
-      "sections": {"经营与财务": ["某条知识句尾带锚点{ANCHOR_EXAMPLE}", "..."]}
+      "sections": {"经营与财务": ["某条知识句尾带锚点{ANCHOR_EXAMPLE}", "..."]},
+      "focus_hits": ["命中关注点的条目原文片段，没有给空数组"]
     }
   ]
 }
@@ -129,14 +130,27 @@ def _unit_words(unit_kind):
     return {"UNIT_WORD": "为页", "ANCHOR_FORM": "[[文件名.pdf#p页码]]", "ANCHOR_EXAMPLE": "[[{FILE}#p1]]"}
 
 
-def compile_file(path, units, unit_kind):
+FOCUS_RULE_TEMPLATE = """- 本次重点关注（用户自定义，命中这些主题的条目优先保留，并列进 focus_hits）：
+{focus_lines}
+  与关注点无关的内容仍正常提炼；focus_hits 只放明确命中关注点的条目原文片段"""
+
+
+def _focus_rule(focus):
+    """按关注点生成 prompt 注入段；无关注点时返回空串（该行在 prompt 里自然消失）。"""
+    items = [str(x).strip() for x in (focus or []) if str(x).strip()]
+    if not items:
+        return ""
+    return FOCUS_RULE_TEMPLATE.replace("{focus_lines}", "\n".join(f"  · {x}" for x in items))
+
+
+def compile_file(path, units, unit_kind, focus=None):
     fname = path.name
     chunk_size = config.CFG["ingest"]["compile_chunk_pages"]
     chunks = [units] if len(units) <= 40 else [
         units[i:i + chunk_size] for i in range(0, len(units), chunk_size)
     ]
+    prompt = COMPILE_PROMPT.replace("{FOCUS_RULE}", _focus_rule(focus))
     words = _unit_words(unit_kind)
-    prompt = COMPILE_PROMPT
     for k, v in words.items():
         prompt = prompt.replace("{" + k + "}", v)
     topics = {}
@@ -160,10 +174,12 @@ def compile_file(path, units, unit_kind):
             ex = topics.setdefault(title, {
                 "title": title, "type": _safe_type(t.get("type")),
                 "aliases": [], "summary": str(t.get("summary") or ""), "sections": {},
+                "focus_hits": [],
             })
             ex["aliases"].extend(str(a) for a in (t.get("aliases") or []) if a)
             if not ex["summary"] and t.get("summary"):
                 ex["summary"] = str(t["summary"])
+            ex["focus_hits"].extend(str(x).strip() for x in (t.get("focus_hits") or []) if str(x).strip())
             for s, lines in (t.get("sections") or {}).items():
                 s = str(s).strip() or "其他"
                 keep, dropped = _valid_lines(lines, fname, unit_kind, len(units))
@@ -316,7 +332,33 @@ def _write_source_page(path, topic_titles, report_date, entries_count, extra=Non
     wiki.write_page(out_path, meta, wiki.render_page(title, sections, "source"))
 
 
-def ingest_one(path, manifest):
+def _tag_focus_pages(touched_titles, focus, focus_hits):
+    """把关注点与命中条目写进主题页 frontmatter（页级字段，不动正文锚点）。"""
+    targets = {str(t) for t in touched_titles}
+    for p in wiki.load_pages():
+        if p["type"] == "source":
+            continue
+        title = str(p["meta"].get("title") or p["slug"])
+        if title not in targets:
+            continue
+        meta = dict(p["meta"])
+        old_focus = list(meta.get("focus") or [])
+        for f in focus:
+            if f not in old_focus:
+                old_focus.append(f)
+        meta["focus"] = old_focus
+        old_hits = list(meta.get("focus_hits") or [])
+        for h in focus_hits:
+            if h not in old_hits:
+                old_hits.append(h)
+        meta["focus_hits"] = old_hits[:50]
+        meta["updated"] = config.today_str()
+        wiki.write_page(p["path"], meta, p["body"])
+        print(f"  [关注] {title} 标注 {len(old_hits)} 条命中")
+
+
+def ingest_one(path, manifest, focus=None):
+    focus = focus or []
     sha = sha256_of(path)
     if any(f["sha256"] == sha for f in manifest["files"]):
         print("  已摄入过（SHA256 一致），跳过")
@@ -335,7 +377,7 @@ def ingest_one(path, manifest):
         # 财报走专用流程（结构化科目 + 勾稽 + 派生指标），见 schema/财报摄取-skill.md
         from . import filing as filing_mod
         return filing_mod.ingest_filing(path, units, unit_kind, manifest, sha)
-    compiled = compile_file(path, units, unit_kind)
+    compiled = compile_file(path, units, unit_kind, focus=focus)
     topics = compiled["topics"]
     existing = wiki.load_pages()
     index_entries = [wiki.build_index_entry(p) for p in existing if p["type"] != "source"]
@@ -362,6 +404,9 @@ def ingest_one(path, manifest):
     entries_count = sum(sum(len(v) for v in t["sections"].values()) for t in topics)
     if touched_titles:
         _write_source_page(path, touched_titles, compiled["report_date"], entries_count)
+    focus_hits_all = [h for t in topics for h in (t.get("focus_hits") or [])]
+    if focus and focus_hits_all:
+        _tag_focus_pages(touched_titles, focus, focus_hits_all)
     manifest["files"].append({
         "file": path.name,
         "path": path.relative_to(config.ROOT).as_posix(),
@@ -373,6 +418,8 @@ def ingest_one(path, manifest):
         "ingested_at": config.now_iso(),
         "topics_touched": touched_titles,
         "entries_count": entries_count,
+        "focus": list(focus),
+        "focus_hits": focus_hits_all,
     })
     log = []
     if created:
@@ -404,16 +451,19 @@ def finish(manifest, results):
     return problems
 
 
-def run_all(paths, progress=None):
+def run_all(paths, progress=None, focus=None):
     manifest = load_manifest()
     results = []
     paths = list(paths)
+    focus = focus or []
+    if focus:
+        print(f"[关注点] {len(focus)} 项：{'、'.join(focus)}")
     for i, p in enumerate(paths, 1):
         print(f"== 摄入 {p.name} ==")
         if progress:
             progress(i, p.name)
         try:
-            r = ingest_one(p, manifest)
+            r = ingest_one(p, manifest, focus=focus)
         except Exception as e:
             print(f"  失败: {e}")
             continue

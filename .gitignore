@@ -17,3 +17,6 @@ __pycache__/
 # 系统杂项
 .DS_Store
 Thumbs.db
+
+# 改代码前的本地备份
+.backup-*/

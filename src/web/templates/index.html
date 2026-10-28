@@ -17,6 +17,22 @@
 </section>
 
 <section class="dropzone-zone">
+  <details id="focus-panel" style="margin-bottom: 12px;">
+    <summary style="cursor: pointer;" class="muted">⚙ 导入设置（可选）</summary>
+    <div style="margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 8px;">
+      <span style="font-weight: 500;">关注点（一行一条，可留空）</span>
+      <div class="muted tiny" style="margin-bottom: 6px;">
+        填写后，提取时会在知识库里重点标注命中这些词的条目。
+      </div>
+      <textarea id="focus-input" rows="3" style="width: 100%; max-width: 520px;"
+                placeholder="新能源车渗透率&#10;碳酸锂价格传导"></textarea>
+      <label style="display: block; margin-top: 8px;">
+        <input type="checkbox" id="focus-enabled">
+        常规导入时按关注点优先提炼
+      </label>
+    </div>
+  </details>
+
   <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="添加文件">
     <div class="dz-plus">＋</div>
     <div class="dz-text">把文件拖进这里，或点击添加</div>
