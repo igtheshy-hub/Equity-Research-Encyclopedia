@@ -21,11 +21,21 @@
   <tbody>
   {% for r in rows %}
     <tr class="row" data-name="{{ r.name }}">
-      <td class="num"><input type="checkbox" class="files-check" value="{{ r.name }}" aria-label="选中 {{ r.name }}"></td>
+      <td class="num">
+        {% if r.duplicate %}
+        <input type="checkbox" disabled title="同名多份，不能按文件名删除">
+        {% else %}
+        <input type="checkbox" class="files-check" value="{{ r.name }}" aria-label="选中 {{ r.name }}">
+        {% endif %}
+      </td>
       <td>
         {% if r.missing %}
         <span class="files-name">{{ r.name }}</span>
         <div class="muted">原文件已不在 raw/ 中，只剩清单与知识条目残留</div>
+        {% elif r.duplicate %}
+        <span class="files-name">{{ r.name }}</span>
+        <div class="banner bad sm">资料库里有 {{ r.paths | length }} 份同名文件，锚点无法区分。请先在 raw/ 里改名或移走重复文件，再删除。</div>
+        <div class="muted">{{ r.paths | join('、') }}</div>
         {% else %}
         <a href="/viewer?file={{ r.name | urlencode }}" target="_blank" rel="noopener">{{ r.name }}</a>
         <div class="muted">{{ r.path }}</div>
@@ -36,7 +46,10 @@
       <td class="num">{{ r.entries_count or '—' }}</td>
       <td class="num">{{ r.statements }}</td>
       <td>{{ r.ingested_at.replace('T', ' ') if r.ingested_at else '—' }}</td>
-      <td><button class="ghost sm files-del-one" data-name="{{ r.name }}">删除</button></td>
+      <td>
+        {% if r.duplicate %}<button class="ghost sm" disabled title="同名多份，无法确定删哪一份">删除</button>
+        {% else %}<button class="ghost sm files-del-one" data-name="{{ r.name }}">删除</button>{% endif %}
+      </td>
     </tr>
   {% endfor %}
   </tbody>

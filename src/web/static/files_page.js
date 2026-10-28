@@ -23,6 +23,14 @@ function syncButtons() {
 function openConfirm(names) {
   const body = document.getElementById("del-body");
   const items = names.map((n) => filesByName[n]).filter(Boolean);
+  const dup = items.filter((r) => r.duplicate);
+  if (dup.length) {
+    body.innerHTML = `<p class="banner bad">${dup.map((r) => App.escapeHtml(r.name)).join("、")} 在资料库里有同名多份，无法确定该删哪一份。请先在 raw/ 里改名或移走重复文件。</p>`;
+    document.getElementById("del-modal").hidden = false;
+    document.getElementById("del-confirm").disabled = true;
+    return;
+  }
+  document.getElementById("del-confirm").disabled = false;
   body.innerHTML = "<ul class=\"del-list\">" + items.map((r) => {
     const bits = [r.kind_label + (r.entries_count ? `，${r.entries_count} 条知识` : "")];
     bits.push(r.statements ? `被 ${r.pages.length} 个页面引用 ${r.statements} 条` : "没有页面引用它的条目");

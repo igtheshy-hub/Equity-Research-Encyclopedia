@@ -5,7 +5,8 @@ from pathlib import Path
 
 from . import config, llm, wiki
 from .classify import sha256_of, sanitize
-from .pdf_extract import SUPPORTED_SUFFIXES, extract_to_store, unit_kind_of
+from .pdf_extract import (SUPPORTED_SUFFIXES, DuplicateFileError, extract_to_store,
+                          find_raw_file, unit_kind_of)
 
 # 清单落盘的串行锁：摄入线只追加条目、删除线只删条目，两条线都在锁内 load-modify-save，互不覆盖
 MANIFEST_LOCK = threading.RLock()
@@ -143,10 +144,11 @@ def _focus_rule(focus):
     return FOCUS_RULE_TEMPLATE.replace("{focus_lines}", "\n".join(f"  · {x}" for x in items))
 
 
-def compile_file(path, units, unit_kind, focus=None):
+def compile_file(path, units, unit_kind, focus=None, task_id=None):
+    from . import tasks
     fname = path.name
-    chunk_size = config.CFG["ingest"]["compile_chunk_pages"]
-    chunks = [units] if len(units) <= 40 else [
+    chunk_size = max(1, int(config.CFG["ingest"]["compile_chunk_pages"]))
+    chunks = [units] if len(units) <= chunk_size else [
         units[i:i + chunk_size] for i in range(0, len(units), chunk_size)
     ]
     prompt = COMPILE_PROMPT.replace("{FOCUS_RULE}", _focus_rule(focus))
@@ -157,6 +159,7 @@ def compile_file(path, units, unit_kind, focus=None):
     report_date = ""
     total_dropped = 0
     for chunk in chunks:
+        tasks.check_cancel(task_id)
         tag = "段" if unit_kind == "para" else "页"
         text = "\n\n".join(f"[第{u['n']}{tag}]\n{u['text']}" for u in chunk if u["text"])
         out = llm.chat(
@@ -357,15 +360,22 @@ def _tag_focus_pages(touched_titles, focus, focus_hits):
         print(f"  [关注] {title} 标注 {len(old_hits)} 条命中")
 
 
-def ingest_one(path, manifest, focus=None):
+def ingest_one(path, manifest, focus=None, task_id=None):
     focus = focus or []
+    # 锚点只记文件名：同名多份时整份拒绝摄入，避免旧知识条目指向错误文件
+    try:
+        found = find_raw_file(path.name)
+    except DuplicateFileError as e:
+        return {"file": path.name, "error": str(e)}
+    if found != path:
+        return {"file": path.name, "error": f"资料库里存在同名文件（{found}），本份拒绝摄入，请先改名"}
     sha = sha256_of(path)
     if any(f["sha256"] == sha for f in manifest["files"]):
         print("  已摄入过（SHA256 一致），跳过")
         return None
     dup_name = next((f for f in manifest["files"] if f["file"] == path.name), None)
     if dup_name:
-        print(f"  [警告] 与已摄入的 {dup_name['file']} 同名但内容不同，旧锚点将指向新文件内容")
+        return {"file": path.name, "error": "清单里已有同名文件但内容不同；锚点只记文件名，为免指错，本份拒绝摄入"}
     units, count, scanned, unit_kind = extract_to_store(path)
     if scanned:
         print("  [拒] 疑似扫描版（无文本层），不编译")
@@ -376,8 +386,8 @@ def ingest_one(path, manifest, focus=None):
     if source_kind(path) == "filing":
         # 财报走专用流程（结构化科目 + 勾稽 + 派生指标），见 schema/财报摄取-skill.md
         from . import filing as filing_mod
-        return filing_mod.ingest_filing(path, units, unit_kind, manifest, sha)
-    compiled = compile_file(path, units, unit_kind, focus=focus)
+        return filing_mod.ingest_filing(path, units, unit_kind, manifest, sha, task_id=task_id)
+    compiled = compile_file(path, units, unit_kind, focus=focus, task_id=task_id)
     topics = compiled["topics"]
     existing = wiki.load_pages()
     index_entries = [wiki.build_index_entry(p) for p in existing if p["type"] != "source"]

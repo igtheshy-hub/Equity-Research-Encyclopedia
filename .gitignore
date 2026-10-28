@@ -4,11 +4,17 @@
 # 原始资料：研报/财报/政策原文有版权，不入公开仓库
 raw/
 
-# 提取中间产物：含研报全文文本，同上
-data/extracts/
+# 每个人的知识库与运行数据都是本地私有的：新克隆后应为空，
+# 不把别人的 wiki、会话、日志、材料清单带进来
+wiki/
+data/
+outputs/
 
-# 网页本地运行状态（收件台/摄入页的最近结果）
-data/ui_state.json
+# 本地运行日志与虚拟环境
+*.log
+.venv/
+*.egg-info/
+.pytest_cache/
 
 # Python
 __pycache__/

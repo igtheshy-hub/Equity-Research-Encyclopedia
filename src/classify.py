@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 from . import config, llm
-from .pdf_extract import SUPPORTED_SUFFIXES, first_text
+from .pdf_extract import SUPPORTED_SUFFIXES, first_text, raw_file_groups
 
 UNSAFE = re.compile(r'[\s\[\]#|/\\:*?"<>\x00-\x1f]')
 
@@ -57,13 +57,21 @@ def build_filename(cls, original_stem, suffix=".pdf"):
 
 
 def unique_target(directory, filename):
-    if not (directory / filename).exists():
-        return filename
+    """保证文件名在整个 raw（研报/财报/政策/收件台）里唯一，而不只是目标子目录。
+
+    知识条目的锚点只写文件名，同名两份会让审校、深查、删除都指错对象。
+    """
+    taken = set(raw_file_groups())
+    # 来源页 slug 与提取缓存都用 stem，所以 stem 也必须全局唯一（a.pdf / a.docx 不能并存）
+    taken_stems = {Path(n).stem for n in taken}
     stem = Path(filename).stem
+    suffix = Path(filename).suffix
+    if filename not in taken and stem not in taken_stems:
+        return filename
     i = 2
-    while (directory / f"{stem}-{i}{Path(filename).suffix}").exists():
+    while f"{stem}-{i}{suffix}" in taken or f"{stem}-{i}" in taken_stems:
         i += 1
-    return f"{stem}-{i}{Path(filename).suffix}"
+    return f"{stem}-{i}{suffix}"
 
 
 def target_directory(cls):

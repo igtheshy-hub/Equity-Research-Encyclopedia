@@ -1,6 +1,7 @@
-from . import config, wiki
+from . import config, tasks, wiki
 from .audit import _norm_text
 from .ingest import _apply_merge, ingest_one, load_manifest, save_manifest
+from .purge import drop_links_to
 
 # 按审校报告执行修复。删除条目类操作出自人工决策（向导勾选），
 # 明确绕过「锚点只增不减」断言，直接改正文并在 history 与操作日志留痕。
@@ -13,14 +14,14 @@ def _page_by_slug(slug):
     return None
 
 
-def _fix_ingest(action, notes):
+def _fix_ingest(action, notes, task_id=None):
     rel = action.get("path") or ""
     p = (config.ROOT / rel).resolve()
     if config.RAW_DIR.resolve() not in p.parents or not p.exists():
         notes.append(f"跳过摄入：{rel} 不在 raw/ 中")
         return
     manifest = load_manifest()
-    r = ingest_one(p, manifest)
+    r = ingest_one(p, manifest, task_id=task_id)
     save_manifest(manifest)
     wiki.rebuild_index_md(wiki.load_pages())
     if r:
@@ -47,6 +48,8 @@ def _fix_merge(action, notes):
     extra = [s for s in (a["meta"].get("sources") or []) if s not in (b["meta"].get("sources") or [])]
     added = _apply_merge(b["path"], b["meta"], b["body"], topic, extra, f"审校合并：并入 {title}")
     a["path"].unlink()
+    # 原页标题可能还被其他页 [[双链]] 引用；并入后不清理，校验会一直报「链接指向不存在页面」
+    drop_links_to({title, str(a["meta"].get("title") or a["slug"])})
     wiki.rebuild_index_md(wiki.load_pages())
     wiki.append_log("fix", f"按审校合并：{title} 并入 {b['slug']}（+{added} 条），原页删除")
     notes.append(f"已合并 {title} → {b['slug']}（+{added} 条）")
@@ -61,6 +64,9 @@ def _fix_mark_reviewed(action, notes):
     hist = meta.get("history") or []
     hist.append(f"{config.today_str()} 已人工复核（审校）")
     meta["history"] = hist
+    # 人工确认后取消「需复核」标记，页面恢复正常校验
+    meta.pop("needs_review", None)
+    meta.pop("review_reason", None)
     wiki.write_page(p["path"], meta, p["body"])
     notes.append(f"已在 {p['slug']} 记录人工复核")
 
@@ -103,13 +109,13 @@ def apply_fixes(actions, task_id=None):
     notes = []
     actions = [a for a in actions if isinstance(a, dict)]
     for i, action in enumerate(actions, 1):
+        tasks.check_cancel(task_id)
         if task_id:
-            from . import tasks
             tasks.update(task_id, current=i, detail=action.get("type") or "")
         t = action.get("type")
         try:
             if t == "ingest":
-                _fix_ingest(action, notes)
+                _fix_ingest(action, notes, task_id=task_id)
             elif t == "merge":
                 _fix_merge(action, notes)
             elif t == "mark_reviewed":

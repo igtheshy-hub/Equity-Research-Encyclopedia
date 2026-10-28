@@ -115,11 +115,36 @@ def extract_to_store(path):
     return units, len(units), scanned, unit
 
 
-def raw_file_index():
-    # 文件名 → 路径（收件台保证文件名全库唯一）；深查与原文查看都靠它定位
+class DuplicateFileError(RuntimeError):
+    """同一个文件名在 raw 里出现多次。知识库锚点只记文件名，无法判断该指哪一份。"""
+
+
+def raw_file_groups():
+    """文件名 → [路径, ...]。同名文件不会被悄悄覆盖，交给调用方显式报错。"""
     out = {}
     for d in (config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR, config.INBOX_DIR):
         for suf in SUPPORTED_SUFFIXES:
             for p in d.rglob("*" + suf):
-                out[p.name] = p
+                out.setdefault(p.name, []).append(p)
+    for paths in out.values():
+        paths.sort(key=lambda p: p.as_posix())
     return out
+
+
+def raw_file_index():
+    # 只返回全局唯一的文件名；同名的不在里面，避免查看/删除时随手挑一个
+    return {name: paths[0] for name, paths in raw_file_groups().items() if len(paths) == 1}
+
+
+def duplicate_files():
+    """{文件名: [路径...]}，供原文件页与启动自检提示用户处理。"""
+    return {name: paths for name, paths in raw_file_groups().items() if len(paths) > 1}
+
+
+def find_raw_file(name):
+    """按文件名找唯一原文件；同名多份时抛 DuplicateFileError，绝不随便选一个。"""
+    paths = raw_file_groups().get(name) or []
+    if len(paths) > 1:
+        where = "、".join(p.relative_to(config.ROOT).as_posix() for p in paths)
+        raise DuplicateFileError(f"文件名 {name} 在资料库里有多份（{where}），无法确定指哪一份，请先改名或移走重复文件")
+    return paths[0] if paths else None

@@ -79,6 +79,32 @@ def parse_value(v):
     return -x if neg else x
 
 
+def normalize_unit(unit):
+    return str(unit or "").strip().replace("％", "%").replace("／", "/")
+
+
+def is_percent_unit(unit):
+    return "%" in normalize_unit(unit)
+
+
+def is_per_share_unit(unit):
+    u = normalize_unit(unit)
+    return "/股" in u or "每股" in u
+
+
+def item_entry(store_or_pd, pk, name):
+    """取某一期的科目原始记录（含 v / a / unit）。store_or_pd 可以是整份 store 或单期。"""
+    if store_or_pd and "periods" in store_or_pd:
+        pd_ = store_or_pd.get("periods", {}).get(pk) or {}
+    else:
+        pd_ = store_or_pd or {}
+    return (pd_.get("items") or {}).get(name) or {}
+
+
+def item_unit(store_or_pd, pk, name):
+    return normalize_unit(item_entry(store_or_pd, pk, name).get("unit"))
+
+
 def to_yuan(value, unit):
     """按披露单位换算成元；百分数与非金额单位返回 None（宁可丢数不可错数）。"""
     if value is None:
@@ -274,7 +300,9 @@ def compute_indicators(store, pk):
     put("归母净利率", pn / tot_rev if pn is not None and tot_rev else None, "归母净利润", "营业总收入", "营业收入")
 
     wroe = _v(pd_, "加权平均净资产收益率")
-    if wroe is not None and abs(wroe) > 1.5:  # 披露为百分数（如 21.9 表示 21.9%）
+    # 只看披露单位：单位为 % 时 15.31 表示 15.31%，除以 100 存成 0.1531。
+    # 不再用 abs>1.5 猜测——那会把以小数披露（0.1531）的 ROE 误缩小、把高比例误放大。
+    if wroe is not None and is_percent_unit(item_unit(pd_, "加权平均净资产收益率")):
         wroe = wroe / 100
     put("ROE(加权披露)", wroe, "加权平均净资产收益率")
     eq, eq_p = _v(pd_, "所有者权益合计"), _v(pd_, "归属于母公司所有者权益合计") or _v(pd_, "所有者权益合计")
@@ -358,14 +386,21 @@ def compute_indicators(store, pk):
     put("DPO(平均)", days(ap_avg, "营业成本"), "应付账款", "营业成本")
     put("DPO(平均含票据)", days(ap_bills_avg, "营业成本")
         if ap_bills_avg is not None and _v(pd_, "应付票据") is not None else None, "应付票据", "应付账款")
-    for label, dso, dio, dpo in (
-        ("CCC(期末)", ind.get("DSO(期末)"), ind.get("DIO(期末)"), ind.get("DPO(期末)")),
-        ("CCC(平均)", ind.get("DSO(平均)"), ind.get("DIO(平均)"), ind.get("DPO(平均)")),
-        ("CCC(平均含票据)", ind.get("DSO(平均含票据)"), ind.get("DIO(平均)"), ind.get("DPO(平均含票据)")),
+    for label, dso_name, dio_name, dpo_name in (
+        ("CCC(期末)", "DSO(期末)", "DIO(期末)", "DPO(期末)"),
+        ("CCC(平均)", "DSO(平均)", "DIO(平均)", "DPO(平均)"),
+        ("CCC(平均含票据)", "DSO(平均含票据)", "DIO(平均)", "DPO(平均含票据)"),
     ):
+        dso, dio, dpo = ind.get(dso_name), ind.get(dio_name), ind.get(dpo_name)
         if None not in (dso, dio, dpo):
             ind[label] = dso + dio - dpo
-            anc[label] = []
+            # CCC 是三个分项算出来的，锚点取三项来源科目的并集，不能是空列表
+            seen = []
+            for part in (dso_name, dio_name, dpo_name):
+                for a in anc.get(part) or []:
+                    if a not in seen:
+                        seen.append(a)
+            anc[label] = seen
         else:
             missing.append(label)
     put("总资产周转率", ttm(store, pk, "营业收入") / a_avg
@@ -403,3 +438,53 @@ def compute_indicators(store, pk):
     put("EPS-单季(近似)", pn_sq / shares if pn_sq is not None and shares else None, "归母净利润", "实收资本")
 
     return ind, anc, missing
+
+
+def indicator_unit(name):
+    """派生指标的单位。指标内部一律存小数（0.1531 = 15.31%），展示时再乘 100。"""
+    n = str(name)
+    if "周转率" in n:
+        return "次"
+    if any(k in n for k in ("DSO", "DIO", "DPO")) or n.startswith("CCC"):
+        return "天"
+    if "EPS" in n:
+        return "元/股"
+    if "FCF" in n or "资本支出" in n or "股东盈余" in n:
+        return "元"
+    if any(k in n for k in ("率", "同比", "ROE", "ROA", "ROIC")):
+        return "%"
+    if any(k in n for k in ("比率", "乘数", "获现比")):
+        return "倍"
+    return ""
+
+
+def format_item_value(value, unit):
+    """【数据】行的展示格式：金额到元、百分比保留两位、每股收益保留四位，不四舍五入成整数。"""
+    u = normalize_unit(unit)
+    if is_percent_unit(u):
+        return f"{value:.2f}%"
+    if is_per_share_unit(u):
+        return f"{value:.4f} 元/股"
+    if u in ("", "元", "人民币元"):
+        return f"{value:,.0f} 元"
+    if is_percent_unit(unit) or u == "%":
+        return f"{value:.2f}%"
+    return f"{value:,.4f} {u}".rstrip()
+
+
+def format_indicator_value(name, value):
+    """【指标】行的展示格式：按指标自身单位显示，避免把 ROE 写成「15 元」、把 EPS 抹成整数。"""
+    u = indicator_unit(name)
+    if u == "%":
+        return f"{value * 100:.2f}%"
+    if u == "天":
+        return f"{value:.2f} 天"
+    if u == "倍":
+        return f"{value:.2f} 倍"
+    if u == "次":
+        return f"{value:.2f} 次"
+    if u == "元/股":
+        return f"{value:.4f} 元/股"
+    if u == "元":
+        return f"{value:,.0f} 元"
+    return f"{value:.4f}"

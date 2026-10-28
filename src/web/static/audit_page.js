@@ -23,7 +23,7 @@ function renderSummary(d) {
   box.innerHTML = `
     <div class="meta-card">
       <div>最新报告：<a href="/outputs/${encodeURIComponent(d.report)}" target="_blank" rel="noopener">${App.escapeHtml(d.report)}</a></div>
-      <div>矛盾 ${c["矛盾"] || 0} · 时点差异 ${c["时点差异"] || 0} · 过期 ${c["过期"] || 0} · 未摄入 ${c["未摄入文件"] || 0} 文件 / ${c["内容缺口页"] || 0} 页缺口 · 孤立 ${c["孤立"] || 0}</div>
+      <div>矛盾 ${c["矛盾"] || 0} · 时点差异 ${c["时点差异"] || 0} · 过期 ${c["过期"] || 0} · 未摄入 ${c["未摄入文件"] || 0} 文件 / ${c["内容缺口页"] || 0} 页缺口 · 孤立 ${c["孤立"] || 0} · 需复核 ${c["需复核"] || 0} · 格式损坏 ${c["格式损坏"] || 0}</div>
       <p><button class="ghost" id="fix-open">按最新报告修改 wiki</button></p>
     </div>`;
   document.getElementById("fix-open").addEventListener("click", () => openWizard(window.__latestAudit));
@@ -50,7 +50,10 @@ App.onTasks.push((tasks) => {
 document.getElementById("audit-btn").addEventListener("click", () => {
   const btn = document.getElementById("audit-btn");
   btn.disabled = true;
-  fetch("/api/audit/run", { method: "POST" })
+  fetch("/api/audit/run", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: localStorage.getItem("askModel") || "" }),
+  })
     .then((r) => r.json())
     .then((d) => {
       if (d.error) { btn.disabled = false; App.toast(d.error, "bad"); return; }
@@ -83,6 +86,15 @@ function openWizard(d) {
         <label><input type="radio" name="cf${i}" value="b">保留 B，删除 A</label>
         <label><input type="radio" name="cf${i}" value="both">双方都保留，仅记录标注</label>
       </div>`);
+    });
+  }
+
+  const review = d.needs_review_pages || [];
+  if (review.length) {
+    parts.push(`<h3>需复核（删除原文件后保留的无锚点内容，勾选确认后清除标记）</h3>`);
+    review.forEach((r) => {
+      parts.push(`<div class="fix-item"><label class="fix-check" data-kind="review" data-slug="${App.escapeHtml(r.slug)}">
+        <input type="checkbox">${App.escapeHtml(r.title)}：${App.escapeHtml(r.reason || "")}</label></div>`);
     });
   }
 
@@ -143,7 +155,7 @@ function openWizard(d) {
       if (!v || v.value === "skip") return;
       actions.push({ type: "conflict", page: c.slug, keep: v.value, quote_a: c.quote_a, quote_b: c.quote_b });
     });
-    body.querySelectorAll('[data-kind="stale"] input:checked').forEach((cb) => {
+    body.querySelectorAll('[data-kind="stale"] input:checked, [data-kind="review"] input:checked').forEach((cb) => {
       actions.push({ type: "mark_reviewed", page: cb.closest("label").dataset.slug });
     });
     body.querySelectorAll('[data-kind="ingest"] input:checked').forEach((cb) => {
@@ -165,7 +177,7 @@ function openWizard(d) {
     if (!actions.length) { App.toast("没有勾选任何修复动作", "warn"); return; }
     fetch("/api/audit/fix", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actions }),
+      body: JSON.stringify({ actions, model: localStorage.getItem("askModel") || "" }),
     })
       .then((r) => r.json())
       .then((d2) => {

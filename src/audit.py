@@ -99,9 +99,12 @@ def run(task_id=None):
             from . import tasks
             tasks.update(task_id, current=i, detail=f"已检查 {i}/{n} 页：{name}")
 
+    bad_pages = wiki.page_errors()
     conflicts, time_diffs, gaps_by_page = [], [], []
     check_pages = [p for p in pages if p["type"] != "source"]
     for i, p in enumerate(check_pages, 1):
+        from . import tasks
+        tasks.check_cancel(task_id)
         tick(i, len(check_pages), str(p["meta"].get("title") or p["slug"]))
         for c in _conflicts_of(p):
             c["page"] = str(p["meta"].get("title") or p["slug"])
@@ -113,9 +116,21 @@ def run(task_id=None):
 
     stale = []
     for p in pages:
+        from . import tasks
+        tasks.check_cancel(task_id)
         d = _parse_date(p["meta"].get("updated"))
         if d is None or (today - d).days > stale_days:
             stale.append({"slug": p["slug"], "title": str(p["meta"].get("title") or p["slug"])})
+
+    # 删除原文件后保留的无锚点条目：页面已置 needs_review，审校单列，人工确认后清除标记
+    needs_review_pages = [
+        {
+            "slug": p["slug"],
+            "title": str(p["meta"].get("title") or p["slug"]),
+            "reason": str(p["meta"].get("review_reason") or "有内容失去锚点，需人工复核"),
+        }
+        for p in pages if p["meta"].get("needs_review")
+    ]
 
     # 观点老化 lint：【观点】行依据报告期早于页内最新【数据】报告期 → 列入过期待复核
     pk_re = re.compile(r"^【(数据|观点)】(\d{4})(FY|H1|Q1|Q3) ")
@@ -186,6 +201,17 @@ def run(task_id=None):
 
     out_lines = [f"# 审校报告 {datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
     out_lines += [f"范围：wiki/ 共 {len(pages)} 页（含来源摘要页）", ""]
+    if bad_pages:
+        out_lines += [f"## 格式损坏（{len(bad_pages)}，已跳过，未影响其余页面）"]
+        for path, err in bad_pages:
+            out_lines += [f"- {path.relative_to(config.ROOT).as_posix()}：{err}"]
+        out_lines.append("")
+
+    if needs_review_pages:
+        out_lines += [f"## 需复核（{len(needs_review_pages)}）"]
+        for p in needs_review_pages:
+            out_lines += [f"- {p['title']}：{p['reason']}"]
+        out_lines.append("")
 
     out_lines += [f"## 矛盾（{len(conflicts)}）"]
     if conflicts:
@@ -243,18 +269,22 @@ def run(task_id=None):
         "counts": {
             "矛盾": len(conflicts), "时点差异": len(time_diffs), "过期": len(stale),
             "未摄入文件": len(missing_files), "内容缺口页": len(gaps_by_page), "孤立": len(orphans),
+            "格式损坏": len(bad_pages), "需复核": len(needs_review_pages),
         },
         "conflicts": conflicts,
         "stale": stale,
+        "needs_review_pages": needs_review_pages,
         "missing_files": [p.relative_to(config.ROOT).as_posix() for p in missing_files],
         "gaps_by_page": gaps_by_page,
         "orphans": orphans,
+        "bad_pages": [{"path": p.relative_to(config.ROOT).as_posix(), "error": e} for p, e in bad_pages],
         "merge_suggestions": merge_suggestions,
     }, ensure_ascii=False, indent=1), encoding="utf-8")
     wiki.append_log(
         "audit",
         f"审校报告 {out_path.name}：矛盾 {len(conflicts)}、过期 {len(stale)}、"
-        f"未摄入 {len(missing_files)} 文件/{len(gaps_by_page)} 页、孤立 {len(orphans)}",
+        f"未摄入 {len(missing_files)} 文件/{len(gaps_by_page)} 页、孤立 {len(orphans)}、"
+        f"需复核 {len(needs_review_pages)}",
     )
     return {
         "path": out_path,
@@ -265,5 +295,7 @@ def run(task_id=None):
             "未摄入文件": len(missing_files),
             "内容缺口页": len(gaps_by_page),
             "孤立": len(orphans),
+            "格式损坏": len(bad_pages),
+            "需复核": len(needs_review_pages),
         },
     }
