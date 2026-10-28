@@ -91,7 +91,7 @@ def compact_index_text(entries):
 
 def rebuild_index_md(pages):
     labels = {"company": "公司", "industry": "行业", "concept": "概念", "source": "来源摘要"}
-    out = ["# 研报百科 · 总索引", ""]
+    out = ["# 行业知识库 · 总索引", ""]
     for type_, label in labels.items():
         tp = [p for p in pages if p["type"] == type_]
         out += [f"## {label}（{len(tp)}）", ""]

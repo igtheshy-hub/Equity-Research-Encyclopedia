@@ -277,6 +277,32 @@ def _detect_unit(units, sections):
     return None
 
 
+def _supp_net_profit(units, meta, global_unit):
+    """从现金流量表补充资料页机械取「净利润」行的本期金额（起点净利润）。
+    取不到、报表单位未识别或季报未披露补充资料时返回 None，R4 跳过。"""
+    pages = set(meta["sections"].get("cf_supp") or [])
+    if not pages or not global_unit:
+        return None
+    for u in sorted(units, key=lambda x: x["n"]):
+        if u["n"] not in pages:
+            continue
+        for raw in u["text"].splitlines():
+            line = raw.strip()
+            if not re.match(r"^净利润(?![一-鿿])", line):
+                continue
+            if "归属" in line or "少数股东" in line:
+                continue
+            vals = []
+            for tok in line[len("净利润"):].split():
+                v = _tok_val(tok)
+                if v is None or v == "PLACE":
+                    continue
+                vals.append(v)
+            if vals:
+                return fin_calc.to_yuan(vals[0], global_unit)
+    return None
+
+
 def _eq_fallback(path, units, meta):
     """合并权益变动表关键行的机械兜底：未分配利润列 = 数据区倒数第 4 个 token
     （右端固定为 …未分配利润/归母小计/少数股东/合计）。LLM 抄列易错位，此函数覆盖其输出。"""
@@ -422,7 +448,12 @@ def ingest_filing(path, units, unit_kind, manifest, sha):
         return None
 
     tol = config.CFG["ingest"].get("filing_check_tol", 0.005)
-    fails = fin_calc.check_reconciliations({k: v["v"] for k, v in cons.items()}, tol)
+    supp_ni = _supp_net_profit(units, meta, global_unit)
+    if supp_ni is not None:
+        print(f"  [R4] 补充资料起点净利润 {supp_ni:,.0f} 元")
+    elif meta["sections"].get("cf_supp"):
+        print("  [R4] 补充资料未取到起点净利润，跳过")
+    fails = fin_calc.check_reconciliations({k: v["v"] for k, v in cons.items()}, tol, supp_ni)
     if fails:
         for x in fails:
             print(f"  [勾稽失败] {x}")
@@ -505,7 +536,7 @@ def ingest_filing(path, units, unit_kind, manifest, sha):
     dump = config.EXTRACTS_DIR / (path.stem + ".filing.json")
     dump.write_text(json.dumps({
         "meta": meta, "rows_raw": rows, "cons": cons, "parent": parent,
-        "fails": fails, "indicators": periods[pk]["indicators"],
+        "fails": fails, "supp_net_profit": supp_ni, "indicators": periods[pk]["indicators"],
         "missing": missing, "quotes": quotes,
     }, ensure_ascii=False, indent=1), encoding="utf-8")
 

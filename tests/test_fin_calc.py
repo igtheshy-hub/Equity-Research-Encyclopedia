@@ -85,6 +85,11 @@ def test_reconciliation():
     check("R1 失败含标识", fails[0].startswith("R1") if fails else False, True)
     # 数据缺 → 跳过不算失败
     check("缺数据跳过", fin_calc.check_reconciliations({"资产总计": 100.0}, 0.005), [])
+    check("R4 补充资料一致通过", fin_calc.check_reconciliations(ok_items, 0.005, supp_net_profit=35e9), [])
+    fails = fin_calc.check_reconciliations(ok_items, 0.005, supp_net_profit=36e9)
+    check("R4 不平报 1 条", len(fails), 1)
+    check("R4 失败含标识", fails[0].startswith("R4") if fails else False, True)
+    check("R4 未披露时跳过", fin_calc.check_reconciliations(ok_items, 0.005), [])
 
 
 def test_periods():

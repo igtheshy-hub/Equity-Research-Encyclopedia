@@ -8,7 +8,7 @@ from .pdf_extract import SUPPORTED_SUFFIXES, first_text
 
 UNSAFE = re.compile(r'[\s\[\]#|/\\:*?"<>\x00-\x1f]')
 
-PROMPT = """你是投研资料归档员。下面是一份 PDF 文件开头几页提取出的文字。判断这份文件属于哪一类，并给出归档信息。
+PROMPT = """你是行业资料归档员。下面是一份 PDF 文件开头几页提取出的文字。判断这份文件属于哪一类，并给出归档信息。
 
 只输出 JSON，不要解释，格式如下：
 {

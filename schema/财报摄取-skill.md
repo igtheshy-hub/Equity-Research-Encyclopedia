@@ -42,9 +42,9 @@
 
 ### 第四步：勾稽校验
 
-跑 01 号字典 R1—R4 四条规则，容差 0.5‰。任一失败：整份报表数值挂起，不入库，错误清单交审校；不自动修数。部分勾稽依赖的数据缺失（如季报无补充资料）时，对应规则跳过并记录，不影响其余校验。
+跑 01 号字典 R1—R4 四条规则，容差取 config.ingest.filing_check_tol，当前 0.005，即相对误差 5‰。任一失败：整份报表数值挂起，不入库，错误清单交审校；不自动修数。部分勾稽依赖的数据缺失（如季报无补充资料）时，对应规则跳过并记录，不影响其余校验。
 
-实现注记（v1.0）：R4 因补充资料行名歧义暂未实现，实际校验为 R1、R2（含期末−期初子校验两条）、R3（容差放宽 5 倍），见 src/fin_calc.py check_reconciliations。
+实现注记（v1.1）：R4 已实现，由 src/filing.py `_supp_net_profit` 从现金流量表补充资料页机械解析「净利润」行的本期金额，取不到或报表单位未识别时跳过；R1、R2（含期末−期初子校验两条）、R3（容差放宽 5 倍）见 src/fin_calc.py `check_reconciliations`。
 
 ### 第五步：派生计算
 
@@ -81,7 +81,7 @@
 ## 5. 程序实现要求（v1.0 已全部实现）
 
 1. 行格式正则校验器 → src/validate.py（validate_all 内 _line_format_problems）
-2. 勾稽计算器 → src/fin_calc.py（R1—R3，R4 见第四步注记）
+2. 勾稽计算器 → src/fin_calc.py（R1—R4，R4 取数见 src/filing.py _supp_net_profit）
 3. 指标计算器（按指标字典，含单季差分与 TTM）→ src/fin_calc.py compute_indicators
 4. 缺失清单采集与 source 页写入 → src/filing.py（source 页材料信息含审计意见、字典外科目、缺失指标）
 5. 摄取提示词改造：财报走本 skill 流程，研报与政策沿用现有编译流程 → src/ingest.py ingest_one 分流

@@ -8,11 +8,36 @@ from .pdf_extract import load_cached, raw_file_index
 LINE_PK_RE = re.compile(r"^【(数据|指标|观点)】(\d{4}(?:FY|H1|Q1|Q3)) ")
 
 
+def _management_problems(name, ln):
+    # 【管理层】行契约：【管理层】「原话」——语境 [[文件#位置]]，锚点在行尾
+    body = ln.removeprefix("【管理层】").strip()
+    if not body.startswith("「"):
+        return [f"{name}: 管理层行缺引述（应以「开头）：{ln[:50]}"]
+    close = body.rfind("」")
+    if close < 0:
+        return [f"{name}: 管理层行引述未闭合：{ln[:50]}"]
+    rest = body[close + 1:].strip()
+    if not rest.startswith("——"):
+        return [f"{name}: 管理层行缺语境分隔（」后应接——）：{ln[:50]}"]
+    rest = rest.removeprefix("——").strip()
+    m = wiki.ANCHOR_RE.search(rest)
+    if m is None:
+        return [f"{name}: 管理层行缺合法锚点：{ln[:50]}"]
+    if not rest[:m.start()].strip():
+        return [f"{name}: 管理层行缺语境：{ln[:50]}"]
+    if rest[m.end():].strip():
+        return [f"{name}: 管理层行锚点后有多余文字：{ln[:50]}"]
+    return []
+
+
 def _line_format_problems(name, body):
-    # 【数据】/【指标】/【观点】行的格式契约检查：报告期前缀、等号数值可解析、口径括号闭合
+    # 【数据】/【指标】/【观点】/【管理层】行的格式契约检查
     out = []
     for ln in body.splitlines():
         ln = ln.strip().removeprefix("- ").strip()
+        if ln.startswith("【管理层】"):
+            out.extend(_management_problems(name, ln))
+            continue
         m = LINE_PK_RE.match(ln)
         if not m:
             continue

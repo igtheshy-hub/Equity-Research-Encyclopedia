@@ -10,7 +10,7 @@ from .pdf_extract import SUPPORTED_SUFFIXES, extract_to_store, unit_kind_of
 # 清单落盘的串行锁：摄入线只追加条目、删除线只删条目，两条线都在锁内 load-modify-save，互不覆盖
 MANIFEST_LOCK = threading.RLock()
 
-COMPILE_PROMPT = """你是投研知识编辑，把一份材料的逐单元文本编译成 wiki 知识条目。单元{UNIT_WORD}，每单元文字前有形如「[第3页]」「[第3段]」的序号标记；锚点格式 {ANCHOR_FORM}，序号必须取该内容所在单元的实际序号。
+COMPILE_PROMPT = """你是行业知识编辑，把一份材料的逐单元文本编译成 wiki 知识条目。单元{UNIT_WORD}，每单元文字前有形如「[第3页]」「[第3段]」的序号标记；锚点格式 {ANCHOR_FORM}，序号必须取该内容所在单元的实际序号。
 
 规则：
 - 只用给定材料，禁止编造，材料里没有的信息不写

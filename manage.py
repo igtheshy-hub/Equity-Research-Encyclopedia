@@ -174,7 +174,7 @@ def cmd_serve(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="manage.py", description="研报百科管理入口")
+    ap = argparse.ArgumentParser(prog="manage.py", description="行业知识库管理入口")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("selftest", help="体检：依赖、配置、模型连通")

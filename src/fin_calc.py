@@ -1,8 +1,8 @@
 """财报计算器：单位归一、科目归一、勾稽校验、报告期运算与派生指标。
 
 口径依据 schema/财报摄取-03-多口径指标字典.md；科目依据 schema/filing_items.json。
-所有计算纯机械，不做任何判断。R4（净利润 vs 补充资料起点）因补充资料行名歧义暂不实现，
-勾稽由 R1—R3 与 R2 的两条子校验覆盖。
+所有计算纯机械，不做任何判断。勾稽覆盖 R1—R4；R4 的补充资料起点净利润由 src/filing.py
+从补充资料页机械解析后传入，取不到时跳过。
 """
 import json
 import re
@@ -126,8 +126,9 @@ def _near(a, b, tol):
     return abs(a - b) <= tol * ref
 
 
-def check_reconciliations(items, tol):
-    """勾稽校验。items: {规范名: 元值}。返回失败清单（空=通过）；数据缺的规则跳过。"""
+def check_reconciliations(items, tol, supp_net_profit=None):
+    """勾稽校验。items: {规范名: 元值}；supp_net_profit: 补充资料起点净利润（元），
+    None 表示未披露或取不到，跳过 R4。返回失败清单（空=通过）；数据缺的规则跳过。"""
     fails = []
 
     def g(*names):
@@ -160,6 +161,10 @@ def check_reconciliations(items, tol):
         target = pb + ni + appr + div
         if not _near(pe, target, tol * 5):
             fails.append(f"R3 未分配利润勾稽不平：期末 {pe:,.0f} vs 期初+净利+提取+分配(代数和) {target:,.0f}")
+
+    ni_total = g("净利润")
+    if ni_total is not None and supp_net_profit is not None and not _near(ni_total, supp_net_profit, tol):
+        fails.append(f"R4 净利润 {ni_total:,.0f} ≠ 补充资料起点净利润 {supp_net_profit:,.0f}")
     return fails
 
 

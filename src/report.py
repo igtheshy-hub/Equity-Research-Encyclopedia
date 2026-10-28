@@ -2,7 +2,7 @@ from . import config, llm, wiki
 from .ask import FIN_ANALYSIS_BLOCK, _allowed_from_pages, _select_pages, _violations, strip_glitch
 from .classify import sanitize
 
-REPORT_PROMPT = """你是投研分析师，基于知识库页面内容撰写一份结构化报告。
+REPORT_PROMPT = """你是行业分析师，基于知识库页面内容撰写一份结构化报告。
 
 规则：
 - 只用给定页面内容，禁止编造，页面没有的信息明确说知识库中没有

@@ -1,8 +1,8 @@
-# 投研知识库操作规范
+# 行业知识库操作规范
 
 ## 项目概述
 
-本项目为投研团队的 LLM Wiki 知识库。raw/ 存放原始资料（人工管理，智能体只读），wiki/ 存放编译后的知识页面（智能体维护），outputs/ 存放查询产出。
+本项目为行业研究的 LLM Wiki 知识库。raw/ 存放原始资料（人工管理，智能体只读），wiki/ 存放编译后的知识页面（智能体维护），outputs/ 存放查询产出。
 
 ## Wiki 页面格式
 
@@ -24,7 +24,7 @@ updated: 2026-04-20
 
 锚点语法：正文关键数据句尾用 `[[文件名.pdf#p页码]]` 或 `[[文件名.docx#para段落号]]` 标注，如 `[[中信证券_贵州茅台_20240501.pdf#p5]]`。Word 无固定页码，按文档顺序的块序号（段落/表格）定位，`paraN` 的 N 与网页对照视图里显示的块号一致。锚点只写文件名不写路径，文件名必须全库唯一；frontmatter 的 sources 记录完整的 raw/ 相对路径。文件名不得含 `[ ] # |` 与空格。
 
-正文一行一条知识，句尾锚点。页内分节用固定节枚举：公司页「公司概况 / 行业格局 / 经营与财务 / 盈利预测 / 估值 / 风险提示 / 其他」；行业页把首节换成「行业概况」，其余同公司页；概念页「定义与口径 / 方法要点 / 政策背景 / 应用示例 / 其他」；来源摘要页不强制分节。
+正文一行一条知识，句尾锚点。页内分节用固定节枚举：公司页「公司概况 / 行业格局 / 经营与财务 / 盈利预测 / 估值 / 分析观点 / 风险提示 / 其他」；行业页把首节换成「行业概况」，其余同公司页；概念页「定义与口径 / 方法要点 / 政策背景 / 应用示例 / 其他」；来源摘要页不强制分节。
 
 frontmatter 除必填的 title / type / sources / updated 外，可加 aliases（别名，匹配用）、summary（一句话摘要，进总索引）、history（更新历史，每次摄入追加一行）。type 决定页面所在子目录：company → wiki/companies/，industry → wiki/industries/，concept → wiki/concepts/，source → wiki/sources/。
 
@@ -59,14 +59,14 @@ frontmatter 除必填的 title / type / sources / updated 外，可加 aliases�
 
 - raw/filings/ 的财报不走通用编译提示词，ingest_one 自动分流到 src/filing.py 四段式流程（定位 → 抄录 → 计算 → 落库），完整规则见 schema/财报摄取-skill.md
 - 公司页「经营与财务」节追加三类结构化行：【数据】报告期 合并 科目 = 数值元 [[锚点]]（报表原值）、【指标】报告期 指标名(口径) = 数值 [[锚点]]（代码机械计算的派生值，多口径并存）、【管理层】「原话」——语境 [[锚点]]；判断类内容一律不在摄取层产出
-- 勾稽校验（R1—R3，容差 config.ingest.filing_check_tol）任一失败整份挂起：不入 manifest、不上 wiki，错误清单打印交人工
+- 勾稽校验（R1—R4，容差 config.ingest.filing_check_tol）任一失败整份挂起：不入 manifest、不上 wiki，错误清单打印交人工
 - 结构化存储 data/fin/<公司slug>.json：periods 按报告期（如 2025FY）存科目原值、母公司口径、管理层引述与派生指标；后续报告期的同比/单季/TTM/平均口径从该文件取上年数据，缺则指标进缺失清单不阻塞
 - 科目名经 schema/filing_items.json 别名表归一到规范名，字典外科目保留原名并在 source 页备注；source 页材料信息含审计意见与缺失清单
 - LLM 只做定位与抄录（task=filing，温度 0），勾稽与指标全部由 src/fin_calc.py 代码计算
 
 ## Query 规则
 
-- 先读取 wiki/index.md 定位相关页面
+- 加载 wiki 页面，用 frontmatter 的 summary 与正文拼紧凑索引定位相关页面；wiki/index.md 只供人浏览与导出，检索不解析它
 - 综合多个 wiki 页面回答问题，标注信息来源
 - 如果综合答案构成新知识，写入 wiki/ 新页面并更新 wiki/log.md；研究报告等产出物写入 outputs/
 - 回答中引用的数据必须标注 wiki 页面路径和原始来源
