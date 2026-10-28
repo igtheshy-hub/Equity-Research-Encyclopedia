@@ -31,8 +31,16 @@ def parse_page(path):
     text = path.read_text(encoding="utf-8")
     m = FRONT_SPLIT_RE.match(text)
     if not m:
-        raise ValueError(f"{path.name} 缺少 front matter")
-    return yaml.safe_load(m.group(1)) or {}, text[m.end():]
+        raise ValueError(f"{path.name} 缺少 front matter（文件开头的 --- 元数据块）")
+    try:
+        meta = yaml.safe_load(m.group(1))
+    except yaml.YAMLError as e:
+        raise ValueError(f"{path.name} 的 front matter 不是合法 YAML：{e}") from e
+    if meta is None:
+        meta = {}
+    if not isinstance(meta, dict):
+        raise ValueError(f"{path.name} 的 front matter 不是键值对")
+    return meta, text[m.end():]
 
 
 def slug_to_path(type_, slug):
@@ -42,11 +50,24 @@ def slug_to_path(type_, slug):
     return d / f"{slug}.md"
 
 
-def load_pages():
+# 最近一次 load_pages 跳过的坏页面；validate / audit / 网页都能读到，不静默丢
+_PAGE_ERRORS = []
+
+
+def load_pages(skip_bad=True):
+    """读取 wiki 页面。坏页面（缺 front matter、YAML 写坏）默认跳过并记录，
+    不让整站 500；validate 等需要严格模式时传 skip_bad=False 直接抛出。"""
     pages = []
+    errors = []
     for type_, d in config.TYPE_DIRS.items():
         for p in sorted(d.glob("*.md")):
-            meta, body = parse_page(p)
+            try:
+                meta, body = parse_page(p)
+            except (ValueError, OSError) as e:
+                if not skip_bad:
+                    raise
+                errors.append({"path": p, "type": type_, "error": str(e)})
+                continue
             statements = sum(1 for line in body.splitlines() if line.strip().startswith("- "))
             pages.append({
                 "path": p,
@@ -57,7 +78,25 @@ def load_pages():
                 "anchors": anchors_of(body),
                 "statements": statements,
             })
+    _PAGE_ERRORS[:] = errors
     return pages
+
+
+def page_errors():
+    """返回最近一次 load_pages 跳过的坏页面，[(Path, 中文错误说明)]。"""
+    return [(e["path"], e["error"]) for e in _PAGE_ERRORS]
+
+
+def check_pages():
+    """主动扫一遍并返回坏页面清单，不改 _PAGE_ERRORS。"""
+    errors = []
+    for type_, d in config.TYPE_DIRS.items():
+        for p in sorted(d.glob("*.md")):
+            try:
+                parse_page(p)
+            except (ValueError, OSError) as e:
+                errors.append((p, str(e)))
+    return errors
 
 
 def build_index_entry(page):
@@ -112,7 +151,11 @@ def rebuild_index_md(pages):
 
 
 def append_log(op, summary):
+    config.WIKI_DIR.mkdir(parents=True, exist_ok=True)
+    new = not config.LOG_MD.exists()
     with config.LOG_MD.open("a", encoding="utf-8") as f:
+        if new:
+            f.write("# 操作日志\n\n| 日期 | 操作 | 说明 |\n|---|---|---|\n")
         f.write(f"| {config.today_str()} | {op} | {summary} |\n")
 
 

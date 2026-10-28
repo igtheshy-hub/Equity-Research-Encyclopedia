@@ -11,7 +11,7 @@ from src import config
 def cmd_selftest(args):
     ok = True
     print("== 依赖检查 ==")
-    for mod in ("httpx", "pdfplumber", "flask", "dotenv", "yaml", "markdown", "docx"):
+    for mod in ("httpx", "pdfplumber", "flask", "dotenv", "yaml", "markdown", "docx", "openpyxl"):
         try:
             importlib.import_module(mod)
             print(f"  [好] {mod}")
@@ -21,10 +21,13 @@ def cmd_selftest(args):
     print("== 配置检查 ==")
     if config.LLM_API_KEY:
         prof = config.model_profile()
-        print(f"  [好] 已从 .env 读到 {config.LLM_API_KEY_ENV}，默认模型 {prof['model']}（{prof['base_url'].split('/')[2]}）")
+        source = "auto（按 .env 里已配置 key 的模型自动选）" if config.CFG["llm"].get("default") == "auto" else "config.json"
+        print(f"  [好] 已从 .env 读到 {config.LLM_API_KEY_ENV}，当前默认模型 {prof['model']}"
+              f"（{prof['base_url'].split('/')[2]}，来源：{source}）")
     else:
         ok = False
-        print(f"  [缺] {config.LLM_API_KEY_ENV} 为空：复制 .env.example 为 .env 并填入模型服务商的 API Key")
+        print(f"  [缺] 默认模型的 key 为空：复制 .env.example 为 .env 并填入 API Key；"
+              f"网页下拉选中的模型会覆盖默认值，不必改 config.json")
     config.ensure_dirs()
     print("  [好] 目录结构就绪")
     if not ok:
@@ -174,6 +177,7 @@ def cmd_serve(args):
 
 
 def main():
+    config.ensure_dirs()
     ap = argparse.ArgumentParser(prog="manage.py", description="研报百科管理入口")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

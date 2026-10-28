@@ -16,11 +16,22 @@ import io
 import json
 from typing import List, Optional
 
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    _OPENPYXL_OK = True
+except ImportError:  # 缺依赖时网页给出中文提示，而不是整站导入失败
+    Workbook = None
+    Alignment = Font = PatternFill = None
+    get_column_letter = None
+    _OPENPYXL_OK = False
 
-from . import config, wiki
+from . import config, fin_calc, wiki
+
+
+def available():
+    return _OPENPYXL_OK
 
 TYPE_LABELS = {"company": "公司", "industry": "行业", "concept": "概念", "source": "来源摘要"}
 
@@ -44,7 +55,8 @@ INDICATOR_COLUMNS = [
     ("code", "代码", False),
     ("period", "报告期", True),
     ("indicator", "指标", True),
-    ("value_pct", "数值(%)", True),
+    ("value", "数值", True),
+    ("unit", "单位", True),
     ("anchor", "锚点", True),
 ]
 
@@ -143,17 +155,21 @@ def _iter_indicators(store):
         code = str(al[0])
     for pk, pd_ in (store.get("periods") or {}).items():
         inds = pd_.get("indicators") or {}
-        for name, v in inds.items():
+        for name, spec in inds.items():
+            v = spec.get("v") if isinstance(spec, dict) else spec
             if not isinstance(v, (int, float)):
                 continue
-            # fin_calc 存的是小数（0.1234），导出成百分比
+            unit = fin_calc.indicator_unit(name)
+            # 只有比率类乘 100；DSO/CCC 是天、FCF 是元、EPS 是元/股，不能一律当百分比
+            value = round(v * 100, 4) if unit == "%" else round(v, 4)
             yield {
                 "company": company,
                 "code": code,
                 "period": pk,
                 "indicator": name,
-                "value_pct": round(v * 100, 4),
-                "anchor": "",
+                "value": value,
+                "unit": unit,
+                "anchor": "".join((spec.get("a") if isinstance(spec, dict) else []) or []),
             }
 
 

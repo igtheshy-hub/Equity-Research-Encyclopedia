@@ -23,7 +23,6 @@ _PROVIDER_KEY_ENV = {
 
 _LLM = CFG["llm"]
 MODEL_PROFILES = _LLM["models"]
-DEFAULT_MODEL = _LLM.get("default") or next(iter(MODEL_PROFILES))
 # 各模型可省略、从 llm 段继承的公共参数
 _SHARED_LLM_KEYS = ("max_tokens", "read_timeout_s", "max_retries", "extra_body")
 
@@ -36,6 +35,28 @@ def _resolve_api_key(base_url):
         if value:
             return name, value
     return names[0], ""
+
+
+def _profile_has_key(pid):
+    return bool(_resolve_api_key(MODEL_PROFILES[pid]["base_url"])[1])
+
+
+def _resolve_default_model():
+    """llm.default 支持填 "auto"：按 models 顺序取第一个 .env 里配了 key 的模型。
+
+    auto 的意义是配置文件不再随人改动——每个人只在自己 .env 填 key，网页下拉再按需
+    临时切模型；不会出现协作者把默认模型改掉又忘了改回来、其他人全环节 401 的情况。
+    """
+    raw = str(_LLM.get("default") or "auto").strip()
+    if raw != "auto":
+        return raw
+    for pid in MODEL_PROFILES:
+        if _profile_has_key(pid):
+            return pid
+    return next(iter(MODEL_PROFILES))
+
+
+DEFAULT_MODEL = _resolve_default_model()
 
 
 def model_profile(name=None):
@@ -93,7 +114,9 @@ SECTION_ENUMS = {
 
 
 def ensure_dirs():
-    for d in (INBOX_DIR, REPORTS_DIR, FILINGS_DIR, POLICIES_DIR, *TYPE_DIRS.values(), OUTPUTS_DIR, EXTRACTS_DIR, FIN_DIR):
+    """新克隆的仓库里 wiki/、data/、outputs/ 都是空的（运行数据不入库），启动时补齐目录。"""
+    for d in (INBOX_DIR, REPORTS_DIR, FILINGS_DIR, POLICIES_DIR, *TYPE_DIRS.values(),
+              OUTPUTS_DIR, DATA_DIR, EXTRACTS_DIR, FIN_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

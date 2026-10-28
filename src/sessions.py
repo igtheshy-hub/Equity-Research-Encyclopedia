@@ -1,6 +1,8 @@
 import json
+import shutil
 import threading
 import uuid
+from datetime import datetime
 
 from . import config
 
@@ -10,19 +12,38 @@ from . import config
 _PATH = config.DATA_DIR / "conversations.json"
 _lock = threading.Lock()
 _convs = None
+# 启动时发现损坏文件留下的提示，供网页 /api/health 展示
+_WARNINGS = []
 
 
 def _load():
     global _convs
     if _convs is None:
+        _convs = {}
         if _PATH.exists():
             try:
-                _convs = json.loads(_PATH.read_text(encoding="utf-8"))
-            except ValueError:
-                _convs = {}
-        else:
-            _convs = {}
+                data = json.loads(_PATH.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("顶层不是对象")
+                _convs = data
+            except (ValueError, OSError) as e:
+                # 损坏的会话文件先备份再重建，绝不静默清空；用户在页面上能看到提示
+                backup = _PATH.with_name(
+                    f"conversations.corrupt-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json")
+                try:
+                    shutil.copy2(_PATH, backup)
+                    where = f"已备份到 {backup.relative_to(config.ROOT).as_posix()}"
+                except OSError:
+                    where = "备份失败"
+                _WARNINGS.append(
+                    f"{_PATH.name} 无法读取（{e}），{where}。本次以空会话启动，原文件未被删除。")
     return _convs
+
+
+def startup_warnings():
+    with _lock:
+        _load()
+        return list(_WARNINGS)
 
 
 def _save():
