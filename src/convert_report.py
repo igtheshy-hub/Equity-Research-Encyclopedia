@@ -3,6 +3,7 @@
 网页管线直接调 convert(src, out)；命令行用法：
   python -m src.convert_report outputs/report-乘用车行业-20261028.md outputs/report-乘用车行业-20261028.docx
 """
+import os
 import re
 import subprocess
 import sys
@@ -178,9 +179,12 @@ def convert(src, out):
     flags = ["--toc", "--no-superscript-citations"]
     if title:
         flags += ["--title", title]
+    # 子进程 stdout 强制 UTF-8：技能脚本打印 ✓ 等进度符号，Windows 控制台默认 GBK 编不了会崩
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     r = subprocess.run(
         [sys.executable, str(SKILL), str(display), str(out)] + flags,
-        cwd=str(config.ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace")
+        cwd=str(config.ROOT), capture_output=True, text=True, encoding="utf-8",
+        errors="replace", env=env)
     if r.returncode != 0:
         raise RuntimeError("转 Word 失败：" + (r.stderr or r.stdout or "未知错误")[-400:])
 
