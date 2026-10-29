@@ -63,7 +63,7 @@ def render(spec, number=1):
 
     kind = spec.get("kind") if spec.get("kind") in ("line", "bar", "hbar", "pie") else "bar"
     fig, ax = plt.subplots(figsize=(8.2, 4.4), dpi=160)
-    title = str(spec.get("title") or f"图{number}")
+    title = str(spec.get("title") or f"附图{number}")
     unit = str(spec.get("unit") or "")
 
     if kind == "pie":
@@ -116,11 +116,11 @@ def render(spec, number=1):
 
     out_dir = config.OUTPUTS_DIR / "charts"
     out_dir.mkdir(parents=True, exist_ok=True)
-    fname = f"图{number}-{_clean_name(title)}.png"
+    fname = f"附图{number}-{_clean_name(title)}.png"
     path = out_dir / fname
     i = 2
     while path.exists():
-        path = out_dir / f"图{number}-{_clean_name(title)}-{i}.png"
+        path = out_dir / f"附图{number}-{_clean_name(title)}-{i}.png"
         i += 1
     fig.tight_layout()
     fig.savefig(path, bbox_inches="tight")
@@ -145,11 +145,15 @@ def render_all(specs, limit=None):
 
 
 def insert_into_report(report_md, charts):
-    """把图表以「图表」节追加到报告末尾，每图带标题、图片与来源注。"""
+    """把图表以「附图」节追加到报告末尾，每图带标题、图片与来源注。
+
+    编号用「附图N」与正文里的图占位编号（图N）区分：正文占位是写作建议，
+    实际渲染的图按渲染顺序独立编号，两套不互相对应。
+    """
     if not charts:
         return report_md
-    parts = ["\n## 图表\n"]
-    for c in charts:
+    parts = ["\n## 附图\n"]
+    for n, c in enumerate(charts, 1):
         note = f"\n数据来源：{c['note']}\n" if c.get("note") else "\n"
-        parts.append(f"\n### {c['title']}\n\n![]({ 'charts/' + c['file'] })\n{note}")
+        parts.append(f"\n### 附图{n}·{c['title']}\n\n![]({ 'charts/' + c['file'] })\n{note}")
     return report_md.rstrip() + "\n" + "".join(parts)

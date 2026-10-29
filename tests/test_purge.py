@@ -19,11 +19,20 @@ from src import config, ingest, purge, validate, wiki  # noqa: E402
 FAILS = []
 
 
-def _skip_if_empty():
-    # 直读真实库清单：pytest 全量下 config 路径可能被先前测试指到临时目录，不可信
+def _skip_if_no(*kinds):
+    """库内缺指定类别材料时跳过：删除回归的选料是动态的，类别不齐就跑不动。
+    直读真实库清单——pytest 全量下 config 路径可能被先前测试指到临时目录，不可信。"""
     m = ROOT / "data" / "manifest.json"
-    if not m.exists() or not json.loads(m.read_text(encoding="utf-8")).get("files"):
+    try:
+        files = json.loads(m.read_text(encoding="utf-8")).get("files") or []
+    except (OSError, ValueError):
+        files = []
+    if not files:
         pytest.skip("库为空：删除回归需要已摄入材料")
+    labels = {"reports": "研报", "filings": "财报", "policies": "政策"}
+    for k in kinds:
+        if not any(str(f.get("path") or "").startswith(f"raw/{k}/") for f in files):
+            pytest.skip(f"库内没有{labels.get(k, k)}：本用例需要已摄入的{labels.get(k, k)}")
 
 
 def check(label, got, want):
@@ -69,7 +78,7 @@ def cited_in(body, name):
 
 
 def test_list():
-    _skip_if_empty()
+    _skip_if_no("reports", "filings")
     sandbox()
     print("原文件清单：")
     rows = purge.file_entries()
@@ -118,7 +127,7 @@ def test_list():
 
 
 def test_purge_report():
-    _skip_if_empty()
+    _skip_if_no("reports")
     print("删一份研报：")
     rows = purge.file_entries()
     rep = next(r for r in rows if r["kind_label"] == "研报" and not r["missing"]
@@ -153,7 +162,7 @@ def test_purge_report():
 
 
 def test_purge_filing():
-    _skip_if_empty()
+    _skip_if_no("filings")
     print("删一份财报：")
     rows = purge.file_entries()
     fil = next(r for r in rows if r["kind_label"] == "财报" and not r["missing"]
@@ -183,7 +192,7 @@ def test_purge_filing():
 
 
 def test_missing_entry():
-    _skip_if_empty()
+    _skip_if_no("reports")
     print("清单残留（原文件已不在 raw/）：")
     rows = purge.file_entries()
     remaining = {r["name"] for r in rows}
@@ -200,7 +209,7 @@ def test_missing_entry():
 
 
 def test_batch_and_dangling_link():
-    _skip_if_empty()
+    _skip_if_no("reports")
     print("整批删除与双链降级：")
     # 重新搭一个干净沙盒，把三份一起删掉
     sandbox()
@@ -215,7 +224,7 @@ def test_batch_and_dangling_link():
 
 
 def test_web_task():
-    _skip_if_empty()
+    _skip_if_no("reports")
     print("走网页接口跑删除任务：")
     sandbox()
     from src.web.app import app

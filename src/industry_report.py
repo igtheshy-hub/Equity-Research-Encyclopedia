@@ -1080,6 +1080,8 @@ REPAIR_PROMPT = """按下面列出的硬伤，给最小改动的替换对，不�
 
 只输出 JSON：{{"fixes": [{{"old": "...", "new": "..."}}]}}
 
+注意：new 必须是改好的正文片段本身。不要输出修订说明、核对结论（如「已核对，修正如下」「该锚点无误，保留」「原挂p1，改为p2」），那类文字是给审校记录看的，混进 new 会原样写进报告正文。
+
 硬伤：
 {ISSUES}
 
@@ -1199,10 +1201,55 @@ def _phase_write(job_id, tid):
         save_job(job)
 
     _save_report(job, sections, done)
+    # 各节独立起号导致拼接后表/图号重复，成文后全局重排一次（审校与出图都基于重排后的全文）
+    path = config.ROOT / job["report_path"]
+    path.write_text(_renumber_tables_figs(path.read_text(encoding="utf-8")), encoding="utf-8")
     job["status"] = "charting"
     _log(job, f"成文完成，{len(sections)} 节")
     save_job(job)
     _start(job_id, _phase_charts, f"{kind_label(job)}图表《{job['title']}》")
+
+
+_TABLE_FIG_RE = re.compile(r"(表|图)(\d+)")
+_TABLE_FIG_HEAD_RE = re.compile(r"\*\*(表|图)(\d+)")
+
+
+def _renumber_tables_figs(md):
+    """全文把 表N/图N 重排成全局连续编号。
+
+    分节成文时各节独立起号，拼接后每节都有表1/图1。两遍处理：
+    先逐节给加粗标题行（**表N …**）按出现顺序分配全局新号，再替换节内引用——
+    引用与标题同节才能对上号，跨节或无标题的占位描述保留原号。
+    文末图片引用行（![](charts/…)）的编号是渲染产物，跳过不动。
+    """
+    counters = {"表": 0, "图": 0}
+    mapping = {}
+    sec = 0
+    for ln in md.splitlines():
+        if ln.startswith("## "):
+            sec += 1
+        elif not ln.startswith("!["):
+            for kind, num in _TABLE_FIG_HEAD_RE.findall(ln):
+                counters[kind] += 1
+                mapping[(sec, kind, num)] = counters[kind]
+
+    sec = 0
+    out = []
+
+    def repl(m):
+        new = mapping.get((sec, m.group(1), m.group(2)))
+        return f"{m.group(1)}{new}" if new else m.group(0)
+
+    for ln in md.splitlines():
+        if ln.startswith("## "):
+            sec += 1
+        elif ln.startswith("!["):
+            out.append(ln)
+            continue
+        else:
+            ln = _TABLE_FIG_RE.sub(repl, ln)
+        out.append(ln)
+    return "\n".join(out)
 
 
 def _save_report(job, sections, done):
@@ -1250,7 +1297,7 @@ def _phase_charts(job_id, tid):
     job["charts"] = rendered
     if rendered:
         report_md = charts.insert_into_report(
-            re.sub(r"\n## 图表\n.*$", "", report_md, flags=re.S).rstrip(), rendered)
+            re.sub(r"\n## (?:图表|附图)\n.*$", "", report_md, flags=re.S).rstrip(), rendered)
         path.write_text(report_md, encoding="utf-8")
         _log(job, f"出图 {len(rendered)} 张")
     else:
@@ -1480,6 +1527,19 @@ def _order_findings(job, report_md, findings, tid):
     return [findings[i] for i in order]
 
 
+# 审校答复腔特征词：正常研报正文不会这么写，new 里出现即说明模型把修订说明当成了替换文本
+_REPAIR_META_WORDS = ("修正如下", "已核对", "不作改动", "锚点原文即为", "（原挂", "误报")
+
+
+def _repair_rejected(old, new):
+    """替换对闸门：拦下会把审校说明写进正文的坏替换。返回拒因，空串=放行。"""
+    if any(w in new for w in _REPAIR_META_WORDS):
+        return "new 是审校答复说明"
+    if len(new) > 2 * len(old) + 80:
+        return f"new 比 old 膨胀过多（{len(old)}→{len(new)} 字）"
+    return ""
+
+
 def _phase_review(job_id, tid):
     job = load_job(job_id)
     path = config.ROOT / job["report_path"]
@@ -1536,9 +1596,14 @@ def _phase_review(job_id, tid):
         except llm.LLMError as e:
             _log(job, f"第 {round_no} 轮修复调用失败：{e}")
             break
-        fixed, changes = report_md, 0
+        fixed, changes, rejected = report_md, 0, 0
         for fx in out.get("fixes") or []:
             old, new = str(fx.get("old") or "").strip(), str(fx.get("new") or "").strip()
+            why = _repair_rejected(old, new) if old and new and new != old else ""
+            if why:
+                rejected += 1
+                _log(job, f"第 {round_no} 轮拒绝一处替换：{why}")
+                continue
             if old and old in fixed and new and new != old:
                 fixed = fixed.replace(old, new, 1)
                 changes += 1
@@ -1547,7 +1612,8 @@ def _phase_review(job_id, tid):
             path.write_text(fixed.rstrip() + "\n", encoding="utf-8")
             report_md = fixed
             repaired_rounds += 1
-            _log(job, f"第 {round_no} 轮按 {len(pending)} 条问题替换 {changes} 处")
+            _log(job, f"第 {round_no} 轮按 {len(pending)} 条问题替换 {changes} 处"
+                 + (f"（拒 {rejected} 处坏替换）" if rejected else ""))
         elif changes:
             _log(job, f"第 {round_no} 轮替换幅度过大被拒（{changes} 处），保留原文复核")
         else:
