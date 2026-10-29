@@ -424,6 +424,10 @@ details.report-card > summary {
 }
 details.report-card > summary::before { content: "▸ "; color: var(--ink-2); }
 details.report-card[open] > summary::before { content: "▾ "; }
+.finding { margin: 10px 0; }
+.finding .f-line { line-height: 1.6; }
+.finding .f-tag { display: inline-block; font-weight: 600; font-size: 12px; color: var(--ink-2); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; margin-right: 6px; }
+.finding .f-note { margin-top: 3px; padding-left: 10px; border-left: 2px solid var(--line); color: var(--ink-2); font-size: 13px; line-height: 1.55; }
 details.report-card[open] > summary { margin-bottom: 8px; }
 .report-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
 .report-title { font-size: 18px; font-weight: 700; margin-bottom: 2px; }

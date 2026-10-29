@@ -224,10 +224,23 @@ def _unique_path(directory, stem, suffix):
 
 
 def _industry_of(title, question):
-    text = sanitize(f"{title} {question}")
-    for word in ("行业深度报告", "行业研究报告", "行业研报", "深度报告", "研究报告", "研报", "行业", "报告"):
-        text = text.replace(word, "")
-    return text.strip() or sanitize(title) or "该行业"
+    """行业研报主题：标题与提问各剥一遍报告类词，取更短的非空结果。
+
+    标题由意图判别生成、最干净（如「乘用车行业研究报告」→「乘用车」）；直接拼接提问会
+    留下「生成一份」「写一份」这类指令词（如「乘用车生成一份乘用车」），榜单匹配与
+    东财搜索都会落空，所以分开剥、取短者。
+    """
+    stop = ("行业深度报告", "行业研究报告", "行业研报", "深度报告", "研究报告", "研报", "行业", "报告")
+    cands = []
+    for text in (sanitize(title or ""), sanitize(question or "")):
+        for word in stop:
+            text = text.replace(word, "")
+        text = text.strip()
+        if text:
+            cands.append(text)
+    if not cands:
+        return sanitize(title) or "该行业"
+    return min(cands, key=len)
 
 
 def _terms(text):
@@ -334,6 +347,24 @@ def _log_manual_broker_gap(job, brokers, samples):
                "从首页上传或放 raw/inbox 摄入后重新发起研报")
 
 
+def _sample_top3_note(job):
+    """样板前 3 覆盖不全时的审校提示：占比 + 放宽说明 + 手动补齐路径。"""
+    top3 = job.get("top3") or {}
+    brokers = [str(b) for b in (top3.get("brokers") or [])]
+    samples = job.get("samples") or []
+    if not brokers or not samples:
+        return ""
+    have = {str(s.get("broker") or "") for s in samples}
+    hit = [b for b in brokers if b in have]
+    if len(hit) == len(brokers):
+        return ""
+    missing = [b for b in brokers if b not in have]
+    return (f"样板研报 {len(samples)} 份中仅 {len(hit)} 份出自新财富「{top3.get('group') or ''}」前 3"
+            f"（{('、'.join(hit)) or '无'}），缺 {'、'.join(missing)}，本轮已放宽为综合最优研报成文。"
+            "补齐方法：在慧博终端下载缺失券商的本主题研报 PDF，从首页上传摄入，"
+            "然后删除本报告重新发起，管线会优先用库内新财富前 3 研报当样板")
+
+
 def _ensure_company_samples(job, tid):
     """公司研报样板：库内新财富前 3 优先，缺的走榜单加东财下载补齐。"""
     subject = _subject(job)
@@ -355,6 +386,7 @@ def _ensure_company_samples(job, tid):
         return _sample_candidates(job)[:3]
     brokers = sorted([it for it in ranking["items"] if it["group"] == group],
                      key=lambda x: x.get("rank") or 99)[:3]
+    job["top3"] = {"group": group, "brokers": [b["org"] for b in brokers]}
     hits = _library_top3_samples([subject], brokers)
     if len(hits) >= len(brokers):
         _log(job, f"样板取库内新财富「{group}」前 {len(brokers)} 研报：" + "、".join(s["file"] for s in hits))
@@ -401,6 +433,7 @@ def _ensure_samples(job, tid):
                              key=lambda x: x.get("rank") or 99)[:3]
     except fetcher.FetchError as e:
         _log(job, f"慧博榜单取不到（{e}），样板按东财热度找")
+    job["top3"] = {"group": group, "brokers": [b["org"] for b in brokers]}
     samples = []
     if brokers:
         hits = _library_top3_samples(keys, brokers)
@@ -682,7 +715,7 @@ OUTLINE_PROMPT = """你是中文卖方行业研报的主笔，现在只定大纲
 {PAGES}
 
 要求：
-1. 章节顺序固定按行业分析的展开逻辑，最多 {MAXS} 节：产业链（上游、中游、下游与价值分布）→ 生产端（产能、产量、成本与供给格局）→ 需求端（需求结构、下游景气、渗透率）→ 市场规模（蛋糕有多大，量价与规模测算）→ 竞争格局（有多少人分蛋糕，份额、集中度、玩家分层）→ 增长驱动（蛋糕如何变大，政策、技术、渗透率、出口等）→ 盈利与估值 → 投资要点 → 风险提示。产业链必须放在第一节，投资要点必须放在行业分析之后，不得用投资要点开篇；缺料的章节可合并，但产业链、生产端、需求端、市场规模、竞争格局、增长驱动六节必须保留
+1. 章节顺序固定按行业分析的展开逻辑，最多 {MAXS} 节：产业链（上游、中游、下游与价值分布）→ 生产端（产能、产量、成本与供给格局）→ 需求端（需求结构、下游景气、渗透率）→ 市场规模（量价与规模测算）→ 竞争格局（份额、集中度、玩家分层）→ 增长驱动（政策、技术、渗透率、出口等）→ 盈利与估值 → 投资要点 → 风险提示。产业链必须放在第一节，投资要点必须放在行业分析之后，不得用投资要点开篇；缺料的章节可合并，但产业链、生产端、需求端、市场规模、竞争格局、增长驱动六节必须保留
 2. 每节写清：本节论点、需要的数据与表、图表位、取料页面（写 slug）
 3. 只用知识库页面里有的材料定结构；库里没有的数据不要在这里编，缺口由下一道程序另列
 4. 输出 markdown：第一行 "# 大纲：{TITLE}"，其后每节 "## 一、标题" 形式，节内用短横线列论点/数据/图表/取料页
@@ -757,6 +790,8 @@ def _phase_outline(job_id, tid):
     job["samples"] = _ensure_samples(job, tid)
     sel, pages_text, _allowed = _material(job)
     if not sel and not job["samples"]:
+        # 先把样板链与选页的日志落盘再报错，避免 _start 异常分支用旧磁盘版覆盖丢失
+        save_job(job)
         raise RuntimeError("知识库里没有与该主题相关的页面，样板也没取到；先上传或取数入库后再试")
     job["pages"] = [{"slug": p["slug"], "title": str(p["meta"].get("title") or p["slug"])} for p in sel]
     _log(job, f"取料页 {len(sel)} 个：{('、'.join(p['slug'] for p in sel)) or '无'}")
@@ -1040,12 +1075,40 @@ REPAIR_PROMPT = """按下面列出的硬伤，给最小改动的替换对，不�
 规则：
 - old 必须从报告里逐字复制，能唯一定位到一处；new 是改好的同一片段
 - 不改结构、不删节、不新造数字；涉及锚点的，只能换成报告里已出现过的真实锚点
+- 数据缺失或口径对不上的表述，改法是删掉残缺部分或改成泛称，不是编造数值
 - 没有问题就给空数组
 
 只输出 JSON：{{"fixes": [{{"old": "...", "new": "..."}}]}}
 
 硬伤：
 {ISSUES}
+
+报告全文：
+{REPORT}"""
+
+VERIFY_PROMPT = """你是审稿复核员。上一轮审校发现的问题列在下面，报告随后已做修改。
+逐条判定每个问题在修改后报告里的现状，只看现状：
+- 已解决：错误表述已被修正、替换或整句删除
+- 误报：原判罚不成立，修改前的报告本无此错（审稿看错口径、锚点其实支持该表述等）
+- 未解决：同样的错误仍在
+
+只输出 JSON：{{"verdicts": [{{"idx": 1, "verdict": "已解决", "note": "一句话依据"}}]}}
+
+问题清单（idx 对应）：
+{FINDINGS}
+
+修改后的报告全文：
+{REPORT}"""
+
+ORDER_PROMPT = """你是审校记录排版员。审校处置条目列在下面，报告全文随附。
+把条目按其在报告中的位置先后重新排序：所在章节靠前的在前，同章节内按正文先后，
+图表按所属章节算。锚点核验、全文这类定位不到具体章节的排最后。
+同位置时硬伤在前、建议在后。只输出顺序，不改写任何条目内容。
+
+只输出 JSON：{{"order": [2, 0, 1]}}
+
+条目（idx [类别·级别] 位置：问题）：
+{FINDINGS}
 
 报告全文：
 {REPORT}"""
@@ -1353,18 +1416,82 @@ def _report_chunks(md, size):
     return chunks or [md]
 
 
+def _verify_findings(job, report_md, findings, tid):
+    """修复后复核：程序条目重跑锚点核验对照，模型条目让模型逐条判定，回填处置结果。"""
+    mech_now = _anchor_checks(report_md)
+    open_model = [f for f in findings
+                  if f["kind"] == "模型" and f.get("outcome") not in ("已修复", "误报")]
+    if open_model:
+        listing = "\n".join(f"{i}. [{f['level']}] {f['where']}：{f['problem']}"
+                            for i, f in enumerate(open_model, 1))
+        try:
+            _tick(tid, 80, f"复核 {len(open_model)} 条模型意见")
+            out = llm.chat([{"role": "user", "content": VERIFY_PROMPT
+                             .replace("{FINDINGS}", listing)
+                             .replace("{REPORT}", report_md)}], task="review", response_json=True)
+            verdicts = {int(v.get("idx") or 0): v for v in (out.get("verdicts") or []) if isinstance(v, dict)}
+        except (llm.LLMError, ValueError) as e:
+            _log(job, f"模型复核调用失败（相关条目按未解决留人工）：{e}")
+            verdicts = {}
+        for i, f in enumerate(open_model, 1):
+            v = verdicts.get(i) or {}
+            verdict = str(v.get("verdict") or "")
+            if verdict == "已解决":
+                f["outcome"], f["note"] = "已修复", str(v.get("note") or "")
+            elif verdict == "误报":
+                f["outcome"], f["note"] = "误报", str(v.get("note") or "")
+            else:
+                f["outcome"] = "未解决"
+                f["note"] = str(v.get("note") or "") or "复核未给出结论，按未解决留人工"
+    for f in findings:
+        if f["kind"] != "程序" or f.get("outcome") in ("已修复", "误报"):
+            continue
+        if f["problem"] in mech_now:
+            f["outcome"], f["note"] = "未解决", "修复后程序核验仍报此条"
+        else:
+            f["outcome"], f["note"] = "已修复", "修复后程序核验不再报此条"
+    # 修复引入的新程序问题追加进清单，下一轮继续处理
+    known = {f["problem"] for f in findings if f["kind"] == "程序"}
+    for p in mech_now:
+        if p not in known:
+            findings.append({"kind": "程序", "level": "硬伤", "where": "锚点核验",
+                             "problem": p, "outcome": "未解决", "note": "修复轮新引入"})
+    return mech_now
+
+
+def _order_findings(job, report_md, findings, tid):
+    """处置完成后按报告位置整理条目顺序，记录按章节读起来顺；调用失败保持原序。"""
+    if len(findings) < 2:
+        return findings
+    listing = "\n".join(f"{i}. [{f['kind']}·{f['level']}] {f['where']}：{f['problem']}"
+                        for i, f in enumerate(findings))
+    try:
+        _tick(tid, 90, f"按报告位置整理 {len(findings)} 条条目顺序")
+        out = llm.chat([{"role": "user", "content": ORDER_PROMPT
+                         .replace("{FINDINGS}", listing)
+                         .replace("{REPORT}", report_md)}], task="review", response_json=True)
+        order = [int(x) for x in (out.get("order") or []) if str(x).strip().lstrip("-").isdigit()]
+    except (llm.LLMError, ValueError, TypeError) as e:
+        _log(job, f"审校条目排序调用失败（保持原序）：{e}")
+        return findings
+    if sorted(order) != list(range(len(findings))):
+        _log(job, "审校条目排序返回不完整（保持原序）")
+        return findings
+    return [findings[i] for i in order]
+
+
 def _phase_review(job_id, tid):
     job = load_job(job_id)
     path = config.ROOT / job["report_path"]
     report_md = path.read_text(encoding="utf-8")
-    _tick(tid, 20, "程序核对锚点")
+    _tick(tid, 10, "程序核对锚点")
     mech = _anchor_checks(report_md)
-    _tick(tid, 50, "模型审稿")
+    _tick(tid, 30, "模型审稿")
     headings = "\n".join(ln for ln in report_md.splitlines() if ln.startswith("## ")) or "（无章节标题）"
     issues, seen = [], set()
     chunks = _report_chunks(report_md, 16000)
     for i, chunk in enumerate(chunks, 1):
-        tasks.update(tid, current=40 + i, detail=f"模型审稿 第 {i} 段")
+        tasks.update(tid, current=20 + i, detail=f"模型审稿 第 {i} 段")
         if len(chunks) == 1:
             scope = "报告全文，逐条审。"
         else:
@@ -1388,37 +1515,59 @@ def _phase_review(job_id, tid):
                 issues.append(it)
     issues = issues[:12]
 
-    # 锚点文件不存在、页码越界是真硬伤；数字对不上里只有「挂错页」可直接修，
-    # 其余可能是亿元/千元换算或未标测算的派生值，留给人工复核
-    broken = [p for p in mech
-              if "找不到本句数字" not in p or "锚点疑似挂错" in p][:6]
-    hard = [i for i in issues if str(i.get("level")) == "硬伤"]
-    hard += [{"level": "硬伤", "where": "锚点核验", "problem": p} for p in broken]
-    repaired = False
-    if hard:
-        _tick(tid, 70, f"按 {len(hard)} 条硬伤修一轮")
+    # 发现即处置：每条问题走 修复 → 复核 → 已修复/误报/未解决，审校记录只呈现处置结果
+    findings = [{"kind": "程序", "level": "硬伤" if ("找不到本句数字" not in p or "锚点疑似挂错" in p) else "建议",
+                 "where": "锚点核验", "problem": p} for p in mech]
+    findings += [{"kind": "模型", "level": str(i.get("level") or "建议"),
+                  "where": str(i.get("where") or ""), "problem": str(i.get("problem") or "")} for i in issues]
+    repaired_rounds = 0
+    for round_no in (1, 2):
+        pending = [f for f in findings if f.get("outcome") not in ("已修复", "误报")]
+        if round_no == 2:  # 第二轮只追硬伤与程序问题，建议级修不动就留人工
+            pending = [f for f in pending if f["level"] == "硬伤" or f["kind"] == "程序"]
+        if not pending:
+            break
+        _tick(tid, 40 + round_no * 10, f"按 {len(pending)} 条问题修第 {round_no} 轮")
         try:
             out = llm.chat([{"role": "user", "content": REPAIR_PROMPT
                              .replace("{ISSUES}", "\n".join(
-                                 f"- {i.get('where')}：{i.get('problem')}" for i in hard))
+                                 f"- [{f['level']}] {f['where']}：{f['problem']}" for f in pending))
                              .replace("{REPORT}", report_md)}], task="review", response_json=True)
-            fixed, changes = report_md, 0
-            for f in out.get("fixes") or []:
-                old, new = str(f.get("old") or "").strip(), str(f.get("new") or "").strip()
-                if old and old in fixed and new and new != old:
-                    fixed = fixed.replace(old, new, 1)
-                    changes += 1
-            if changes and len(fixed) >= len(report_md) * 0.9:
-                fixed = ask_mod.strip_glitch(fixed)
-                path.write_text(fixed.rstrip() + "\n", encoding="utf-8")
-                mech = _anchor_checks(fixed)
-                repaired = True
-                _log(job, f"按 {len(hard)} 条硬伤替换 {changes} 处")
         except llm.LLMError as e:
-            _log(job, f"定向修复失败：{e}")
+            _log(job, f"第 {round_no} 轮修复调用失败：{e}")
+            break
+        fixed, changes = report_md, 0
+        for fx in out.get("fixes") or []:
+            old, new = str(fx.get("old") or "").strip(), str(fx.get("new") or "").strip()
+            if old and old in fixed and new and new != old:
+                fixed = fixed.replace(old, new, 1)
+                changes += 1
+        if changes and len(fixed) >= len(report_md) * 0.9:
+            fixed = ask_mod.strip_glitch(fixed)
+            path.write_text(fixed.rstrip() + "\n", encoding="utf-8")
+            report_md = fixed
+            repaired_rounds += 1
+            _log(job, f"第 {round_no} 轮按 {len(pending)} 条问题替换 {changes} 处")
+        elif changes:
+            _log(job, f"第 {round_no} 轮替换幅度过大被拒（{changes} 处），保留原文复核")
+        else:
+            _log(job, f"第 {round_no} 轮模型未给出可用替换，直接复核")
+        mech = _verify_findings(job, report_md, findings, tid)
 
-    job["review"] = {"mechanical": mech, "issues": issues, "repaired": repaired}
-    _log(job, f"审校：程序问题 {len(mech)} 条，模型意见 {len(issues)} 条，硬伤修复{'已做' if repaired else '未做'}")
+    findings = _order_findings(job, report_md, findings, tid)
+    fixed_n = [f for f in findings if f.get("outcome") == "已修复"]
+    fp_n = [f for f in findings if f.get("outcome") == "误报"]
+    left_n = [f for f in findings if f.get("outcome") not in ("已修复", "误报")]
+    n_prog = sum(1 for f in findings if f["kind"] == "程序")
+    summary = (f"审校闭环：发现 {len(findings)} 条（程序 {n_prog}、模型 {len(findings) - n_prog}），"
+               f"修复 {len(fixed_n)} 条，误报排除 {len(fp_n)} 条，遗留 {len(left_n)} 条"
+               + (f"（遗留已逐条注明原因，待人工定夺）" if left_n else ""))
+    note = _sample_top3_note(job)
+    job["review"] = {"summary": summary, "findings": findings,
+                     "mechanical": mech, "sample_note": note}
+    if note:
+        _log(job, "审校提示：" + note)
+    _log(job, summary)
     job["status"] = "docxing"
     save_job(job)
     _start(job_id, _phase_docx, f"{kind_label(job)}转 Word《{job['title']}》")

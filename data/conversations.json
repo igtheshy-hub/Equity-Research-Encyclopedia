@@ -1,0 +1,41 @@
+{
+ "8dcd5bf57f": {
+  "id": "8dcd5bf57f",
+  "title": "生成一份乘用车行业研究报告",
+  "created_at": "2026-10-29T09:55:51",
+  "messages": [
+   {
+    "role": "user",
+    "content": "生成一份乘用车行业研究报告",
+    "id": "52340e57dc",
+    "ts": "2026-10-29T09:55:51"
+   },
+   {
+    "role": "assistant",
+    "content": "已开始生成行业研报《乘用车行业研究报告》，先到报告页确认大纲。",
+    "status": "done",
+    "kind": "report_ack",
+    "id": "a5db1784d2",
+    "ts": "2026-10-29T09:55:51",
+    "report_job": "a9b2760826",
+    "report_kind": "industry"
+   },
+   {
+    "role": "user",
+    "content": "生成一份乘用车行业研究报告",
+    "id": "11f5564396",
+    "ts": "2026-10-29T10:51:27"
+   },
+   {
+    "role": "assistant",
+    "content": "已开始生成行业研报《乘用车行业研究报告》，先到报告页确认大纲。",
+    "status": "done",
+    "kind": "report_ack",
+    "id": "74fc2d258f",
+    "ts": "2026-10-29T10:51:27",
+    "report_job": "b2c74600b6",
+    "report_kind": "industry"
+   }
+  ]
+ }
+}

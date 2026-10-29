@@ -199,12 +199,35 @@ function candidatesHTML(job) {
 
 function reviewHTML(job) {
   const rev = job.review || {};
+  const note = rev.sample_note || "";
+  if (Array.isArray(rev.findings)) {
+    const groups = [
+      { key: "已修复", title: "已修复" },
+      { key: "误报", title: "误报排除" },
+      { key: null, title: "遗留（附原因，待人工）" },
+    ];
+    const blocks = groups.map((g) => {
+      const rows = rev.findings.filter((f) => (g.key ? f.outcome === g.key : f.outcome !== "已修复" && f.outcome !== "误报"));
+      if (!rows.length) return "";
+      const items = rows.map((f) => `<li class="finding">
+        <div class="f-line"><span class="f-tag">${esc(f.kind || "")}·${esc(f.level || "")}</span>${esc(f.where || "")}：${esc(f.problem || "")}</div>
+        ${f.note ? `<div class="f-note">处置：${esc(f.note)}</div>` : ""}
+      </li>`).join("");
+      return `<h3>${g.title}（${rows.length}）</h3><ul class="plain-list">${items}</ul>`;
+    }).join("");
+    if (!blocks && !note) return "";
+    return `<details class="report-card"><summary>${esc(rev.summary || "审校记录")}</summary>
+      ${note ? `<h3>样板覆盖提示</h3><p>${esc(note)}</p>` : ""}
+      ${blocks}
+    </details>`;
+  }
   const mech = rev.mechanical || [];
   const issues = rev.issues || [];
-  if (!mech.length && !issues.length) return "";
+  if (!mech.length && !issues.length && !note) return "";
   const mechRows = mech.map((m) => `<li>${esc(m)}</li>`).join("");
   const issueRows = issues.map((i) => `<li><b>${esc(i.level || "")}</b> ${esc(i.where || "")}：${esc(i.problem || "")}</li>`).join("");
   return `<details class="report-card"><summary>审校记录（程序 ${mech.length} 条，模型 ${issues.length} 条${rev.repaired ? "，硬伤已修一轮" : ""}）</summary>
+    ${note ? `<h3>样板覆盖提示</h3><p>${esc(note)}</p>` : ""}
     ${mechRows ? `<h3>程序核对</h3><ul class="plain-list">${mechRows}</ul>` : ""}
     ${issueRows ? `<h3>模型审稿</h3><ul class="plain-list">${issueRows}</ul>` : ""}
   </details>`;
