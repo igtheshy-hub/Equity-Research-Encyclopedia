@@ -68,6 +68,16 @@ def list_conversations():
     return out
 
 
+def delete(cid):
+    with _lock:
+        convs = _load()
+        if cid not in convs:
+            return False
+        del convs[cid]
+        _save()
+        return True
+
+
 def append_message(cid, msg):
     with _lock:
         conv = _load().get(cid)

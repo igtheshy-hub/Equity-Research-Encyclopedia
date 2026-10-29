@@ -154,6 +154,13 @@ def api_conversations_new():
     return jsonify({"conv": conv})
 
 
+@api.delete("/api/conversations/<cid>")
+def api_conversation_delete(cid):
+    if not sessions.delete(cid):
+        return jsonify({"error": "会话不存在"}), 404
+    return jsonify({"ok": True})
+
+
 @api.get("/api/conversations/<cid>")
 def api_conversation(cid):
     conv = sessions.get(cid)

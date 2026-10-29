@@ -9,6 +9,7 @@ const PANE_HTML = `
   <div class="pane-head">
     <select class="conv-select" title="切换会话"></select>
     <button class="ghost sm new-conv" title="开一个空白会话">新会话</button>
+    <button class="ghost sm del-conv" title="删除当前会话">删除</button>
     <button class="ghost sm extract" title="把本会话答案里值得进知识库的内容写进 wiki">提取</button>
   </div>
   <div class="pane-msgs"><p class="muted pane-empty">输入问题开始提问，答案后台生成，切页不丢。</p></div>
@@ -107,6 +108,20 @@ function makePane(el) {
     fetch("/api/conversations", { method: "POST" })
       .then((r) => r.json())
       .then((d) => pane.loadConvs().then(() => pane.selectConv(d.conv.id)));
+  });
+
+  el.querySelector(".del-conv").addEventListener("click", () => {
+    const cur = pane.convs.find((c) => c.id === pane.convId);
+    if (!cur) { App.toast("当前没有会话", "warn"); return; }
+    if (!confirm(`删除会话「${cur.title || "未命名"}」？未提取的沉淀提案会一并删除，不可恢复。`)) return;
+    fetch("/api/conversations/" + encodeURIComponent(pane.convId), { method: "DELETE" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.error) { App.toast(d.error, "bad"); return; }
+        App.toast("会话已删除", "info");
+        pane.loadConvs(false);
+      })
+      .catch((err) => App.toast("删除失败：" + err, "bad"));
   });
 
   el.querySelector(".extract").addEventListener("click", () => {
