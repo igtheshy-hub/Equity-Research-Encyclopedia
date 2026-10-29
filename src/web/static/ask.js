@@ -114,12 +114,19 @@ function makePane(el) {
     const cur = pane.convs.find((c) => c.id === pane.convId);
     if (!cur) { App.toast("当前没有会话", "warn"); return; }
     if (!confirm(`删除会话「${cur.title || "未命名"}」？未提取的沉淀提案会一并删除，不可恢复。`)) return;
-    fetch("/api/conversations/" + encodeURIComponent(pane.convId), { method: "DELETE" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.error) { App.toast(d.error, "bad"); return; }
-        App.toast("会话已删除", "info");
-        pane.loadConvs(false);
+    const gone = pane.convId;
+    fetch("/api/conversations/" + encodeURIComponent(gone), { method: "DELETE" })
+      .then((r) => r.json().then((d) => ({ ok: r.status === 200 || r.status === 404, d })))
+      .then(({ ok, d }) => {
+        // 404 = 会话已在别的窗口/分栏删掉，按已删除处理，别报错吓人
+        if (!ok) { App.toast(d.error || "删除失败", "bad"); return; }
+        App.toast(d.ok ? "会话已删除" : "会话已在别处删除，列表已刷新", "info");
+        // 其他分栏可能还挂着被删会话：统一清引用并各自刷新
+        panes.forEach((p) => {
+          const keep = p.convId && p.convId !== gone;
+          if (!keep) p.convId = null;
+          p.loadConvs(keep);
+        });
       })
       .catch((err) => App.toast("删除失败：" + err, "bad"));
   });
