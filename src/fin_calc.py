@@ -1,6 +1,6 @@
 """财报计算器：单位归一、科目归一、勾稽校验、报告期运算与派生指标。
 
-口径依据 schema/财报摄取-03-多口径指标字典.md；科目依据 schema/filing_items.json。
+口径依据 .claude/skills/finstmt-ingest/references/财报摄取-03-多口径指标字典.md；科目依据 schema/filing_items.json。
 所有计算纯机械，不做任何判断。勾稽覆盖 R1—R4；R4 的补充资料起点净利润由 src/filing.py
 从补充资料页机械解析后传入，取不到时跳过。
 """

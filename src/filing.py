@@ -1,4 +1,4 @@
-"""财报专用摄入流程（schema/财报摄取-skill.md 的实现）。
+"""财报专用摄入流程（.claude/skills/finstmt-ingest/SKILL.md 的实现）。
 
 四段式：定位（找报表页码与元数据）→ 抄录（LLM 逐科目转结构化行）→ 计算（代码勾稽与
 派生指标，见 fin_calc）→ 落库（【数据】【指标】【管理层】行进公司页 + data/fin 结构化存储）。

@@ -10,9 +10,9 @@ description: 财报分析纪律：先盘【数据】【指标】【管理层】�
 v1.1 变更（源自我对比亚迪年报问答的复盘）：呈现改倒金字塔；流动性判断先分负债成色；新增三个机械信号（现金存量变动、利润补助依赖、藏杠杆工具）；金额统一亿元两位小数、锚点只挂首次出现。
 
 本技能是问答流程指令，引用：
-- schema/财报摄取-02-两岸术语映射.md（口径陷阱、阈值出处规则）
-- schema/财报摄取-03-多口径指标字典.md（口径标签体系）
-- schema/财报摄取-skill.md（数据行格式契约）
+- references/财报摄取-02-两岸术语映射.md（口径陷阱、阈值出处规则，本技能私有参考文档）
+- .claude/skills/finstmt-ingest/references/财报摄取-03-多口径指标字典.md（口径标签体系）
+- .claude/skills/finstmt-ingest/SKILL.md（数据行格式契约）
 
 方法论来源：financial-statement-reading skill（张明辉、Berman 等，三本书整合），分析框架、阈值、产业基准均出自该来源，引用时注明。
 

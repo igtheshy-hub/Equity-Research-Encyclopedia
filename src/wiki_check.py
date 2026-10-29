@@ -9,7 +9,7 @@ from . import config, wiki
 from .ingest import load_manifest
 from .pdf_extract import load_cached, raw_file_index
 
-# 财报三类结构化行的行首模板（schema/财报摄取-skill.md 行格式契约）
+# 财报三类结构化行的行首模板（.claude/skills/finstmt-ingest/SKILL.md 行格式契约）
 LINE_PK_RE = re.compile(r"^【(数据|指标|观点)】(\d{4}(?:FY|H1|Q1|Q3)) ")
 PERSONAL_VIEW_RE = re.compile(r"^【个人观点】")
 

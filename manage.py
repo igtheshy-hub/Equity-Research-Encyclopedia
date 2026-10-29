@@ -56,7 +56,7 @@ def cmd_selftest(args):
     print("== 技能目录 ==")
     for d in ("md-to-docx", "comps-analysis", "competitive-analysis", "sector-overview",
               "earnings-analysis", "data-sources", "macro-data", "industry-report",
-              "company-report", "kb-ask", "finstmt-qa"):
+              "company-report", "kb-ask", "finstmt-qa", "finstmt-ingest"):
         p = config.ROOT / ".claude" / "skills" / d / "SKILL.md"
         if p.exists():
             print(f"  [好] {d}")

@@ -20,6 +20,14 @@ COMPILE_PROMPT = """你是行业知识编辑，把一份材料的逐单元文本
 - 主题划分：公司给 type=company，行业给 type=industry，估值方法/政策术语等给 type=concept
 - 主题名与别名用中文规范名（英文材料也译成中文通用名；证券代码等专有缩写可保留英文）
 - 分节只能用这些节名——公司/行业页：公司概况、行业格局、经营与财务、盈利预测、估值、风险提示、其他；概念页：定义与口径、方法要点、政策背景、应用示例、其他
+- 按固定维度清单逐项过材料，命中的提炼归入对应节，材料没写的维度跳过、不硬凑：
+  · 评级、目标价、营收利润销量的预测值及对应年份 → 盈利预测
+  · 估值方法、估值假设、倍数区间 → 估值；方法与测算口径的讲解另立概念页（方法要点）
+  · 市场规模、产销量、价格、份额与集中度、产业链分工 → 行业格局
+  · 公司主业、股权、产品线 → 公司概况；行业界定与发展脉络 → 行业概况
+  · 公司业务进展、项目产能、财务表现 → 经营与财务
+  · 政策条文、法规标准 → 概念页（政策背景）；指标与术语的口径定义 → 概念页（定义与口径）
+  · 风险因素与不确定性 → 风险提示
 - 每个主题给一句不超过 40 字的 summary
 {FOCUS_RULE}
 只输出 JSON，不要解释：
@@ -414,7 +422,7 @@ def ingest_one(path, manifest, focus=None, targets=None):
         print("  [拒] 未提取到任何文字，不编译")
         return None
     if source_kind(path) == "filing":
-        # 财报走专用流程（结构化科目 + 勾稽 + 派生指标），见 schema/财报摄取-skill.md
+        # 财报走专用流程（结构化科目 + 勾稽 + 派生指标），见 .claude/skills/finstmt-ingest/SKILL.md
         from . import filing as filing_mod
         try:
             r = filing_mod.ingest_filing(path, units, unit_kind, manifest, sha, targets=targets)
