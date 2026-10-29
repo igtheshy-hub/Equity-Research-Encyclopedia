@@ -1,9 +1,13 @@
 import re
+import threading
 from pathlib import Path
 
 import yaml
 
 from . import config
+
+# 问答线程、报告任务线程与摄入任务可能同时写页，写盘串行化（原子替换之外的逻辑层保护）
+WRITE_LOCK = threading.RLock()
 
 # 锚点两种形态：[[文件.pdf#p页码]]、[[文件.docx#para段落号]]（Word 无固定页码，按段落定位）
 ANCHOR_RE = re.compile(r"\[\[([^\[\]#|]+\.(?:pdf|docx))#(p\d+|para\d+)\]\]")
@@ -143,6 +147,7 @@ def render_page(title, sections, type_):
 def write_page(path, meta, body):
     fm = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False, default_flow_style=False)
     text = f"---\n{fm}---\n{body}"
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    with WRITE_LOCK:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)

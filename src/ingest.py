@@ -277,8 +277,17 @@ def _apply_merge(page_path, meta, body, topic, extra_sources, note_prefix):
     hist = meta.get("history") or []
     hist.append(f"{config.today_str()} {note_prefix}（+{added} 条）")
     meta["history"] = hist
+    _check_before_write(meta, new_body, page_path)
     wiki.write_page(page_path, meta, new_body)
     return added
+
+
+def _check_before_write(meta, body, path):
+    # 与 Claude 会话写入同一套校验规则；wikilink 存在性由写盘后的 validate_all 兜底
+    from . import wiki_check
+    problems = wiki_check.check_content(meta, body, path, check_wikilinks=False)
+    if problems:
+        raise RuntimeError(f"{path.name} 写盘前校验未通过：{'；'.join(problems)}")
 
 
 def _dir_type(page_path):
@@ -304,12 +313,19 @@ def _apply_create(decision, topic, extra_sources, note_prefix):
         "updated": config.today_str(),
         "history": [f"{config.today_str()} {note_prefix}（{count} 条）"],
     }
-    aliases = [a for a in topic["aliases"] if _norm(a) != _norm(topic["title"])]
+    seen = {_norm(topic["title"])}
+    aliases = []
+    for a in topic["aliases"]:
+        key = _norm(a)
+        if key and key not in seen:
+            seen.add(key)
+            aliases.append(a)
     if aliases:
         meta["aliases"] = aliases
     if topic["summary"]:
         meta["summary"] = topic["summary"]
     body = wiki.render_page(topic["title"], topic["sections"], type_)
+    _check_before_write(meta, body, path)
     wiki.write_page(path, meta, body)
     return path, count
 
@@ -329,7 +345,9 @@ def _write_source_page(path, topic_titles, report_date, entries_count, extra=Non
     links = "、".join(f"[[{t}]]" for t in topic_titles)
     sections = {"材料信息": info, "贡献": [f"贡献主题页：{links}" if links else "贡献主题页：无"]}
     meta = {"title": title, "type": "source", "sources": [rel], "updated": config.today_str()}
-    wiki.write_page(out_path, meta, wiki.render_page(title, sections, "source"))
+    body = wiki.render_page(title, sections, "source")
+    _check_before_write(meta, body, out_path)
+    wiki.write_page(out_path, meta, body)
 
 
 def _tag_focus_pages(touched_titles, focus, focus_hits):
@@ -357,8 +375,30 @@ def _tag_focus_pages(touched_titles, focus, focus_hits):
         print(f"  [关注] {title} 标注 {len(old_hits)} 条命中")
 
 
-def ingest_one(path, manifest, focus=None):
-    focus = focus or []
+def normalize_targets(targets):
+    """目标数据统一成 [{"item", "why"}]：接受字符串、{"item","why"} 与缺字段的字典。"""
+    out = []
+    for t in targets or []:
+        if isinstance(t, dict):
+            item = str(t.get("item") or "").strip()
+            why = str(t.get("why") or "").strip()
+        else:
+            item, why = str(t).strip(), ""
+        if item:
+            out.append({"item": item, "why": why})
+    return out
+
+
+def ingest_one(path, manifest, focus=None, targets=None):
+    focus = [str(x).strip() for x in (focus or []) if str(x).strip()]
+    targets = normalize_targets(targets)
+    # 目标数据同时当关注点用：研报管线补到的研报、政策按目标数据优先提炼
+    known = {t["item"] for t in targets}
+    for f in focus:
+        if f not in known:
+            targets.append({"item": f, "why": "关注点"})
+            known.add(f)
+    focus = focus or [t["item"] for t in targets]
     sha = sha256_of(path)
     if any(f["sha256"] == sha for f in manifest["files"]):
         print("  已摄入过（SHA256 一致），跳过")
@@ -376,7 +416,13 @@ def ingest_one(path, manifest, focus=None):
     if source_kind(path) == "filing":
         # 财报走专用流程（结构化科目 + 勾稽 + 派生指标），见 schema/财报摄取-skill.md
         from . import filing as filing_mod
-        return filing_mod.ingest_filing(path, units, unit_kind, manifest, sha)
+        try:
+            r = filing_mod.ingest_filing(path, units, unit_kind, manifest, sha, targets=targets)
+            if focus and r:
+                _tag_focus_pages(r.get("touched") or [], focus, [])
+            return r
+        except filing_mod.UnsupportedFiling as e:
+            print(f"  [财报] {e}")
     compiled = compile_file(path, units, unit_kind, focus=focus)
     topics = compiled["topics"]
     existing = wiki.load_pages()

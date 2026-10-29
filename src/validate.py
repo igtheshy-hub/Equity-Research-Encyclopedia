@@ -1,95 +1,22 @@
-import re
-
 from . import config, wiki
-from .ingest import load_manifest
-from .pdf_extract import load_cached, raw_file_index
-
-# 财报三类结构化行的行首模板（schema/财报摄取-skill.md 行格式契约）
-LINE_PK_RE = re.compile(r"^【(数据|指标|观点)】(\d{4}(?:FY|H1|Q1|Q3)) ")
-
-
-def _management_problems(name, ln):
-    # 【管理层】行契约：【管理层】「原话」——语境 [[文件#位置]]，锚点在行尾
-    body = ln.removeprefix("【管理层】").strip()
-    if not body.startswith("「"):
-        return [f"{name}: 管理层行缺引述（应以「开头）：{ln[:50]}"]
-    close = body.rfind("」")
-    if close < 0:
-        return [f"{name}: 管理层行引述未闭合：{ln[:50]}"]
-    rest = body[close + 1:].strip()
-    if not rest.startswith("——"):
-        return [f"{name}: 管理层行缺语境分隔（」后应接——）：{ln[:50]}"]
-    rest = rest.removeprefix("——").strip()
-    m = wiki.ANCHOR_RE.search(rest)
-    if m is None:
-        return [f"{name}: 管理层行缺合法锚点：{ln[:50]}"]
-    if not rest[:m.start()].strip():
-        return [f"{name}: 管理层行缺语境：{ln[:50]}"]
-    if rest[m.end():].strip():
-        return [f"{name}: 管理层行锚点后有多余文字：{ln[:50]}"]
-    return []
-
-
-def _line_format_problems(name, body):
-    # 【数据】/【指标】/【观点】/【管理层】行的格式契约检查
-    out = []
-    for ln in body.splitlines():
-        ln = ln.strip().removeprefix("- ").strip()
-        if ln.startswith("【管理层】"):
-            out.extend(_management_problems(name, ln))
-            continue
-        m = LINE_PK_RE.match(ln)
-        if not m:
-            continue
-        kind = m.group(1)
-        if kind in ("数据", "指标"):
-            if " = " not in ln:
-                out.append(f"{name}: {kind}行缺等号：{ln[:50]}")
-                continue
-            if re.search(r"= -?[\d,]+(?:\.\d+)?", ln) is None:
-                out.append(f"{name}: {kind}行数值不可解析：{ln[:50]}")
-            if "(" in ln and ")" not in ln:
-                out.append(f"{name}: {kind}行口径括号未闭合：{ln[:50]}")
-    return out
-
-
-def _files_info():
-    # 锚点合法性依据：已摄入清单（manifest）∪ 有提取缓存的 raw 文件（raw 深查答案经会话提取入库）
-    info = {f["file"]: (f.get("unit", "page"), f.get("count") or f.get("page_count") or 0)
-            for f in load_manifest()["files"]}
-    for name, path in raw_file_index().items():
-        if name not in info:
-            cached = load_cached(path)
-            if cached:
-                info[name] = (cached["unit"], cached["count"])
-    return info
+from .wiki_check import (  # noqa: F401  重新导出，兼容既有调用（tests/test_filing_rules.py 等）
+    LINE_PK_RE,
+    PERSONAL_VIEW_RE,
+    _line_format_problems,
+    _management_problems,
+    content_problems,
+    files_info,
+)
 
 
 def validate_all():
     problems = []
-    files_info = _files_info()
+    info = files_info()
     pages = wiki.load_pages()
     titles = {str(p["meta"].get("title") or p["slug"]) for p in pages}
     for p in pages:
-        name = p["path"].name
-        meta = p["meta"]
-        for field in ("title", "type", "sources", "updated"):
-            if not meta.get(field):
-                problems.append(f"{name}: 缺少必填 front matter 字段 {field}")
-        if meta.get("type") and meta["type"] != p["type"]:
-            problems.append(f"{name}: front matter type={meta['type']} 与所在目录 {p['type']} 不一致")
-        problems.extend(_line_format_problems(name, p["body"]))
-        for f, loc in sorted(p["anchors"]):
-            info = files_info.get(f)
-            if info is None:
-                problems.append(f"{name}: 锚点引用了 raw 中不存在的文件 {f}")
-            elif wiki.loc_kind(loc) != info[0]:
-                problems.append(f"{name}: 锚点 {f}#{loc} 单元类型不对")
-            elif not 1 <= wiki.loc_num(loc) <= info[1]:
-                problems.append(f"{name}: 锚点 {f}#{loc} 序号越界（该文件共 {info[1]} 单元）")
-        for link in sorted(wiki.wikilinks_of(p["body"])):
-            if link not in titles:
-                problems.append(f"{name}: wikilink 指向不存在的页面 [[{link}]]")
+        problems.extend(content_problems(p["path"].name, p["meta"], p["body"],
+                                         expected_type=p["type"], info=info, titles=titles))
     idx = config.INDEX_MD.read_text(encoding="utf-8") if config.INDEX_MD.exists() else ""
     for p in pages:
         if f"{p['slug']}.md" not in idx:

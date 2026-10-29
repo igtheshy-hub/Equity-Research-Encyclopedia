@@ -126,9 +126,10 @@ def _near(a, b, tol):
     return abs(a - b) <= tol * ref
 
 
-def check_reconciliations(items, tol, supp_net_profit=None):
+def check_reconciliations(items, tol, supp_net_profit=None, skip=()):
     """勾稽校验。items: {规范名: 元值}；supp_net_profit: 补充资料起点净利润（元），
-    None 表示未披露或取不到，跳过 R4。返回失败清单（空=通过）；数据缺的规则跳过。"""
+    None 表示未披露或取不到，跳过 R4；skip 指定不适用的规则（如港股权益表口径不同跳过 R3）。
+    返回失败清单（空=通过）；数据缺的规则跳过。"""
     fails = []
 
     def g(*names):
@@ -157,7 +158,7 @@ def check_reconciliations(items, tol, supp_net_profit=None):
     pe, pb = g("未分配利润"), g("期初未分配利润")
     ni = g("归母净利润", "净利润")
     appr, div = g("提取盈余公积"), g("对所有者或股东的分配")
-    if None not in (pe, pb, ni, appr, div):
+    if "R3" not in skip and None not in (pe, pb, ni, appr, div):
         target = pb + ni + appr + div
         if not _near(pe, target, tol * 5):
             fails.append(f"R3 未分配利润勾稽不平：期末 {pe:,.0f} vs 期初+净利+提取+分配(代数和) {target:,.0f}")

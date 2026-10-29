@@ -63,6 +63,7 @@ LLM_API_KEY_ENV, LLM_API_KEY = _DEFAULT_PROFILE["key_env"], _DEFAULT_PROFILE["ke
 RAW_DIR = ROOT / "raw"
 INBOX_DIR = RAW_DIR / "inbox"
 REPORTS_DIR = RAW_DIR / "reports"
+SNAPSHOT_DIR = REPORTS_DIR / "数据快照"
 FILINGS_DIR = RAW_DIR / "filings"
 POLICIES_DIR = RAW_DIR / "policies"
 
@@ -75,6 +76,7 @@ OUTPUTS_DIR = ROOT / "outputs"
 DATA_DIR = ROOT / "data"
 EXTRACTS_DIR = DATA_DIR / "extracts"
 FIN_DIR = DATA_DIR / "fin"
+REPORT_JOBS_DIR = DATA_DIR / "report_jobs"
 MANIFEST_PATH = DATA_DIR / "manifest.json"
 LLM_LOG_PATH = DATA_DIR / "llm_log.jsonl"
 
@@ -93,7 +95,8 @@ SECTION_ENUMS = {
 
 
 def ensure_dirs():
-    for d in (INBOX_DIR, REPORTS_DIR, FILINGS_DIR, POLICIES_DIR, *TYPE_DIRS.values(), OUTPUTS_DIR, EXTRACTS_DIR, FIN_DIR):
+    for d in (INBOX_DIR, REPORTS_DIR, SNAPSHOT_DIR, FILINGS_DIR, POLICIES_DIR, *TYPE_DIRS.values(),
+              OUTPUTS_DIR, OUTPUTS_DIR / "charts", EXTRACTS_DIR, FIN_DIR, REPORT_JOBS_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

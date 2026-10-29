@@ -1,7 +1,6 @@
 import json
 from datetime import datetime
 from pathlib import Path
-from queue import Queue
 
 from flask import Blueprint, jsonify, request
 
@@ -11,10 +10,12 @@ from .. import config, llm, wiki
 from .. import fix as fix_mod
 from .. import purge as purge_mod
 from .. import report as report_mod
+from .. import industry_report, report_distill
 from .. import sessions, tasks
-from .. import ingest as ingest_mod
-from ..classify import classify_one, sanitize, unique_target
+from .. import fetcher
+from ..classify import sanitize, unique_target
 from ..pdf_extract import SUPPORTED_SUFFIXES
+from ..pipeline import build_lines
 from .render import anchor_pretty, render_md
 
 api = Blueprint("api", __name__)
@@ -57,6 +58,18 @@ def _ask_body(cid, mid, question, history, model):
     if result["kind"] == "report":
         title = result["title"]
         domain = result.get("domain") or "general"
+        if result.get("report_type") in ("industry", "company"):
+            kind = result["report_type"]
+            kind_name = industry_report.KIND_LABELS[kind]
+            try:
+                job = industry_report.start_job(question, title, model=model, domain=domain, kind=kind)
+                sessions.update_message(cid, mid, status="done", kind="report_ack",
+                                        content=f"已开始生成{kind_name}《{title}》，先到报告页确认大纲。",
+                                        report_job=job["id"], report_kind=kind)
+                return {"kind": "report", "report_job": job["id"], "report_kind": kind}
+            except Exception as e:  # 管线起不来就退回内置底稿，不让问答卡死
+                sessions.update_message(cid, mid, status="running", kind="pending",
+                                        content=f"{kind_name}管线启动失败（{e}），改用内置底稿。")
 
         def _report_run(t):
             with llm.use_model(model):
@@ -230,61 +243,6 @@ def api_distill_apply():
 
 # ---------- 上传与摄入链 ----------
 
-def _pipeline(names, focus=None):
-    """取名线与摄入线并行：取名线每入库一份就把路径塞进队列，摄入线同时取走摄入，两条线互不等待。"""
-    queue = Queue()
-    focus = focus or []
-
-    def classify_line(tid):
-        results = []
-        try:
-            for i, name in enumerate(names, 1):
-                tasks.update(tid, current=i - 1, detail=f"第 {i}/{len(names)} 份：{name} 正在取名并进入资料库")
-                p = config.INBOX_DIR / name
-                if not p.exists():
-                    results.append({"ok": False, "file": name, "error": "文件不在收件台"})
-                    continue
-                try:
-                    r = classify_one(p)
-                except Exception as e:
-                    r = {"ok": False, "file": name, "error": str(e)}
-                results.append(r)
-                if r.get("ok"):
-                    queue.put(config.ROOT / r["target"])
-                tasks.update(tid, current=i)
-        finally:
-            queue.put(None)  # 收工信号：摄入线做完队列里剩下的就退出
-        tasks.update(tid, current=len(names), detail="")
-        return results
-
-    def ingest_line(tid):
-        results = []
-        done = 0
-        while True:
-            target = queue.get()
-            if target is None:
-                break
-            done += 1
-            tasks.update(tid, current=done - 1, detail=f"第 {done} 份：{target.name} 正在摄入知识点")
-            manifest = ingest_mod.load_manifest()
-            before = {f["sha256"] for f in manifest["files"]}
-            try:
-                r = ingest_mod.ingest_one(target, manifest, focus=focus)
-            except Exception as e:
-                print(f"  摄入失败: {e}")
-                r = {"file": target.name, "error": str(e)}
-            if r:
-                results.append(r)
-            # 逐份落盘，且只追加本轮新增的条目：删除线并发删掉的条目不会被这份旧清单冲回来
-            ingest_mod.append_manifest([f for f in manifest["files"] if f["sha256"] not in before])
-            tasks.update(tid, current=done)
-        tasks.update(tid, current=len(names), detail="")
-        ingest_mod.finish(ingest_mod.load_manifest(), [r for r in results if "error" not in r])
-        return results
-
-    return classify_line, ingest_line
-
-
 @api.post("/api/upload")
 def api_upload():
     files = request.files.getlist("files")
@@ -315,7 +273,7 @@ def api_upload():
         saved.append(dest.name)
     if not saved:
         return jsonify({"error": "只接受 PDF 与 Word(.docx) 文件", "rejected": rejected}), 400
-    classify_line, ingest_line = _pipeline(saved, focus)
+    classify_line, ingest_line = build_lines(saved, focus)
     tid = tasks.start("classify", classify_line, total=len(saved), label=f"取名入库 {len(saved)} 份")
     tasks.start("ingest", ingest_line, total=len(saved), label=f"摄入 {len(saved)} 份")
     return jsonify({"task_id": tid, "saved": saved, "rejected": rejected, "focus": focus})
@@ -381,6 +339,146 @@ def api_audit_fix():
     tid = tasks.start("fix", lambda t: {"notes": fix_mod.apply_fixes(actions, task_id=t)},
                       total=len(actions), label=f"按审校报告修复 {len(actions)} 项")
     return jsonify({"task_id": tid})
+
+
+# ---------- 主动取数 ----------
+
+@api.get("/api/fetch/sources")
+def api_fetch_sources():
+    return jsonify({"items": fetcher.source_specs()})
+
+
+@api.post("/api/fetch")
+def api_fetch_run():
+    data = request.get_json(force=True, silent=True) or {}
+    source = str(data.get("source") or "").strip()
+    specs = {s["id"]: s for s in fetcher.source_specs()}
+    if source not in specs:
+        return jsonify({"error": "未知取数源"}), 400
+    params = data.get("params") if isinstance(data.get("params"), dict) else {}
+    tid = tasks.start("fetch", lambda t: fetcher.run_fetch(source, params, t),
+                      label=f"取数·{specs[source]['label']}")
+    return jsonify({"task_id": tid})
+
+
+# ---------- 行业研报管线 ----------
+
+def _job_brief(job):
+    return {
+        "id": job["id"], "title": job["title"], "status": job["status"],
+        "status_label": industry_report.STATUS_LABELS.get(job["status"], job["status"]),
+        "kind": job.get("kind") or "industry",
+        "kind_label": industry_report.KIND_LABELS.get(job.get("kind"), "行业研报"),
+        "error": job.get("error") or "",
+        "outline_path": job.get("outline_path") or "",
+        "report_path": job.get("report_path") or "",
+        "docx_path": job.get("docx_path") or "",
+        "gaps": job.get("gaps") or [],
+        "candidates_count": job.get("candidates_count") or 0,
+        "updated_at": job.get("updated_at") or "",
+    }
+
+
+@api.get("/api/report/jobs")
+def api_report_jobs():
+    items = industry_report.list_jobs()
+    items.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
+    return jsonify({"items": items})
+
+
+@api.get("/api/report/<jid>")
+def api_report_job(jid):
+    job = industry_report.load_job(jid)
+    if not job:
+        return jsonify({"error": "报告任务不存在"}), 404
+    out = dict(job)
+    out["status_label"] = industry_report.STATUS_LABELS.get(job["status"], job["status"])
+    out["kind"] = job.get("kind") or "industry"
+    out["kind_label"] = industry_report.KIND_LABELS.get(out["kind"], "行业研报")
+    out["candidates"] = report_distill.load_candidates(jid)
+    out["pages"] = job.get("pages") or []
+    return jsonify(out)
+
+
+@api.post("/api/report/<jid>/outline")
+def api_report_outline(jid):
+    data = request.get_json(force=True, silent=True) or {}
+    outline_md = data.get("outline_md")
+    try:
+        job = industry_report.approve_outline(jid, outline_md)
+    except KeyError as e:
+        return jsonify({"error": str(e) or "报告任务不存在"}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"job": _job_brief(job)})
+
+
+@api.post("/api/report/<jid>/gaps")
+def api_report_gaps(jid):
+    data = request.get_json(force=True, silent=True) or {}
+    ids = [str(x) for x in (data.get("gap_ids") or [])]
+    try:
+        ret = industry_report.approve_gaps(jid, ids)
+    except KeyError as e:
+        return jsonify({"error": str(e) or "报告任务不存在"}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(ret)
+
+
+@api.post("/api/report/<jid>/continue")
+def api_report_continue(jid):
+    try:
+        job = industry_report.continue_job(jid)
+    except KeyError as e:
+        return jsonify({"error": str(e) or "报告任务不存在"}), 404
+    return jsonify({"job": _job_brief(job)})
+
+
+@api.post("/api/report/<jid>/candidates/apply")
+def api_report_candidates_apply(jid):
+    data = request.get_json(force=True, silent=True) or {}
+    ids = [str(x) for x in (data.get("candidate_ids") or [])]
+    try:
+        ret = report_distill.apply(jid, ids, industry_report.load_job, industry_report.save_job)
+    except KeyError as e:
+        return jsonify({"error": str(e) or "报告任务不存在"}), 404
+    return jsonify(ret)
+
+
+@api.post("/api/report/<jid>/delete")
+def api_report_delete(jid):
+    try:
+        ret = industry_report.delete_job(jid)
+    except KeyError as e:
+        return jsonify({"error": str(e) or "报告任务不存在"}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(ret)
+
+
+@api.post("/api/report/<jid>/fallback")
+def api_report_fallback(jid):
+    job = industry_report.load_job(jid)
+    if not job:
+        return jsonify({"error": "报告任务不存在"}), 404
+
+    def run(t):
+        with llm.use_model(job.get("model")):
+            p = report_mod.generate(job["title"], job["question"], task_id=t,
+                                    domain=job.get("domain") or "general")
+        j = industry_report.load_job(jid) or job
+        j["fallback_path"] = p.relative_to(config.ROOT).as_posix()
+        industry_report.save_job(j)
+        return {"file": p.name}
+
+    rid = tasks.start("report", run, label=f"内置底稿《{job['title']}》")
+    job["status"] = "fallback"
+    job["error"] = ""
+    job["fallback_task"] = rid
+    job.setdefault("log", []).append({"ts": config.now_iso(), "msg": "改走内置四段式底稿"})
+    industry_report.save_job(job)
+    return jsonify({"task_id": rid})
 
 
 # ---------- 任务 ----------

@@ -152,9 +152,12 @@ function renderMsg(m) {
     return `<div class="msg bot"><div class="bubble bubble-err">${App.escapeHtml(m.content || "出错了")}</div></div>`;
   }
   if (m.kind === "report_ack") {
+    const pipeline = m.report_job && (m.report_kind === "industry" || m.report_kind === "company");
+    const href = pipeline ? `/report#job=${encodeURIComponent(m.report_job)}` : "/";
+    const label = pipeline ? "前往报告页确认大纲 →" : "回到首页查看进度 →";
     return `<div class="msg bot"><div class="bubble">
       ${App.escapeHtml(m.content || "")}
-      <p><a href="/outputs" target="_blank" rel="noopener">前往产出页查看进度 →</a></p>
+      <p><a href="${href}">${label}</a></p>
     </div></div>`;
   }
   if (m.kind === "referral") {
@@ -266,6 +269,9 @@ document.addEventListener("DOMContentLoaded", () => {
         });
       }
     } else {
+      // 关掉分栏要把拖拽时写死的宽度收回，否则第一栏停在一半宽
+      paneEls[0].style.flex = "";
+      paneEls[1].style.flex = "";
       localStorage.removeItem("askSplit");
     }
   };

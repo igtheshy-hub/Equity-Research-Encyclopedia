@@ -107,17 +107,20 @@ def ask_page():
     return render_template("ask.html")
 
 
+@app.route("/fetch")
+def fetch_page():
+    return render_template("fetch.html")
+
+
+@app.route("/report")
+def report_page():
+    return render_template("industry_report.html")
+
+
 @app.route("/audit")
 def audit_list():
     reports = sorted((p.name for p in config.OUTPUTS_DIR.glob("audit-*.md")), reverse=True)
     return render_template("audit.html", reports=reports)
-
-
-@app.route("/outputs")
-def outputs_page():
-    files = sorted(config.OUTPUTS_DIR.glob("*.md"), reverse=True)
-    reports = [p.name for p in files if not p.name.startswith(("memo-", "audit-"))]
-    return render_template("outputs.html", reports=reports)
 
 
 @app.route("/export", methods=["GET", "POST"])
@@ -152,6 +155,26 @@ def export_page():
         )
 
     return render_template("export.html", companies=companies, periods=periods)
+
+
+@app.route("/outputs/charts/<name>")
+def output_chart(name):
+    if "/" in name or "\\" in name or ".." in name:
+        abort(404)
+    p = config.OUTPUTS_DIR / "charts" / name
+    if not p.is_file():
+        abort(404)
+    return send_file(p, mimetype="image/png")
+
+
+@app.route("/outputs/download/<name>")
+def output_download(name):
+    if "/" in name or "\\" in name or ".." in name:
+        abort(404)
+    p = config.OUTPUTS_DIR / name
+    if not p.is_file() or p.suffix.lower() not in (".docx", ".md"):
+        abort(404)
+    return send_file(p, as_attachment=True, download_name=name)
 
 
 @app.route("/outputs/<name>")

@@ -26,12 +26,13 @@ def strip_glitch(text):
     return "".join(out)
 
 INTENT_PROMPT = """判断用户这条消息的意图与领域，只输出 JSON：
-{"intent": "chat 或 report", "title": "report 时给一个不超过 16 字的报告标题，chat 给空字符串", "domain": "finstmt 或 general"}
+{"intent": "chat 或 report", "title": "report 时给一个不超过 16 字的报告标题，chat 给空字符串", "domain": "finstmt 或 general", "report_type": "industry、company 或 builtin"}
 
 chat = 普通问答、追问、信息咨询，包括「怎么样/多少/为什么/怎么看/什么观点/对比一下」这类问法。
 report = 用户明确要求生成一份可保存的成文档交付物，措辞中带有「写一份/生成一份/帮我出一份/做一份报告/对比分析报告/财务报告」等明确的成文动作。只是打听情况、数据或观点，哪怕话题很专业，也算 chat。
 finstmt = 问题涉及财务报表数据的分析理解：比率、盈利、毛利、现金流、资产负债、ROE/ROA/ROIC、偿债、周转（应收/存货/应付账款天数）、营收利润增速、财报地雷或造假嫌疑、审计意见等。只要问题需要读报表数字才能回答就算 finstmt，漏判比误判伤害大，拿不准给 finstmt。
 general = 其余所有问题。
+report_type = 只在 intent=report 时有意义：写某一行业的研报（行业研报、行业深度、行业月报、行业专题）给 industry；写单一一家公司的研究报告（公司深度、公司研究、个股研报）给 company；多公司对比分析、财务分析报告、快速数据底稿、其他报告给 builtin。拿不准给 builtin。
 
 用户消息：{Q}"""
 
@@ -66,10 +67,9 @@ INDEX_ANSWER_PROMPT = """你是行业知识库的问答员，用户问的是知�
 
 规则：
 - 只用索引信息回答，禁止使用你自己的知识补全
-- 索引没有的信息，明说「知识库索引中看不出」
 - 提到具体条目时用页面名（如「比亚迪」「智能汽车」），不用 slug
 - 索引不含页码，回答中不允许出现任何 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]] 形式的锚点
-- 索引信息不足以回答时，只输出 UNANSWERABLE 一个词，不输出其他内容
+- 索引信息不足以回答时，只输出 UNANSWERABLE 一个词，不输出其他内容；不要写「索引中看不出」之类的说明句
 - 回答用中文，markdown 格式
 {HISTORY}--- 知识库索引开始 ---
 {INDEX}
@@ -77,7 +77,7 @@ INDEX_ANSWER_PROMPT = """你是行业知识库的问答员，用户问的是知�
 
 用户问题：{Q}"""
 
-# 财报分析类问题的附加纪律，浓缩自 schema/财报问答-skill.md v1.1；{FIN} 占位符按 domain 注入
+# 财报分析类问题的附加纪律，浓缩自 .claude/skills/finstmt-qa v1.1；{FIN} 占位符按 domain 注入
 FIN_ANALYSIS_BLOCK = """
 本次问题属财报分析类，再遵守以下纪律（方法论来源：financial-statement-reading skill，张明辉、Berman 等三本书整合）：
 - 呈现顺序倒金字塔：第一屏直接回答用户问题。问单一数据或事实时直接给数带口径；问分析、评价、风险类问题时，先给 3-5 条一句话判断（每条独立一行，句后括注一句依据），再给综合结论，六步框架的详细盘点放在其后展开，展开部分不重复抄写判断清单里已给的数字
@@ -159,11 +159,12 @@ def _detect_intent(question):
             response_json=True,
         )
     except llm.LLMError:
-        return "chat", "", "general"
+        return "chat", "", "general", "builtin"
     domain = "finstmt" if out.get("domain") == "finstmt" else "general"
+    report_type = out.get("report_type") if out.get("report_type") in ("industry", "company") else "builtin"
     if out.get("intent") == "report":
-        return "report", str(out.get("title") or "").strip()[:16] or "未命名报告", domain
-    return "chat", "", domain
+        return "report", str(out.get("title") or "").strip()[:16] or "未命名报告", domain, report_type
+    return "chat", "", domain, "builtin"
 
 
 def _violations(answer, allowed):
@@ -381,7 +382,7 @@ def deep_ask(question, history=None, files=None):
     result = {"kind": "answer", "deep": True, "question": question,
               "step1": {"selected": [], "reason": reason},
               "answer_md": "", "validation": {"ok": True, "violations": []}, "proposal": None}
-    _, _, domain = _detect_intent(question)
+    _, _, domain, _ = _detect_intent(question)
     pieces, allowed = _collect_deep_units(question, files=files)
     if not pieces:
         result["answer_md"] = "没有从 raw 文件提取到可用于回答的文字（可能均为扫描版或文件已移走）。"
@@ -413,9 +414,10 @@ def ask(question, history=None, propose=True):
     result = {"kind": "answer", "question": question,
               "step1": {"selected": [], "reason": ""},
               "answer_md": "", "validation": {"ok": True, "violations": []}, "proposal": None}
-    intent, title, domain = _detect_intent(question)
+    intent, title, domain, report_type = _detect_intent(question)
     if intent == "report":
-        return {"kind": "report", "question": question, "title": title, "domain": domain}
+        return {"kind": "report", "question": question, "title": title, "domain": domain,
+                "report_type": report_type}
 
     pages, slugs, reason, use_index = _select_pages(question, history)
     result["step1"] = {"selected": slugs, "reason": reason}
@@ -540,8 +542,12 @@ def _propose_distill(question, answer):
     return proposal
 
 
-def apply_distill(proposal, chosen_lines=None):
-    """把提案（可只取部分行）写入 wiki，返回 {page, action, lines}。【观点】行进「分析观点」节。"""
+def apply_distill(proposal, chosen_lines=None, note_prefix="会话中提取"):
+    """把提案（可只取部分行）写入 wiki，返回 {page, action, lines}。
+
+    【观点】/【个人观点】行进「分析观点」节；【数据】/【指标】行进「经营与财务」节；
+    note_prefix 区分来源（会话提取 / 报告沉淀）。
+    """
     lines = list(proposal["lines"])
     if chosen_lines:
         keep = [ln for ln in chosen_lines if ln in lines]
@@ -550,7 +556,12 @@ def apply_distill(proposal, chosen_lines=None):
         lines = keep
     sections = {}
     for ln in lines:
-        bucket = "分析观点" if ln.startswith("【观点】") else "其他"
+        if ln.startswith(("【观点】", "【个人观点】")):
+            bucket = "分析观点"
+        elif ln.startswith(("【数据】", "【指标】")) and proposal.get("type") in ("company", "industry"):
+            bucket = "经营与财务"
+        else:
+            bucket = "其他"
         sections.setdefault(bucket, []).append(ln)
     topic = {
         "title": proposal["title"],
@@ -570,12 +581,12 @@ def apply_distill(proposal, chosen_lines=None):
     extra_sources = [path_of[f] for f in sorted(anchor_files) if f in path_of]
     question = proposal.get("question") or ""
     if hit:
-        _apply_merge(hit["path"], hit["meta"], hit["body"], topic, extra_sources, "会话中提取")
+        _apply_merge(hit["path"], hit["meta"], hit["body"], topic, extra_sources, note_prefix)
         ret = {"page": hit["slug"], "action": "merge", "lines": len(lines)}
     else:
         decision = {"action": "create", "type": topic["type"]}
-        path, count = _apply_create(decision, topic, extra_sources, "会话中提取新建")
+        path, count = _apply_create(decision, topic, extra_sources, f"{note_prefix}新建")
         ret = {"page": path.stem, "action": "create", "lines": count}
     wiki.rebuild_index_md(wiki.load_pages())
-    wiki.append_log("ask", f"会话中提取新知识到 {ret['page']}（{ret['lines']} 条）：{question}")
+    wiki.append_log("ask", f"{note_prefix}新知识到 {ret['page']}（{ret['lines']} 条）：{question}")
     return ret

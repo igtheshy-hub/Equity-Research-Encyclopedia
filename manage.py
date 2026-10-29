@@ -27,6 +27,42 @@ def cmd_selftest(args):
         print(f"  [缺] {config.LLM_API_KEY_ENV} 为空：复制 .env.example 为 .env 并填入模型服务商的 API Key")
     config.ensure_dirs()
     print("  [好] 目录结构就绪")
+    print("== 新模块导入 ==")
+    for mod in ("src.snapshot", "src.fetcher", "src.charts", "src.convert_report",
+                "src.industry_report", "src.report_distill", "src.wiki_check"):
+        try:
+            importlib.import_module(mod)
+            print(f"  [好] {mod}")
+        except ImportError as e:
+            ok = False
+            print(f"  [缺] {mod}: {e}")
+    print("== 报告管线外部依赖 ==")
+    import shutil
+    if shutil.which("pandoc"):
+        print("  [好] pandoc 可用，行业研报可转 Word")
+    else:
+        print("  [提示] 没找到 pandoc：行业研报只出 md，不转 Word（不影响其他功能）")
+    try:
+        from matplotlib import font_manager
+        names = {f.name for f in font_manager.fontManager.ttflist}
+        font = next((n for n in ("Microsoft YaHei", "SimHei", "Noto Sans CJK SC",
+                                 "Source Han Sans SC") if n in names), "")
+        if font:
+            print(f"  [好] matplotlib 中文字体 {font}")
+        else:
+            print("  [提示] matplotlib 没找到中文字体，图表中文可能显示成方块")
+    except ImportError as e:
+        print(f"  [提示] 没装 matplotlib：行业研报不出图（{e}）")
+    print("== 技能目录 ==")
+    for d in ("md-to-docx", "comps-analysis", "competitive-analysis", "sector-overview",
+              "earnings-analysis", "data-sources", "macro-data", "industry-report",
+              "company-report", "kb-ask", "finstmt-qa"):
+        p = config.ROOT / ".claude" / "skills" / d / "SKILL.md"
+        if p.exists():
+            print(f"  [好] {d}")
+        else:
+            ok = False
+            print(f"  [缺] .claude/skills/{d}/SKILL.md")
     if not ok:
         print("\nselftest 未通过（见上），修好后重跑。")
         return 1
@@ -114,7 +150,12 @@ def cmd_ask(args):
     result = ask_mod.ask(args.question)
     if result["kind"] == "report":
         from src import report as report_mod
-        print(f"识别为报告请求《{result['title']}》，开始生成…")
+        if result.get("report_type") in ("industry", "company"):
+            label = "行业研报" if result.get("report_type") == "industry" else "公司研报"
+            print(f"识别为{label}《{result['title']}》。{label}的大纲确认、缺口勾选在网页端"
+                  f"（python manage.py serve 后到 /report），命令行这里按内置四段式底稿生成。")
+        else:
+            print(f"识别为报告请求《{result['title']}》，开始生成…")
         path = report_mod.generate(result["title"], args.question, domain=result.get("domain") or "general")
         print(f"报告已存：{path.relative_to(config.ROOT).as_posix()}")
         return 0

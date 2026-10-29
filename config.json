@@ -28,7 +28,11 @@
     "compile": 0.2,
     "filing": 0.0,
     "answer": 0.2,
-    "summary": 0.3
+    "summary": 0.3,
+    "outline": 0.2,
+    "report_write": 0.2,
+    "af_classify": 0.0,
+    "review": 0.1
   },
   "ask": {
     "max_pages": 8,
@@ -42,5 +46,15 @@
     "compile_chunk_pages": 20,
     "min_chars_per_page": 50,
     "filing_check_tol": 0.005
+  },
+  "fetcher": {
+    "macro_python": "C:/Users/DELL/anaconda3/envs/macro-data/python.exe",
+    "timeout_s": 30,
+    "delay_s": 1.5,
+    "eastmoney_max": 3
+  },
+  "report_pipeline": {
+    "max_charts": 8,
+    "max_sections": 9
   }
 }

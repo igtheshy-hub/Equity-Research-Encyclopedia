@@ -76,7 +76,7 @@ def target_directory(cls):
     return config.POLICIES_DIR
 
 
-def classify_one(path):
+def classify_one(path, force_kind=None):
     content = first_text(path)
     if not content.strip():
         return {"ok": False, "file": path.name, "error": "开头没有提取到文字（疑似扫描版或空文档），未归类，文件留在收件台"}
@@ -85,6 +85,8 @@ def classify_one(path):
         task="classify",
         response_json=True,
     )
+    if force_kind in ("report", "filing", "policy"):
+        cls["kind"] = force_kind  # 取数源已知文件类型（如年报），不受模型误判影响
     if cls.get("kind") not in ("report", "filing", "policy"):
         return {"ok": False, "file": path.name, "error": f"LLM 返回的 kind 不合法: {cls.get('kind')!r}，文件留在收件台"}
     filename = build_filename(cls, path.stem, path.suffix.lower())

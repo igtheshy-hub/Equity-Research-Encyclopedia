@@ -10,6 +10,14 @@ data/extracts/
 # 网页本地运行状态（收件台/摄入页的最近结果）
 data/ui_state.json
 
+# 行业研报任务状态与转 Word 中间产物
+data/report_jobs/
+data/_display-*
+
+# 浏览器自动化调试产物
+.playwright-mcp/
+report-after-reload.yml
+
 # Python
 __pycache__/
 *.pyc

@@ -1,9 +1,10 @@
 import threading
 import uuid
+from contextlib import contextmanager
 
 from . import config
 
-# 后台任务注册表：所有耗时操作（问答/归类/摄入/审校/修复/报告）都在线程里跑，
+# 后台任务注册表：所有耗时操作（问答/归类/摄入/审校/修复/报告/取数）都在线程里跑，
 # 状态留在服务端，页面切换只靠轮询取快照，互不打断。
 
 _lock = threading.RLock()
@@ -11,7 +12,7 @@ _TASKS = {}
 _ORDER = []
 
 # 这些类型同一时间只允许一个在跑，后来的排队等待
-MUTEX_KINDS = {"classify", "ingest", "audit", "fix", "report"}
+MUTEX_KINDS = {"classify", "ingest", "audit", "fix", "report", "fetch"}
 MAX_TASKS = 200
 
 KIND_LABELS = {
@@ -21,6 +22,7 @@ KIND_LABELS = {
     "audit": "审校",
     "fix": "修复",
     "report": "报告",
+    "fetch": "取数",
     "delete": "删除原文件",
 }
 
@@ -106,6 +108,17 @@ def snapshot(kinds=None):
 def acknowledge(tid):
     with _lock:
         _TASKS.pop(tid, None)
+
+
+@contextmanager
+def kind_lock(kind):
+    """借用某类任务的互斥锁：取数任务要借取名/摄入锁时用，避免与网页上传线并发写库。"""
+    kl = _KIND_LOCKS.get(kind)
+    if kl is None:
+        yield
+    else:
+        with kl:
+            yield
 
 
 def active_counts():

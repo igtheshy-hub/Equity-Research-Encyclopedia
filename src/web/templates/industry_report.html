@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}报告 · 行业知识库{% endblock %}
+{% block page %}report{% endblock %}
+{% block content %}
+<div class="narrow">
+  <div class="page-head">
+    <h1>研究报告</h1>
+    <select id="job-select" class="job-select" title="切换报告任务"></select>
+    <button class="ghost sm" id="job-refresh">刷新</button>
+  </div>
+  <p class="muted">问答页提出行业研报或公司研报后在这里走三步：确认大纲、勾选要补的数据缺口、成稿后勾选沉淀候选。正文数据全部来自知识库，句尾锚点可点开原文对照。</p>
+  <div id="job-tasks" class="task-area"></div>
+  <div id="job-detail"><p class="muted">加载中…</p></div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='report_page.js') }}" defer></script>{% endblock %}
