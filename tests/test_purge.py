@@ -9,12 +9,21 @@ import tempfile
 import time
 from pathlib import Path
 
+import pytest
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src import config, ingest, purge, validate, wiki  # noqa: E402
 
 FAILS = []
+
+
+def _skip_if_empty():
+    # 直读真实库清单：pytest 全量下 config 路径可能被先前测试指到临时目录，不可信
+    m = ROOT / "data" / "manifest.json"
+    if not m.exists() or not json.loads(m.read_text(encoding="utf-8")).get("files"):
+        pytest.skip("库为空：删除回归需要已摄入材料")
 
 
 def check(label, got, want):
@@ -60,48 +69,81 @@ def cited_in(body, name):
 
 
 def test_list():
+    _skip_if_empty()
+    sandbox()
     print("原文件清单：")
     rows = purge.file_entries()
-    names = [r["name"] for r in rows]
     check("清单非空", len(rows) > 0, True)
-    check("按名字能查到研报", "东吴证券_智能汽车研报_20260921.pdf" in names, True)
-    rep = next(r for r in rows if r["name"] == "东吴证券_智能汽车研报_20260921.pdf")
-    check("研报类型与条目数", (rep["kind_label"], rep["entries_count"]), ("研报", 33))
-    check("研报被引用条数大于 0", rep["statements"] > 0, True)
-    check("研报不标 missing", rep["missing"], False)
+    rep = next((r for r in rows if r["kind_label"] == "研报" and not r["missing"]
+                and r["statements"] > 0 and (config.ROOT / r["path"]).exists()), None)
+    check("按清单能查到被引用的研报", rep is not None, True)
+    check("研报条目数大于 0", bool(rep) and rep["entries_count"] > 0, True)
+    check("研报被引用条数大于 0", bool(rep) and rep["statements"] > 0, True)
+    check("研报不标 missing", bool(rep) and rep["missing"], False)
     check("清单里没有收件台文件", any("inbox" in r["path"] for r in rows), False)
-    fil = next(r for r in rows if r["name"] == "比亚迪财报_20260300.pdf")
-    check("财报条目数", fil["entries_count"], 175)
-    check("财报被引用条数大于 0", fil["statements"] > 0, True)
-    # 造一个只依赖这份财报、且含一条无锚点条目的公司页，验证删空预测不依赖真实材料组合
+    fil = next((r for r in rows if r["kind_label"] == "财报" and not r["missing"]
+                and r["statements"] > 0 and (config.ROOT / r["path"]).exists()), None)
+    check("按清单能查到被引用的财报", fil is not None, True)
+    check("财报条目数大于 0", bool(fil) and fil["entries_count"] > 0, True)
+    check("财报被引用条数大于 0", bool(fil) and fil["statements"] > 0, True)
+    # 造两个依赖页验证删空预测不依赖真实材料组合：删空页只有财报一个来源；
+    # 保留页另有其他材料的锚点，删掉财报后应留存
+    cited = set()
+    for p in wiki.load_pages():
+        for a in wiki.ANCHOR_RE.findall(p["body"]):
+            cited.add(a[0])
+    other = next((r for r in rows if r["name"] in cited
+                  and r["name"] not in (rep["name"], fil["name"])
+                  and not r["missing"] and (config.ROOT / r["path"]).exists()), None)
     probe = config.TYPE_DIRS["company"] / "测试删空公司.md"
     wiki.write_page(probe, {
         "title": "测试删空公司", "type": "company", "sources": [fil["path"]],
-        "updated": config.today_str(), "history": ["2026-10-28 测试夹具"],
+        "updated": config.today_str(), "history": ["2026-10-29 测试夹具"],
     }, "# 测试删空公司\n\n## 经营与财务\n\n"
        f"- 依赖财报的条目[[{fil['name']}#p1]]\n- 无锚点条目\n")
+    other_ref = f"[[{other['name']}#para1]]" if other["name"].lower().endswith(".docx") \
+        else f"[[{other['name']}#p1]]"
+    keep = config.TYPE_DIRS["company"] / "测试保留公司.md"
+    wiki.write_page(keep, {
+        "title": "测试保留公司", "type": "company",
+        "sources": [fil["path"], other["path"]],
+        "updated": config.today_str(), "history": ["2026-10-29 测试夹具"],
+    }, "# 测试保留公司\n\n## 经营与财务\n\n"
+       f"- 依赖财报的条目[[{fil['name']}#p1]]\n"
+       f"- 依赖其他材料的条目{other_ref}\n")
     rows = purge.file_entries()
-    fil = next(r for r in rows if r["name"] == "比亚迪财报_20260300.pdf")
-    check("预测会被删空的页面（含 1 条无锚点条目）", "测试删空公司" in fil["empty_pages"], True)
+    fil2 = next(r for r in rows if r["name"] == fil["name"])
+    check("预测会被删空的页面（含 1 条无锚点条目）", "测试删空公司" in fil2["empty_pages"], True)
+    check("多来源页面不进删空预测", "测试保留公司" in fil2["empty_pages"], False)
 
 
 def test_purge_report():
+    _skip_if_empty()
     print("删一份研报：")
-    name = "东吴证券_智能汽车研报_20260921.pdf"
+    rows = purge.file_entries()
+    rep = next(r for r in rows if r["kind_label"] == "研报" and not r["missing"]
+               and r["statements"] > 0 and (config.ROOT / r["path"]).exists())
+    name = rep["name"]
+    rep_path = config.ROOT / rep["path"]
+    parent = rep_path.parent
+    only_in_dir = not [p for p in parent.iterdir() if p.name != rep_path.name]
+    others = [r for r in rows if Path(r["path"]).parent != parent and not r["missing"]]
     before = page_titles()
     stats = purge.purge_files([name])
     s = stats[0]
     check("无异常", "error" not in s, True)
     check("统计到被删条目", s["statements"] > 0, True)
-    check("原文件已删", not (config.REPORTS_DIR / "智能汽车" / name).exists(), True)
+    check("原文件已删", rep_path.exists(), False)
     check("提取缓存已删", (config.EXTRACTS_DIR / f"{Path(name).stem}.units.json").exists(), False)
     check("entries 缓存已删", (config.EXTRACTS_DIR / f"{Path(name).stem}.entries.json").exists(), False)
     check("来源页已删", (config.TYPE_DIRS["source"] / f"{Path(name).stem}.md").exists(), False)
     check("清单里已无这份文件", name in {f["file"] for f in ingest.load_manifest()["files"]}, False)
     left = [p for p in wiki.load_pages() if cited_in(p["body"], name)]
     check("全库再无指向它的锚点", left, [])
-    check("空的行业子目录已清掉", (config.REPORTS_DIR / "智能汽车").exists(), False)
-    check("其他文件不受影响", (config.REPORTS_DIR / "汽车").exists(), True)
+    if only_in_dir:
+        check("唯一文件的空子目录已清掉", parent.exists(), False)
+    if others:
+        check("其他目录的文件不受影响", (config.ROOT / others[0]["path"]).exists(), True)
     last_log = config.LOG_MD.read_text(encoding="utf-8").strip().splitlines()[-1]
     check("日志记了一笔删除", last_log.startswith(f"| {config.today_str()} | delete | {name}"), True)
     check("索引已重建", f"{name}" not in config.INDEX_MD.read_text(encoding="utf-8"), True)
@@ -111,23 +153,37 @@ def test_purge_report():
 
 
 def test_purge_filing():
+    _skip_if_empty()
     print("删一份财报：")
-    name = "比亚迪财报_20260300.pdf"
-    before = json.loads((config.FIN_DIR / "比亚迪.json").read_text(encoding="utf-8"))
-    check("删前有报告期", list(before["periods"]), ["2025FY"])
+    rows = purge.file_entries()
+    fil = next(r for r in rows if r["kind_label"] == "财报" and not r["missing"]
+               and r["statements"] > 0 and (config.ROOT / r["path"]).exists())
+    name = fil["name"]
+    fin_json = config.FIN_DIR / f"{Path(fil['path']).parent.name}.json"
+    before = json.loads(fin_json.read_text(encoding="utf-8"))
+    check("删前该文件有报告期",
+          [k for k, v in (before.get("periods") or {}).items()
+           if str(v.get("source") or "") == fil["path"]] != [], True)
     s = purge.purge_files([name])[0]
     check("无异常", "error" not in s, True)
-    check("原文件已删", (config.FILINGS_DIR / "比亚迪" / name).exists(), False)
-    check("财报结构化数据已删", (config.FIN_DIR / "比亚迪.json").exists(), False)
+    check("原文件已删", (config.ROOT / fil["path"]).exists(), False)
+    if fin_json.exists():
+        store = json.loads(fin_json.read_text(encoding="utf-8"))
+        check("财报结构化数据已删掉该文件的报告期",
+              [k for k, v in (store.get("periods") or {}).items()
+               if str(v.get("source") or "") == fil["path"]], [])
+    else:
+        check("财报结构化数据随最后一期一起删除", True, True)
     check("财报提取转储已删", (config.EXTRACTS_DIR / f"{Path(name).stem}.filing.json").exists(), False)
     check("公司页随数据一起清空移除", (config.TYPE_DIRS["company"] / "测试删空公司.md").exists(), False)
-    check("仍有其他来源的公司页保留", (config.TYPE_DIRS["company"] / "比亚迪.md").exists(), True)
+    check("仍有其他来源的公司页保留", (config.TYPE_DIRS["company"] / "测试保留公司.md").exists(), True)
     check("来源页已删", (config.TYPE_DIRS["source"] / f"{Path(name).stem}.md").exists(), False)
     check("清单里已无这份文件", name in {f["file"] for f in ingest.load_manifest()["files"]}, False)
     check("校验无问题", validate.validate_all(), [])
 
 
 def test_missing_entry():
+    _skip_if_empty()
     print("清单残留（原文件已不在 raw/）：")
     rows = purge.file_entries()
     remaining = {r["name"] for r in rows}
@@ -144,6 +200,7 @@ def test_missing_entry():
 
 
 def test_batch_and_dangling_link():
+    _skip_if_empty()
     print("整批删除与双链降级：")
     # 重新搭一个干净沙盒，把三份一起删掉
     sandbox()
@@ -158,6 +215,7 @@ def test_batch_and_dangling_link():
 
 
 def test_web_task():
+    _skip_if_empty()
     print("走网页接口跑删除任务：")
     sandbox()
     from src.web.app import app

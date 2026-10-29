@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src import ask as ask_mod  # noqa: E402
@@ -30,6 +32,20 @@ class FakeLLM:
 def setup(fake):
     ask_mod.llm.chat = fake
     ask_mod.wiki.load_pages = lambda: []
+
+
+_ORIG = (ask_mod.llm.chat, ask_mod.wiki.load_pages)
+
+
+def restore():
+    """把 setup 打的桩还原；不还原会污染同进程的后续测试（wiki.load_pages 变空）"""
+    ask_mod.llm.chat, ask_mod.wiki.load_pages = _ORIG
+
+
+@pytest.fixture(autouse=True)
+def _restore_after():
+    yield
+    restore()
 
 
 def check(label, got, want):
@@ -103,11 +119,13 @@ def test_answer_without_anchors():
 
 
 if __name__ == "__main__":
-    test_repair_round()
-    test_lines_already_anchored()
-    test_repair_hallucinated_anchor()
-    test_not_new_knowledge()
-    test_answer_without_anchors()
+    for fn in (test_repair_round, test_lines_already_anchored,
+               test_repair_hallucinated_anchor, test_not_new_knowledge,
+               test_answer_without_anchors):
+        try:
+            fn()
+        finally:
+            restore()
     print()
     if FAILS:
         print(f"FAILED {len(FAILS)}: {'、'.join(FAILS)}")
