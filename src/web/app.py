@@ -73,7 +73,13 @@ def kb():
             e["url"] = url_for("show_page", ptype=t, slug=p["slug"])
             items.append(e)
         groups.append({"label": label, "pages": items})
-    return render_template("kb.html", groups=groups)
+    entries = [e for g in groups for e in g["pages"]]
+    stats = {
+        "pages": len(entries),
+        "sources": len({s for e in entries for s in e["source_files"]}),
+        "updated": max((e["updated"] for e in entries if e["updated"]), default=""),
+    }
+    return render_template("kb.html", groups=groups, stats=stats)
 
 
 @app.route("/page/<ptype>/<slug>")
