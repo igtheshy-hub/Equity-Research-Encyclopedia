@@ -308,6 +308,9 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } else {
       localStorage.removeItem("askSplit");
+      /* 复位 applyRatio 写下的固定宽度，否则关掉分栏后剩下的窗口仍停在半宽 */
+      paneEls[0].style.flex = "";
+      paneEls[1].style.flex = "";
     }
   };
 
