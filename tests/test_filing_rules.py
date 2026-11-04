@@ -128,6 +128,7 @@ def test_targets():
     job = {"gaps": [
         {"status": "selected", "item": "近三年研发投入", "why": "核心竞争力"},
         {"status": "selected", "item": "公司最近一期年度报告（财报）", "why": "年报为锚"},
+        {"status": "selected", "item": "公司最近一年内半年报（财报）", "why": "更新数据"},
         {"status": "selected", "item": "未摄入材料：某研报.pdf", "why": "先入库"},
         {"status": "skipped", "item": "毛利率", "why": "盈利预测"},
         {"status": "done", "item": "管理层调整公告（辞任）", "why": "公司概况"},

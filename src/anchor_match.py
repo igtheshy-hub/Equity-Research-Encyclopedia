@@ -75,11 +75,12 @@ def num_variants(n):
 
 
 def _number_hit(text, n):
-    """按完整数字边界匹配：10 不能命中 2026.10 里的月份，4.8 不能命中 14.8。"""
+    """按完整数字边界匹配：10 不能命中 2026.10 里的月份，4.8 不能命中 14.8；
+    允许前导零，00175 与 0175 视为同一个数。"""
     clean = str(text or "").replace(",", "")
     if re.fullmatch(r"(?:19|20)\d{2}", n):
         return re.search(r"(?<!\d)" + re.escape(n) + r"(?!\d)", clean) is not None
-    pattern = r"(?<![\d.])" + re.escape(n) + r"(?![\d.])"
+    pattern = r"(?<![\d.])0*" + re.escape(n) + r"(?![\d.])"
     return re.search(pattern, clean) is not None
 
 

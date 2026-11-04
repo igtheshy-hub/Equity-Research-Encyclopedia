@@ -58,23 +58,35 @@ def main():
     listed = [x for x in industry_report.list_jobs() if x["id"] == "kkk888"]
     check("列表带类型", (listed[0]["kind"], listed[0]["kind_label"]), ("company", "公司研报"))
 
-    print("== 公司研报年报缺口 ==")
-    original_annual = industry_report._annual_in_library
+    print("== 公司研报定期报告缺口 ==")
+    original_periodic = industry_report._periodic_in_library
     original_stock = industry_report._stock_code
     industry_report._stock_code = lambda job: "0175.HK"
     try:
         company_job = make_job("ann001", kind="company", title="吉利汽车研究报告",
                                question="帮我写一份吉利汽车的研究报告")
         check("公司研报主体", industry_report._subject(company_job), "吉利汽车")
-        check("行业研报不列年报缺口", industry_report._annual_gap(make_job("ind002")), None)
-        industry_report._annual_in_library = lambda job: None
-        gap = industry_report._annual_gap(company_job)
-        check("缺年报必选", (gap["id"], gap["required"]), ("annual", True))
-        check("年报取数走港股", gap["fetch"]["params"]["market"], "hk")
-        industry_report._annual_in_library = lambda job: {"file": "x.pdf"}
-        check("有年报不列缺口", industry_report._annual_gap(company_job), None)
+        check("报告期解析三季报",
+              industry_report._period_from_text("公司_2026年三季报_20261030.pdf"),
+              ("quarterly", "2026Q3"))
+        check("报告期解析半年报",
+              industry_report._period_from_text("公司_2026年半年度报告_20260830.pdf"),
+              ("interim", "2026H1"))
+        check("报告期解析年报标记", industry_report._period_from_text("2025FY"),
+              ("annual", "2025FY"))
+        check("行业研报不列定期报告缺口", industry_report._periodic_gaps(make_job("ind002")), [])
+        industry_report._periodic_in_library = lambda job: {}
+        gaps = industry_report._periodic_gaps(company_job)
+        check("三类报告都缺", [g["id"] for g in gaps], ["annual", "interim", "quarterly"])
+        check("年报缺口必选", gaps[0]["required"], True)
+        check("港股季报不阻断", gaps[2]["required"], False)
+        check("年报取数走港股", gaps[0]["fetch"]["params"]["market"], "hk")
+        industry_report._periodic_in_library = lambda job: {
+            "annual": {"file": "a.pdf"}, "interim": {"file": "b.pdf"},
+            "quarterly": {"file": "c.pdf"}}
+        check("覆盖三类后不列缺口", industry_report._periodic_gaps(company_job), [])
     finally:
-        industry_report._annual_in_library = original_annual
+        industry_report._periodic_in_library = original_periodic
         industry_report._stock_code = original_stock
 
     print("== 行业研报大纲顺序 ==")
@@ -143,7 +155,7 @@ def main():
         gaps = industry_report._extract_gaps(make_job("ggg777"), "# 大纲", ["乘用车"])
         check("别名映射到真实源",
               [g["fetch"]["source"] if g["fetch"] else None for g in gaps],
-              ["stats_series", "akshare_series", "eastmoney_reports", "cninfo_announce", None])
+              ["stats_series", "akshare_series", "eastmoney_reports", "cninfo_announce", "web_search"])
         check("缺口编号连续", [g["id"] for g in gaps], ["g1", "g2", "g3", "g4", "g5"])
     finally:
         industry_report.llm.chat = original_chat
@@ -172,7 +184,7 @@ def main():
             industry_report.approve_gaps("ddd555", [])
         except ValueError as e:
             err = str(e)
-        check("年报缺口不能跳过", "年报" in err, True)
+        check("定期报告缺口不能跳过", "定期报告" in err, True)
         check("跳过被拒不成文", started, ["ddd444"])
     finally:
         industry_report._begin_write = original_begin
@@ -200,7 +212,7 @@ def main():
 
         def ok_fetch(source, params, tid=None, targets=None):
             seen["targets"] = targets
-            return {"summary": "入库 1 份"}
+            return {"summary": "入库 1 份", "entries_count": 1, "files": ["a.pdf"]}
 
         industry_report.fetcher.run_fetch = ok_fetch
         industry_report.save_job(make_job("iii999", status="gaps_pending", gaps=gaps))

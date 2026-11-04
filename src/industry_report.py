@@ -8,6 +8,7 @@ import re
 import shutil
 import threading
 import uuid
+from datetime import date, timedelta
 
 from . import anchor_match as am
 from . import ask as ask_mod
@@ -18,11 +19,17 @@ from .pdf_extract import load_cached
 JOB_LOCK = threading.RLock()
 
 SKILL_DIR = config.ROOT / ".claude" / "skills"
-STRUCTURE_PATH = SKILL_DIR / "earnings-analysis" / "references" / "report-structure.md"
-SECTOR_PATH = SKILL_DIR / "sector-overview" / "SKILL.md"
+STRUCTURE_PATH = SKILL_DIR / "industry-report" / "references" / "report-structure.md"
+SECTOR_PATH = SKILL_DIR / "industry-report" / "references" / "sector-overview.md"
+COMPETITIVE_PATH = SKILL_DIR / "industry-report" / "references" / "competitive-analysis.md"
+COMPS_PATH = SKILL_DIR / "industry-report" / "references" / "comps-analysis.md"
 COMPANY_SKILL_PATH = SKILL_DIR / "company-report" / "SKILL.md"
+COMPANY_STRUCTURE_PATH = SKILL_DIR / "company-report" / "references" / "report-structure.md"
+COMPANY_COMPS_PATH = SKILL_DIR / "company-report" / "references" / "comps-analysis.md"
 ANNUAL_RE = re.compile(r"(年度报告|年報|annual\s*report)", re.I)
-DOC_GAP_RE = re.compile(r"未摄入材料|年度报告|年报|年報|公告|研报|招股书|招股說明書|募集说明|审计报告|全文|PDF", re.I)
+DOC_GAP_RE = re.compile(
+    r"未摄入材料|年度报告|年报|年報|半年度报告|半年报|中期报告|季度报告|季报|"
+    r"公告|研报|招股书|招股說明書|募集说明|审计报告|全文|PDF", re.I)
 
 RUNNING_STATUSES = ("outlining", "fetching", "writing", "charting", "reviewing", "docxing")
 
@@ -537,22 +544,160 @@ def _annual_in_library(job):
     return None
 
 
-def _annual_gap(job):
-    """公司研报必选缺口：最近一期年报。库里有就不列。"""
-    if job.get("kind") != "company" or _annual_in_library(job):
-        return None
+PERIOD_KEY_RE = re.compile(
+    r"(20\d{2})\s*(?:年)?\s*(半年度报告|半年报|中期报告|中报|年度报告|年報|年报|"
+    r"第一季度报告|一季度报告|一季报|第三季度报告|三季度报告|三季报|季度报告|季报)")
+PERIOD_CODE_RE = re.compile(r"(20\d{2})\s*(FY|H1|Q[1-4])", re.I)
+DATE8_RE = re.compile(r"(20\d{2})(\d{2})(\d{2})")
+PERIOD_LABELS = {"annual": "年度报告", "interim": "半年报", "quarterly": "季报"}
+
+
+def _period_from_text(text):
+    """从文件名或报告期标记解析 (类型, 报告期标签)，如 2026年三季报 -> (quarterly, 2026Q3)。"""
+    s = str(text or "")
+    m = PERIOD_KEY_RE.search(s)
+    if m:
+        year, kw = int(m.group(1)), m.group(2)
+        if kw in ("半年度报告", "半年报", "中期报告", "中报"):
+            return "interim", f"{year}H1"
+        if kw in ("年度报告", "年報", "年报"):
+            return "annual", f"{year}FY"
+        q = "Q1" if kw in ("第一季度报告", "一季度报告", "一季报") else "Q3"
+        return "quarterly", f"{year}{q}"
+    m = PERIOD_CODE_RE.search(s)
+    if m:
+        year, code = int(m.group(1)), m.group(2).upper()
+        kind = {"FY": "annual", "H1": "interim"}.get(code, "quarterly")
+        return kind, f"{year}{code}"
+    return None
+
+
+def _period_end(kind, label):
+    year = int(str(label)[:4])
+    if kind == "annual":
+        return date(year, 12, 31)
+    if kind == "interim":
+        return date(year, 6, 30)
+    return date(year, 3, 31) if str(label).endswith("Q1") else date(year, 9, 30)
+
+
+def _filing_date(text):
+    """取文件名里的 8 位日期，多个取最后一个；没有返回 None。"""
+    for y, m, d in reversed(DATE8_RE.findall(str(text or ""))):
+        try:
+            return date(int(y), int(m), int(d))
+        except ValueError:
+            continue
+    return None
+
+
+def _record_date(kind, label, text):
+    got = _filing_date(text)
+    if got:
+        return got
+    lag = {"annual": 120, "interim": 62, "quarterly": 31}.get(kind, 31)
+    return _period_end(kind, label) + timedelta(days=lag)
+
+
+def _periodic_records(job):
+    """库里该公司的定期报告记录，来源为 manifest 文件名与 data/fin 报告期。"""
+    subject = _subject(job)
+    out = {}
+    for f in ingest_mod.load_manifest()["files"]:
+        name = str(f.get("file") or "")
+        topics = " ".join(str(t) for t in (f.get("topics_touched") or []))
+        if subject not in name and subject not in topics:
+            continue
+        meta = _period_from_text(name)
+        if not meta:
+            continue
+        kind, label = meta
+        out[(kind, label, name)] = {
+            "kind": kind, "label": label, "file": name,
+            "date": _record_date(kind, label, name),
+        }
+    for path in config.FIN_DIR.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        names = [path.stem, str(data.get("company") or "")]
+        names += [str(a) for a in (data.get("aliases") or [])]
+        if not any(subject in n for n in names if n):
+            continue
+        for pk, pv in (data.get("periods") or {}).items():
+            meta = _period_from_text(pk)
+            if not meta:
+                continue
+            kind, label = meta
+            src = str((pv or {}).get("source") or "")
+            out[(kind, label, src)] = {
+                "kind": kind, "label": label, "file": src or path.name,
+                "date": _record_date(kind, label, src or label),
+            }
+    return list(out.values())
+
+
+def _periodic_in_library(job):
+    """最近 365 天内披露的定期报告，每类取最新一份。"""
+    today = date.today()
+    start = today - timedelta(days=365)
+    best = {}
+    for r in _periodic_records(job):
+        if not (start <= r["date"] <= today):
+            continue
+        cur = best.get(r["kind"])
+        if not cur or r["date"] > cur["date"]:
+            best[r["kind"]] = r
+    return best
+
+
+def _latest_quarter_kind(today):
+    """当前已到披露期的最近一季：1 到 4 月看上年三季报，5 到 10 月看一季报，11 月起看三季报。"""
+    if today.month <= 4 or today.month >= 11:
+        return "q3"
+    return "q1"
+
+
+def _periodic_gaps(job):
+    """公司研报必选缺口：最近一年内的年报、半年报、季报，缺哪类补哪类。"""
+    if job.get("kind") != "company":
+        return []
+    coverage = _periodic_in_library(job)
     subject = _subject(job)
     code = _stock_code(job)
-    market = "hk" if code.endswith(".HK") else ("a" if code else "")
-    return {
-        "id": "annual",
-        "item": f"{subject}最近一期年度报告（财报）",
-        "why": "公司研报的财务分析与盈利预测必须以年报为锚，缺年报不能成文",
-        "fetch": {"source": "annual_report",
-                  "params": {"company": subject, "code": code, "market": market}},
-        "status": "pending",
-        "required": True,
-    }
+    market = "hk" if code.endswith(".HK") else "a"
+    today = date.today()
+    specs = [
+        ("annual", "公司研报的财务分析与盈利预测必须以最近一年内的年报为锚"),
+        ("interim", "最近一年内的半年报用于更新经营数据，按定期报告覆盖规则须补齐"),
+        ("quarterly", "最近一年内的季报用于更新最新经营数据，按定期报告覆盖规则须补齐"),
+    ]
+    out = []
+    for kind, why in specs:
+        if kind in coverage:
+            continue
+        if kind == "annual":
+            fetch = {"source": "annual_report",
+                     "params": {"company": subject, "code": code, "market": market}}
+        else:
+            pkind = kind
+            if kind == "quarterly" and market == "a":
+                pkind = _latest_quarter_kind(today)
+            fetch = {"source": "periodic_report",
+                     "params": {"company": subject,
+                                "code": code.split(".")[0] if market == "a" else code,
+                                "market": market, "kind": pkind,
+                                "days": 400, "limit": 1}}
+        out.append({
+            "id": kind,
+            "item": f"{subject}最近一年内{PERIOD_LABELS[kind]}（财报）",
+            "why": why,
+            "fetch": fetch,
+            "status": "pending",
+            "required": not (market == "hk" and kind == "quarterly"),
+        })
+    return out
 
 
 def _gap_targets(job, cap=10):
@@ -576,34 +721,45 @@ def _gap_targets(job, cap=10):
 
 
 def _base_gaps(job):
-    """程序生成的缺口：未摄入材料提醒 + 公司年报必选。"""
+    """程序生成的缺口：未摄入材料提醒 + 公司定期报告（年报、半年报、季报）。"""
     gaps = _pending_gap_items()
-    annual = _annual_gap(job)
-    if annual:
-        gaps.insert(0, annual)
+    periodic = _periodic_gaps(job)
+    if periodic:
+        gaps = periodic + gaps
     return gaps
 
 
-def _drop_annual_dupes(gaps, job):
-    """模型自己也列了年报时，去掉重复项，保留程序生成的那条必选缺口。
+def _drop_periodic_dupes(gaps, job):
+    """模型也列了定期报告时去掉重复项，保留程序生成的必选缺口。
 
-    年报已在库的，其余指向年报的缺口改成不能自动补：重下同一份文件会被 SHA256 去重，
-    库里的条目不会增加，标成可取数只会给假的「已补」。
+    最近一年内的该类报告已在库的，其余指向它的缺口改成不能自动补：重下同一份文件会被
+    SHA256 去重，库里的条目不会增加，标成可取数只会给假的「已补」。
     """
     subject = _subject(job)
-    have = _annual_in_library(job)
+    coverage = _periodic_in_library(job)
     out = []
     for g in gaps:
         if g.get("required"):
             out.append(g)
             continue
         text = str(g.get("item") or "")
-        if ("年报" in text or "年度报告" in text) and subject in text:
+        if subject in text and any(k in text for k in (
+                "年报", "年度报告", "半年报", "半年度报告", "季报", "季度报告")):
             continue
         fetch = g.get("fetch") or {}
-        if have and fetch.get("source") == "annual_report":
+        kind = ""
+        if fetch.get("source") == "annual_report":
+            kind = "annual"
+        elif fetch.get("source") == "periodic_report":
+            pkind = str((fetch.get("params") or {}).get("kind") or "")
+            if pkind == "interim":
+                kind = "interim"
+            elif pkind in ("q1", "q3", "quarterly"):
+                kind = "quarterly"
+        if kind and kind in coverage:
             g["fetch"] = None
-            note = f"库内已有年报 {have.get('file') or ''}，重下同一份不会新增条目"
+            note = (f"库内已有最近一年内的{PERIOD_LABELS[kind]}"
+                    f" {coverage[kind].get('file') or ''}，重下同一份不会新增条目")
             g["why"] = (g["why"] + "；" if g.get("why") else "") + note
         out.append(g)
     return out
@@ -734,6 +890,10 @@ OUTLINE_PROMPT = """你是中文卖方行业研报的主笔，现在只定大纲
 {STRUCTURE}
 --- 行业全景报告标准结构 ---
 {SECTOR}
+--- 竞对与定位参考 ---
+{COMPETITIVE}
+--- 可比公司分析框架 ---
+{COMPS}
 --- 样板研报骨架（开头部分） ---
 {SAMPLES}
 
@@ -761,6 +921,7 @@ GAPS_PROMPT = """你在给研报大纲列数据缺口。报告主题：{TITLE}
 - cninfo_announce：巨潮 A 股公告（港股不覆盖），params {{"query": "检索词", "code": "A股代码可空", "category": "分类代码可空", "days": 天数, "limit": 份数}}
 - hkex_announce：港交所公告，params {{"company": "公司名", "code": "港股代码", "category": "annual|interim|quarterly|esg|results|all", "limit": 份数}}
 - annual_report：公司年报，params {{"company": "公司名", "market": "a|hk"}}
+- periodic_report：公司定期报告，params {{"company": "公司名", "code": "代码可空", "market": "a|hk", "kind": "interim|q1|q3|quarterly", "days": 天数}}
 - sample_chain：行业样板研报下载链，params {{"industry": "行业", "limit": 份数}}
 - cpca_sales：乘联会汽车销量，params {{"charttype": "1整体|2厂商|3车型|4国别|5级别|6新能源", "metric": "产量|批发|零售|出口|当月销量|累计销量|当月份额|累计份额|全部", "months": 月数}}
 - csindex_index：中证指数行情估值与权重，params {{"code": "指数代码"}}
@@ -774,7 +935,7 @@ GAPS_PROMPT = """你在给研报大纲列数据缺口。报告主题：{TITLE}
 先配专用源；专用源明确取不到的再用 web_search，不要直接放弃。
 
 只列大纲需要、但知识库页面里明显没有的关键数据，最多 8 条；每条都必须配上面能执行的源。
-只输出 JSON：{{"gaps": [{{"item": "缺什么数据", "why": "哪节要用", "source": "stats_series|akshare_series|eastmoney_reports|cninfo_announce|hkex_announce|annual_report|sample_chain|cpca_sales|csindex_index|pbc_stat|fred_series|imf_series|dbnomics_series|worldbank_series|caam_article|web_search", "params": {{}}}}]}}"""
+只输出 JSON：{{"gaps": [{{"item": "缺什么数据", "why": "哪节要用", "source": "stats_series|akshare_series|eastmoney_reports|cninfo_announce|hkex_announce|annual_report|periodic_report|sample_chain|cpca_sales|csindex_index|pbc_stat|fred_series|imf_series|dbnomics_series|worldbank_series|caam_article|web_search", "params": {{}}}}]}}"""
 
 
 OUTLINE_PROMPT_COMPANY = """你是中文卖方公司研报的主笔，现在只定大纲，不写正文。
@@ -785,6 +946,12 @@ OUTLINE_PROMPT_COMPANY = """你是中文卖方公司研报的主笔，现在只�
 --- 公司研报权威框架（技能 company-report） ---
 {FRAMEWORK}
 
+--- 页面组织与图表版式参考 ---
+{STRUCTURE}
+
+--- 可比公司分析框架 ---
+{COMPS}
+
 --- 库内研报对该公司或其行业的覆盖（开头部分） ---
 {SAMPLES}
 
@@ -793,7 +960,7 @@ OUTLINE_PROMPT_COMPANY = """你是中文卖方公司研报的主笔，现在只�
 
 要求：
 1. 章节按上面的权威框架走，最多 {MAXS} 节。八节依次是投资摘要与评级、公司概况与历史沿革、行业空间与竞争格局、核心竞争力与护城河、经营与财务分析、盈利预测与关键假设、估值与投资建议、风险提示；缺料的节可以合并，但财务分析与估值两节必须保留
-2. 财务分析节必须以公司年报为锚，写明营收拆分、毛利率、费用率、ROE、现金流与资产负债的关键科目；年报还没入库时，大纲里照常列出这一节并标注「待补年报」
+2. 财务分析节必须以公司年报为锚，并用最近一年内的半年报、季报更新最新数据，写明营收拆分、毛利率、费用率、ROE、现金流与资产负债的关键科目；定期报告还没入库时，大纲里照常列出这一节并标注「待补定期报告」
 3. 每节写清：本节论点、需要的数据与表、可画图表的建议（只写数据、图型与口径，不编号、不写图题）、取料页面（写 slug）
 4. 只用知识库页面里有的材料定结构；库里没有的数据不要在这里编，缺口由下一道程序另列
 5. 输出 markdown：第一行 "# 大纲：{TITLE}"，其后每节 "## 一、标题" 形式，节内用短横线列论点/数据/图表建议/取料页
@@ -806,6 +973,7 @@ SOURCE_ALIASES = {
     "cninfo": "cninfo_announce", "巨潮": "cninfo_announce",
     "hkex": "hkex_announce", "港交所": "hkex_announce", "披露易": "hkex_announce",
     "annual": "annual_report", "年报": "annual_report", "annual_report": "annual_report",
+    "periodic": "periodic_report", "定期报告": "periodic_report", "periodic_report": "periodic_report",
     "web": "web_search", "web_search": "web_search", "网络检索": "web_search",
     "sample": "sample_chain", "sample_chain": "sample_chain",
     "hibor": "hibor_ranking", "hibor_ranking": "hibor_ranking",
@@ -849,13 +1017,17 @@ def _phase_outline(job_id, tid):
         prompt = (OUTLINE_PROMPT_COMPANY
                   .replace("{TITLE}", base["TITLE"]).replace("{Q}", base["Q"])
                   .replace("{FRAMEWORK}", _read_skill(COMPANY_SKILL_PATH, cap=12000))
+                  .replace("{STRUCTURE}", _read_skill(COMPANY_STRUCTURE_PATH, cap=3500))
+                  .replace("{COMPS}", _read_skill(COMPANY_COMPS_PATH, cap=5000))
                   .replace("{SAMPLES}", base["SAMPLES"]).replace("{PAGES}", base["PAGES"])
                   .replace("{MAXS}", base["MAXS"]))
     else:
         prompt = (OUTLINE_PROMPT
                   .replace("{TITLE}", base["TITLE"]).replace("{Q}", base["Q"])
-                  .replace("{STRUCTURE}", _read_skill(STRUCTURE_PATH))
-                  .replace("{SECTOR}", _read_skill(SECTOR_PATH))
+                  .replace("{STRUCTURE}", _read_skill(STRUCTURE_PATH, cap=9000))
+                  .replace("{SECTOR}", _read_skill(SECTOR_PATH, cap=6000))
+                  .replace("{COMPETITIVE}", _read_skill(COMPETITIVE_PATH, cap=6000))
+                  .replace("{COMPS}", _read_skill(COMPS_PATH, cap=6000))
                   .replace("{SAMPLES}", base["SAMPLES"]).replace("{PAGES}", base["PAGES"])
                   .replace("{MAXS}", base["MAXS"]))
     outline = ask_mod.strip_glitch(llm.chat([{"role": "user", "content": prompt}], task="outline"))
@@ -873,7 +1045,7 @@ def _phase_outline(job_id, tid):
     _tick(tid, 70, "列数据缺口")
     gaps = _base_gaps(job)
     try:
-        gaps += _drop_annual_dupes(
+        gaps += _drop_periodic_dupes(
             _extract_gaps(job, outline, [str(p["meta"].get("title") or p["slug"]) for p in sel]), job)
     except llm.LLMError as e:
         _log(job, f"缺口提取失败（本次不列外部缺口）：{e}")
@@ -933,7 +1105,7 @@ def approve_outline(job_id, outline_md=None):
         gaps = _base_gaps(job)
         try:
             with llm.use_model(job.get("model")):
-                gaps += _drop_annual_dupes(_extract_gaps(
+                gaps += _drop_periodic_dupes(_extract_gaps(
                     job, job["outline"],
                     [p.get("title") or p.get("slug") for p in job.get("pages") or []]), job)
         except llm.LLMError as e:
@@ -958,7 +1130,7 @@ def approve_gaps(job_id, gap_ids):
     chosen = set(gap_ids or [])
     missing = [g["item"] for g in (job.get("gaps") or []) if g.get("required") and g["id"] not in chosen]
     if missing:
-        raise ValueError("公司研报必须先补公司年报，不能跳过：" + "、".join(missing))
+        raise ValueError("公司研报必须先补齐最近一年内的定期报告，不能跳过：" + "、".join(missing))
     no_source = [g["item"] for g in (job.get("gaps") or [])
                  if g["id"] in chosen and not ((g.get("fetch") or {}).get("source"))]
     if no_source:
@@ -1106,7 +1278,7 @@ WRITE_PROMPT = """你是中文卖方研报的主笔，正在写《{TITLE}》的�
 10. 不写其他节的内容，不写封面、目录、注释表
 11. 每个表格上方必须有题注「**表N 标题**」，正文只写表格；不写图题、图N占位、「图表位说明」，实际图表由系统在文末以附图N生成
 12. 表格里的每个数字也要能追溯到本节文字或表格题注里的锚点；找不到出处的数字不要放进表格
-13. 公司财务数据的来源优先级：财报（年报、季报、半年报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
+13. 公司财务数据的来源优先级：财报（年报、半年报、季报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
 {EXTRA}"""
 
 CHARTS_PROMPT = """下面是刚写完的研报全文。挑出能画图的数据，给图表 spec。

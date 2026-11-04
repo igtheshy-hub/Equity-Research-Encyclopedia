@@ -26,13 +26,14 @@ def strip_glitch(text):
     return "".join(out)
 
 INTENT_PROMPT = """判断用户这条消息的意图与领域，只输出 JSON：
-{"intent": "chat 或 report", "title": "report 时给一个不超过 16 字的报告标题，chat 给空字符串", "domain": "finstmt 或 general", "report_type": "industry、company 或 builtin"}
+{"intent": "chat 或 report", "title": "report 时给一个不超过 16 字的报告标题，chat 给空字符串", "domain": "finstmt 或 general", "report_type": "industry、company 或 builtin", "method": "earnings、comps、both 或 none"}
 
 chat = 普通问答、追问、信息咨询，包括「怎么样/多少/为什么/怎么看/什么观点/对比一下」这类问法。
 report = 用户明确要求生成一份可保存的成文档交付物，措辞中带有「写一份/生成一份/帮我出一份/做一份报告/对比分析报告/财务报告」等明确的成文动作。只是打听情况、数据或观点，哪怕话题很专业，也算 chat。
 finstmt = 问题涉及财务报表数据的分析理解：比率、盈利、毛利、现金流、资产负债、ROE/ROA/ROIC、偿债、周转（应收/存货/应付账款天数）、营收利润增速、财报地雷或造假嫌疑、审计意见等。只要问题需要读报表数字才能回答就算 finstmt，漏判比误判伤害大，拿不准给 finstmt。
 general = 其余所有问题。
 report_type = 只在 intent=report 时有意义：写某一行业的研报（行业研报、行业深度、行业月报、行业专题）给 industry；写单一一家公司的研究报告（公司深度、公司研究、个股研报）给 company；多公司对比分析、财务分析报告、快速数据底稿、其他报告给 builtin。拿不准给 builtin。
+method = 只在 intent=chat 时有意义，判断回答该问题该用哪种分析框架：业绩点评、季报中报年报解读、业绩超预期或不及预期、单期经营数据拆解给 earnings；可比公司、同业估值对比、相对估值、估值溢价折价、对标给 comps；两者都明显涉及给 both；其余给 none。拿不准给 none，不要为了专业感硬套框架。
 
 用户消息：{Q}"""
 
@@ -52,9 +53,10 @@ ANSWER_PROMPT = """你是行业知识库的问答员，只能用给定页面内�
 - 每个陈述句句尾带锚点 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]]，锚点只能引用给定页面中出现过的来源文件
 - 页面没有的信息，明说「知识库中没有该信息」
 - 不允许出现没有任何锚点的数据性陈述
-- 公司财务数据的来源优先级：财报（年报、季报、半年报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
+- 公司财务数据的来源优先级：财报（年报、半年报、季报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
 - 回答用中文，markdown 格式
 {FIN}
+{METHOD}
 {HISTORY}--- 页面内容开始 ---
 {PAGES}
 --- 页面内容结束 ---
@@ -81,7 +83,7 @@ INDEX_ANSWER_PROMPT = """你是行业知识库的问答员，用户问的是知�
 # 财报分析类问题的附加纪律，浓缩自 .claude/skills/finstmt-qa v1.1；{FIN} 占位符按 domain 注入
 FIN_ANALYSIS_BLOCK = """
 本次问题属财报分析类，再遵守以下纪律（方法论来源：financial-statement-reading skill，张明辉、Berman 等三本书整合）：
-- 公司财务数据的来源优先级：财报（年报、季报、半年报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
+- 公司财务数据的来源优先级：财报（年报、半年报、季报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
 - 呈现顺序倒金字塔：第一屏直接回答用户问题。问单一数据或事实时直接给数带口径；问分析、评价、风险类问题时，先给 3-5 条一句话判断（每条独立一行，句后括注一句依据），再给综合结论，六步框架的详细盘点放在其后展开，展开部分不重复抄写判断清单里已给的数字
 - 先盘点给定内容中已有的财报数据再下判断：wiki 页面里的【数据】行是报表原值、【指标】行是固定口径的派生值、【管理层】行是原文摘录；原始材料则直接读报表数字。数据缺失的项明说「无法核验」，不用自身知识补
 - 引用任何指标必须带口径标签与报告期（如 ROE(归母平均)@2025FY），中途换口径必须说明理由
@@ -132,9 +134,10 @@ DEEP_ANSWER_PROMPT = """你是行业研究助手，只能用给定的原始材�
 - 每个陈述句句尾带锚点：PDF 片段用 [[文件名.pdf#p页码]]，Word 片段用 [[文件名.docx#para段落号]]，页码/段落号取片段标记中的序号
 - 片段标记形如「[文件名 | 第3页]」，请原样使用其中的文件名与序号
 - 不允许出现没有任何锚点的数据性陈述
-- 公司财务数据的来源优先级：财报（年报、季报、半年报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
+- 公司财务数据的来源优先级：财报（年报、半年报、季报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
 - 回答用中文，markdown 格式
 {FIN}
+{METHOD}
 {HISTORY}--- 材料片段开始 ---
 {UNITS}
 --- 材料片段结束 ---
@@ -155,6 +158,70 @@ def _history_block(history):
     return "\n".join(lines) + "\n\n"
 
 
+# 业绩点评与可比公司两个问答框架，取自研报技能的 references，只注入标记段，不加载全文
+QA_REFERENCES_DIR = config.ROOT / ".claude" / "skills" / "industry-report" / "references"
+QA_FRAMEWORK_FILES = {
+    "earnings": QA_REFERENCES_DIR / "report-structure.md",
+    "comps": QA_REFERENCES_DIR / "comps-analysis.md",
+}
+QA_FRAMEWORK_RE = re.compile(r"<!-- QA-FRAMEWORK:START -->(.*?)<!-- QA-FRAMEWORK:END -->", re.S)
+_QA_FRAMEWORK_CACHE = {}
+
+_EARNINGS_KEYS = ("业绩点评", "财报点评", "季报点评", "中报点评", "年报点评", "业绩快报",
+                  "业绩预告", "三季报", "半年报", "一季报", "超预期", "不及预期",
+                  "低于预期", "高于预期")
+_COMPS_KEYS = ("可比公司", "同业", "可比", "估值对比", "相对估值", "估值溢价",
+               "估值折价", "对标", "peer", "comps")
+
+
+def _keyword_method(question):
+    q = str(question or "").lower()
+    earnings = any(k in q for k in _EARNINGS_KEYS)
+    comps = any(k in q for k in _COMPS_KEYS)
+    if earnings and comps:
+        return "both"
+    if earnings:
+        return "earnings"
+    if comps:
+        return "comps"
+    return ""
+
+
+def _merge_method(method, question):
+    """模型判定的框架与关键词命中合并，宁可多给一个组织顺序，不硬套事实。"""
+    kw = _keyword_method(question)
+    if not kw:
+        return method
+    if not method:
+        return kw
+    return "both" if method != kw else method
+
+
+def _method_block(method):
+    if method not in ("earnings", "comps", "both"):
+        return ""
+    parts = []
+    for name in ("earnings", "comps"):
+        if method not in (name, "both"):
+            continue
+        text = _QA_FRAMEWORK_CACHE.get(name)
+        if text is None:
+            try:
+                raw = QA_FRAMEWORK_FILES[name].read_text(encoding="utf-8")
+                hit = QA_FRAMEWORK_RE.search(raw)
+                text = hit.group(1).strip() if hit else ""
+            except OSError:
+                text = ""
+            _QA_FRAMEWORK_CACHE[name] = text
+        if text:
+            parts.append(text)
+    if not parts:
+        return ""
+    return ("本次问题按下面的答题框架组织。框架只给组织顺序，不给事实与数字；"
+            "所有事实、数据、评级与目标价仍只能来自给定页面，句尾按上文规则带锚点。\n\n"
+            + "\n\n".join(parts))
+
+
 def _detect_intent(question):
     try:
         out = llm.chat(
@@ -163,12 +230,13 @@ def _detect_intent(question):
             response_json=True,
         )
     except llm.LLMError:
-        return "chat", "", "general", "builtin"
+        return "chat", "", "general", "builtin", _keyword_method(question)
     domain = "finstmt" if out.get("domain") == "finstmt" else "general"
     report_type = out.get("report_type") if out.get("report_type") in ("industry", "company") else "builtin"
     if out.get("intent") == "report":
-        return "report", str(out.get("title") or "").strip()[:16] or "未命名报告", domain, report_type
-    return "chat", "", domain, "builtin"
+        return "report", str(out.get("title") or "").strip()[:16] or "未命名报告", domain, report_type, ""
+    method = out.get("method") if out.get("method") in ("earnings", "comps", "both") else ""
+    return "chat", "", domain, "builtin", _merge_method(method, question)
 
 
 def _violations(answer, allowed):
@@ -386,7 +454,7 @@ def deep_ask(question, history=None, files=None):
     result = {"kind": "answer", "deep": True, "question": question,
               "step1": {"selected": [], "reason": reason},
               "answer_md": "", "validation": {"ok": True, "violations": []}, "proposal": None}
-    _, _, domain, _ = _detect_intent(question)
+    _, _, domain, _, method = _detect_intent(question)
     pieces, allowed = _collect_deep_units(question, files=files)
     if not pieces:
         result["answer_md"] = "没有从 raw 文件提取到可用于回答的文字（可能均为扫描版或文件已移走）。"
@@ -394,6 +462,7 @@ def deep_ask(question, history=None, files=None):
     fin = FIN_ANALYSIS_BLOCK if domain == "finstmt" else ""
     messages = [{"role": "user", "content": DEEP_ANSWER_PROMPT
                  .replace("{FIN}", fin)
+                 .replace("{METHOD}", _method_block(method))
                  .replace("{HISTORY}", _history_block(history))
                  .replace("{UNITS}", "\n\n".join(pieces))
                  .replace("{Q}", question)}]
@@ -418,7 +487,7 @@ def ask(question, history=None, propose=True):
     result = {"kind": "answer", "question": question,
               "step1": {"selected": [], "reason": ""},
               "answer_md": "", "validation": {"ok": True, "violations": []}, "proposal": None}
-    intent, title, domain, report_type = _detect_intent(question)
+    intent, title, domain, report_type, method = _detect_intent(question)
     if intent == "report":
         return {"kind": "report", "question": question, "title": title, "domain": domain,
                 "report_type": report_type}
@@ -463,6 +532,7 @@ def ask(question, history=None, propose=True):
     fin = FIN_ANALYSIS_BLOCK if domain == "finstmt" else ""
     messages = [{"role": "user", "content": ANSWER_PROMPT
                  .replace("{FIN}", fin)
+                 .replace("{METHOD}", _method_block(method))
                  .replace("{HISTORY}", _history_block(history))
                  .replace("{PAGES}", pages_text)
                  .replace("{Q}", question)}]

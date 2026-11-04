@@ -154,7 +154,7 @@ function gapsHTML(job) {
     }).join("");
     return `<div class="report-card">
       <h2>数据缺口</h2>
-      <p class="muted">勾上的缺口会起取数任务补进 raw，补完自动开始成文；没勾的跳过，报告里留数据缺失。公司年报是必选项，缺年报不能成文。</p>
+      <p class="muted">勾上的缺口会起取数任务补进 raw，补完自动开始成文；没勾的跳过，报告里留数据缺失。公司研报的必选缺口是最近一年内的年报、半年报、季报，缺哪类补哪类，未补齐不能成文；港股季报不强制。</p>
       ${rows}
       <div class="report-actions">
         <button class="primary" data-act="gaps-submit">补选中的缺口并成文</button>

@@ -1,98 +1,100 @@
 ---
 name: md-to-docx
-description: Convert Markdown files to Word documents (.docx) with proper formatting, Chinese font support (FangSong for all text including headings), black font color, 1.5x line spacing, precise first-line indent (24pt), heading spacing after (1 line), no italic headings, and automatic superscript conversion for citation numbers. Use when converting .md files to .docx, creating Word documents from markdown, or when user mentions Word, DOCX, or document conversion. Requires pandoc.
+description: 把 Markdown 文件转换成排版规范的 Word 文档（.docx），支持中文仿宋字体、黑色字、1.5 倍行距、首行缩进 24 磅、标题段后 1 行、标题不用斜体，并把引文编号自动转成上标。用户要求把 .md 转成 .docx、用 Markdown 生成 Word，或提到 Word、DOCX、文档转换时使用。依赖 pandoc。
 allowed-tools: Bash, Read, Write, Glob
 ---
 
-# Markdown to Word (DOCX) Converter
+# Markdown 转 Word（DOCX）
 
-Convert markdown files to professionally formatted Word documents (.docx) using pandoc.
+用 pandoc 把 Markdown 文件转成排版规范的 Word 文档。
 
-## What this Skill does
+## 这个技能做什么
 
-This Skill enables Claude to convert Markdown files to Word documents with proper formatting, including:
+把 Markdown 转成 Word，并处理以下格式：
 
-- Headings and text formatting (H1-H6, bold, italic, strikethrough)
-- Lists (ordered and unordered, nested)
-- Tables with proper formatting
-- Images (automatically embedded)
-- Links and references
-- Code blocks and inline code
-- Chinese punctuation preservation (。，""（）；！？)
-- **Citation superscript**: Automatically converts citation numbers (e.g., `文献1。` → `文献¹。`) to superscript format for academic documents
-- **Default Chinese template**: Uses FangSong (仿宋) font for all Chinese text (body, headings, and subtitles), Times New Roman for English text, black color for all text, 1.5x line spacing, first-line indent of two characters (24pt, precisely aligned), heading spacing after (1 line / 12pt), and no italic style for headings
+- 标题与文字格式（H1 到 H6、加粗、斜体、删除线）
+- 有序、无序与嵌套列表
+- 表格，含表头底纹与边框
+- 图片，自动嵌入
+- 链接与引用
+- 代码块与行内代码
+- 保留中文标点（。，""（）；！？）
+- **引文上标**：自动把引文编号转成上标，例如 `文献1。` 转成 `文献¹。`
+- **默认中文模板**：中文全部用仿宋，英文用 Times New Roman，全文字体黑色，1.5 倍行距，首行缩进两个字符（24 磅，精确对齐），标题段后 1 行（12 磅），标题不用斜体
 
-## Requirements
+## 环境要求
 
-Packages must be installed in your environment before using this Skill:
+使用前环境里要装两个包。
 
-**pandoc** (required):
+**pandoc**（必需）：
+
 ```bash
 # macOS
 brew install pandoc
 
-# Linux (Debian/Ubuntu)
+# Linux（Debian/Ubuntu）
 sudo apt-get install pandoc
 
 # Windows
 choco install pandoc
 ```
 
-**python-docx** (required for template creation):
+**python-docx**（生成模板时需要）：
+
 ```bash
 pip install python-docx
 ```
 
-Verify pandoc installation:
+检查 pandoc 是否可用：
+
 ```bash
 pandoc --version
 ```
 
-## Instructions
+## 操作步骤
 
-When the user requests to convert a Markdown file to Word format:
+用户要求把 Markdown 转成 Word 时：
 
-1. **Check if pandoc is installed** by running `pandoc --version`
-   - If not installed, guide the user to install it (see Requirements section)
+1. **先检查 pandoc**，运行 `pandoc --version`。没装就按上面的环境要求引导用户安装，不擅自替用户安装。
+2. **确认输入与输出文件**。用户没说输出文件名就问清楚，用有意义的名称，例如输入 `report.md`，输出建议 `report.docx`。
+3. **运行转换脚本**：
 
-2. **Identify the input and output files**
-   - Ask for clarification if the user hasn't specified the output filename
-   - Use meaningful names (e.g., if input is `report.md`, suggest `report.docx`)
-
-3. **Run the conversion script** using the Bash tool:
    ```bash
    python .claude/skills/md-to-docx/convert_md_to_docx.py input.md output.docx
    ```
 
-4. **Use additional options as needed**:
-   - Add `--toc` for table of contents (default: no TOC)
-   - Add `--no-chinese-template` if user doesn't want FangSong font
-   - Add `--no-superscript-citations` to disable automatic citation superscript conversion
-   - Add `--reference-doc template.docx` for custom styling
-   - Add `--title`, `--author`, `--date` for document metadata
+4. **按需加参数**：
+   - `--toc` 生成目录，默认不生成
+   - `--no-chinese-template` 不用中文模板
+   - `--no-superscript-citations` 关闭引文编号上标
+   - `--reference-doc template.docx` 用自定义模板
+   - `--title`、`--author`、`--date` 写文档元数据
+5. **批量转换**：
 
-5. **For batch conversions**:
    ```bash
    python .claude/skills/md-to-docx/convert_md_to_docx.py --batch input_dir/ output_dir/
    ```
 
-6. **Verify the conversion** succeeded and inform the user of the output location
+6. **核对转换结果**，告诉用户文件落在哪里。
 
-**Default behavior**: The script automatically uses a Chinese template with FangSong (仿宋) font for Chinese text unless `--no-chinese-template` is specified.
+默认行为：脚本自动使用中文模板，中文用仿宋，除非显式加 `--no-chinese-template`。
 
-## Examples
+## 示例
 
-**Convert a single file** (uses default Chinese template):
+**转换单个文件**（使用默认中文模板）：
+
 ```bash
 python .claude/skills/md-to-docx/convert_md_to_docx.py "教育改革方案.md" "教育改革方案.docx"
 ```
 
-**Convert with table of contents** (optional, default is no TOC):
+**生成目录**（可选，默认不生成）：
+
 ```bash
 python .claude/skills/md-to-docx/convert_md_to_docx.py report.md report.docx --toc
 ```
 
-**Convert with metadata**:
+**写元数据**：
+
 ```bash
 python .claude/skills/md-to-docx/convert_md_to_docx.py paper.md paper.docx \
   --title "研究报告" \
@@ -100,90 +102,87 @@ python .claude/skills/md-to-docx/convert_md_to_docx.py paper.md paper.docx \
   --date "2025-11-20"
 ```
 
-**Batch convert all markdown files**:
+**批量转换**：
+
 ```bash
 python .claude/skills/md-to-docx/convert_md_to_docx.py --batch ./markdown_files/ ./word_docs/
 ```
 
-**Use custom template for organizational styling**:
+**用自定义模板**：
+
 ```bash
 python .claude/skills/md-to-docx/convert_md_to_docx.py doc.md doc.docx \
   --reference-doc company_template.docx
 ```
 
-## Supporting Files
+## 配套文件
 
-This Skill includes additional resources:
+- **README.md**：详细用法与示例
+- **快速使用指南.md**：中文快速上手
+- **convert_md_to_docx.py**：主转换脚本，含自动后处理
+- **create_chinese_template.py**：生成自定义中文模板
+- **fix_heading_fonts.py**：修正字体与间距的后处理脚本
+- **chinese_template.docx**：默认中文模板（仿宋、1.5 倍行距、标题段后间距）
 
-- **[README.md](README.md)**: Detailed usage guide with examples
-- **[快速使用指南.md](快速使用指南.md)**: Quick start guide in Chinese
-- **convert_md_to_docx.py**: Main conversion script with automatic post-processing
-- **create_chinese_template.py**: Utility to create custom Chinese templates
-- **fix_heading_fonts.py**: Post-processing script for font and spacing fixes
-- **chinese_template.docx**: Default Chinese font template (FangSong, 1.5x line spacing, heading spacing)
+## 常见问题
 
-## Troubleshooting
+**提示 pandoc: command not found**
+按上面的环境要求用包管理器安装 pandoc。
 
-**"pandoc: command not found"**
-- Install pandoc using your package manager (see Requirements section)
+**图片没有出现在 Word 里**
+检查 Markdown 里的图片路径，按 Markdown 文件所在目录写相对路径；确认图片文件确实存在。
 
-**Images not appearing in output**
-- Ensure image paths in markdown are correct (use relative paths from markdown file location)
-- Verify image files exist at specified paths
+**表格格式错乱**
+检查 Markdown 表格语法：
 
-**Table formatting issues**
-- Verify markdown table syntax:
-  ```markdown
-  | Header 1 | Header 2 |
-  |----------|----------|
-  | Cell 1   | Cell 2   |
-  ```
+```markdown
+| 表头一 | 表头二 |
+|--------|--------|
+| 单元格 | 单元格 |
+```
 
-**Script execution errors**
-- Ensure script has execute permissions: `chmod +x convert_md_to_docx.py`
-- Use forward slashes in all file paths (Unix style)
+**脚本执行报错**
+确认脚本有执行权限：`chmod +x convert_md_to_docx.py`；路径统一用正斜杠。
 
-## Chinese Document Best Practices
+## 中文文档排版要点
 
-When converting Chinese documents:
+1. **编码**：Markdown 文件用 UTF-8
+2. **标点**：用中文标点（。，""（）；！？）
+3. **字体**：默认模板中文全部用仿宋，正文、标题、副标题一致，字体黑色
+4. **行距**：全文 1.5 倍行距
+5. **段落**：首行缩进两个字符（24 磅，精确对齐）
+6. **标题间距**：标题段后 1 行（12 磅）
+7. **标题样式**：仿宋，不用斜体
+8. **自定义模板**：用 `create_chinese_template.py` 生成单位模板
 
-1. **Encoding**: Ensure markdown files use UTF-8 encoding
-2. **Punctuation**: Use proper Chinese punctuation (。，""（）；！？)
-3. **Font**: Default template uses FangSong for all Chinese text (body, headings, and subtitles) with black color
-4. **Line spacing**: 1.5x line spacing for all paragraphs (符合中文文档标准)
-5. **Paragraph formatting**: First-line indent of two characters (24pt, precisely aligned) for proper Chinese document style
-6. **Heading spacing**: 1 line (12pt) spacing after all headings for better readability
-7. **Heading style**: All headings use FangSong font without italic style
-8. **Custom templates**: Create organizational templates with `create_chinese_template.py`
+## 命令行参数
 
-## Command Line Options Reference
+| 参数 | 说明 |
+|---|---|
+| `input.md` | 输入 Markdown 路径 |
+| `output.docx` | 输出 Word 路径 |
+| `--toc` | 生成目录，默认不生成 |
+| `--no-chinese-template` | 不用默认中文模板 |
+| `--no-superscript-citations` | 不把引文编号转上标 |
+| `--reference-doc FILE` | 用自定义 Word 模板 |
+| `--title TEXT` | 文档标题元数据 |
+| `--author TEXT` | 文档作者元数据 |
+| `--date TEXT` | 文档日期元数据 |
+| `--batch` | 批量转换模式 |
+| `--pattern PATTERN` | 批量模式的文件匹配，默认 `*.md` |
 
-| Option | Description |
-|--------|-------------|
-| `input.md` | Input Markdown file path |
-| `output.docx` | Output Word document path |
-| `--toc` | Generate table of contents (default: no TOC) |
-| `--no-chinese-template` | Don't use default Chinese font template |
-| `--no-superscript-citations` | Don't convert citation numbers to superscript |
-| `--reference-doc FILE` | Use custom Word template for styling |
-| `--title TEXT` | Set document title metadata |
-| `--author TEXT` | Set document author metadata |
-| `--date TEXT` | Set document date metadata |
-| `--batch` | Enable batch conversion mode |
-| `--pattern PATTERN` | File pattern for batch mode (default: `*.md`) |
+## 默认版式
 
-## Default Document Formatting
+中文模板自动应用以下格式：
 
-The Chinese template automatically applies:
+- **字体**：中文仿宋，英文 Times New Roman
+- **字号**：正文 12 磅
+- **字色**：全部黑色
+- **行距**：全文 1.5 倍
+- **首行缩进**：24 磅，即两个中文字符
+- **标题段后**：12 磅，即 1 行
+- **标题样式**：加粗，不用斜体
+- **引文上标**：句末标点（。；）前的数字自动转上标，例如 `参考文献1。` 转成 `参考文献¹。`；只转换紧跟在汉字或字母后的 1 到 60 号数字
+- **目录**：默认不生成，加 `--toc` 才生成
 
-- **Font**: FangSong (仿宋) for Chinese text, Times New Roman for English
-- **Font size**: 12pt (body text)
-- **Font color**: Black for all text
-- **Line spacing**: 1.5x for all paragraphs
-- **First-line indent**: 24pt (2 Chinese characters)
-- **Heading spacing**: 12pt (1 line) after each heading
-- **Heading style**: Bold, no italic
-- **Citation superscript**: Numbers before sentence-ending punctuation (。；) are automatically converted to superscript (e.g., `参考文献1。` → `参考文献¹。`). Only converts numbers 1-60 that directly follow Chinese characters or letters.
-- **Table of contents**: Not generated by default (use `--toc` to add)
-
-For complete documentation, see [README.md](README.md).
+完整说明见 README.md。

@@ -54,8 +54,7 @@ def cmd_selftest(args):
     except ImportError as e:
         print(f"  [提示] 没装 matplotlib：行业研报不出图（{e}）")
     print("== 技能目录 ==")
-    for d in ("md-to-docx", "comps-analysis", "competitive-analysis", "sector-overview",
-              "earnings-analysis", "data-sources", "macro-data", "industry-report",
+    for d in ("md-to-docx", "data-sources", "macro-data", "industry-report",
               "company-report", "kb-ask", "finstmt-qa", "finstmt-ingest"):
         p = config.ROOT / ".claude" / "skills" / d / "SKILL.md"
         if p.exists():

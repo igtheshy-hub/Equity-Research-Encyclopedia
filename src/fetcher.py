@@ -791,6 +791,78 @@ def fetch_cninfo_annual(company, year=None, limit=1):
     return {"items": downloaded, "skipped": skipped, "url": CNINFO_QUERY_URL}
 
 
+CNINFO_PERIODIC = {
+    "interim": ("category_bndbg_szsh", ("半年度报告", "半年报"), "半年度报告"),
+    "q1": ("category_yjdbg_szsh", ("第一季度报告", "一季度报告", "一季报"), "第一季度报告"),
+    "q3": ("category_sjdbg_szsh", ("第三季度报告", "三季度报告", "三季报"), "第三季度报告"),
+}
+
+
+def fetch_cninfo_periodic(company, kind="interim", days=400, limit=1):
+    """取 A 股半年报或季报。只留正式全文，跳过摘要、英文版与更正稿。"""
+    company = str(company or "").strip()
+    kind = str(kind or "interim").lower()
+    if kind not in CNINFO_PERIODIC:
+        raise FetchError(f"未知定期报告类型：{kind}")
+    if not company:
+        raise FetchError("取定期报告需要公司名")
+    category, patterns, label = CNINFO_PERIODIC[kind]
+    begin = datetime.now() - timedelta(days=int(days or 400))
+    se_date = f"{begin:%Y-%m-%d}~{datetime.now():%Y-%m-%d}"
+    items = _cninfo_search(company, page_size=50, category=category, se_date=se_date)
+    if not items:
+        items = _cninfo_search(company, page_size=50, category=category)
+    picked = []
+    for it in items:
+        title = _clean_title(it.get("announcementTitle"))
+        sec = _clean_title(it.get("secName"))
+        if company not in sec and company not in title:
+            continue
+        if not any(p in title for p in patterns):
+            continue
+        if any(x in title for x in ("摘要", "英文", "更正", "补充", "取消", "已取消")):
+            continue
+        picked.append(it)
+    if not picked:
+        raise FetchError(f"巨潮没有搜到「{company}」的{label}（可能是港股，改走 HKEXnews）")
+
+    def _ts(it):
+        try:
+            return int(it.get("announcementTime") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    picked.sort(key=_ts, reverse=True)
+    downloaded, skipped = [], []
+    for it in picked[:max(1, int(limit or 1))]:
+        title = _clean_title(it.get("announcementTitle"))
+        sec = _clean_title(it.get("secName"))
+        adjunct = str(it.get("adjunctUrl") or "").strip()
+        if not adjunct:
+            skipped.append({"title": title, "error": "没有附件地址"})
+            continue
+        url = adjunct if adjunct.startswith("http") else CNINFO_PDF_BASE + adjunct.lstrip("/")
+        ts = it.get("announcementTime")
+        try:
+            date = datetime.fromtimestamp(int(ts) / 1000).strftime("%Y%m%d")
+        except (TypeError, ValueError):
+            date = ""
+        m = re.search(r"(20\d{2})", title)
+        year = m.group(1) if m else ""
+        stem = sanitize(f"{company}_{year}{label}")[:60]
+        try:
+            dest = _download_pdf(url, stem)
+        except FetchError as e:
+            skipped.append({"title": title, "error": str(e)})
+            continue
+        downloaded.append({"title": title, "org": sec, "date": date,
+                           "category": label, "file": dest.name, "url": url})
+        time.sleep(_delay())
+    if not downloaded:
+        raise FetchError(f"{label}下载失败：" + "；".join(f"{s['title']}（{s['error']}）" for s in skipped))
+    return {"items": downloaded, "skipped": skipped, "url": CNINFO_QUERY_URL}
+
+
 def _parse_hkex_prefix(text):
     text = str(text or "").strip()
     m = re.search(r"\((\{.*\})\)\s*;?\s*$", text, re.S)
@@ -890,7 +962,7 @@ def fetch_hkex_annual(company, code="", year=None, limit=1):
     return {"items": downloaded, "skipped": skipped, "url": HKEX_SEARCH_URL, "stock": stock}
 
 
-def fetch_hkex_announce(company, code="", category="annual", year=None, title="", limit=5, days=0):
+def fetch_hkex_announce(company, code="", category="annual", year=None, title="", limit=5, days=0, title_any=None):
     if category not in HKEX_CATEGORIES:
         raise FetchError(f"未知港交所公告分类：{category}")
     t1code, t2gcode, t2code, label = HKEX_CATEGORIES[category]
@@ -923,6 +995,10 @@ def fetch_hkex_announce(company, code="", category="annual", year=None, title=""
         item_title = html.unescape(str(it.get("TITLE") or ""))
         if title and title not in long_text and title not in item_title:
             continue
+        if title_any and not any(t in long_text or t in item_title for t in title_any):
+            continue
+        if title_any and any(x in long_text or x in item_title for x in ("摘要", "英文")):
+            continue
         if not it.get("FILE_LINK"):
             continue
         picked.append(it)
@@ -951,6 +1027,38 @@ def fetch_hkex_announce(company, code="", category="annual", year=None, title=""
     if not downloaded:
         raise FetchError("港股公告下载失败：" + "；".join(f"{s['title']}（{s['error']}）" for s in skipped))
     return {"items": downloaded, "skipped": skipped, "url": HKEX_SEARCH_URL, "stock": stock}
+
+
+HKEX_PERIODIC = {
+    "interim": ("interim", ("中期報告", "半年度報告", "中期报告", "半年度报告")),
+    "quarterly": ("quarterly", ("季度報告", "季度报告")),
+    "q1": ("quarterly", ("第一季度報告", "第一季度报告", "一季度報告", "一季度报告")),
+    "q3": ("quarterly", ("第三季度報告", "第三季度报告", "三季度報告", "三季度报告")),
+}
+
+
+def fetch_hkex_periodic(company, code="", kind="interim", days=400, limit=1):
+    kind = str(kind or "interim").lower()
+    if kind not in HKEX_PERIODIC:
+        raise FetchError(f"未知港股定期报告类型：{kind}")
+    category, patterns = HKEX_PERIODIC[kind]
+    return fetch_hkex_announce(company, code, category=category, days=days,
+                               title_any=patterns, limit=limit)
+
+
+def fetch_periodic_report(company, code="", market="", kind="interim", days=400, limit=1):
+    """公司定期报告统一入口：A 股走巨潮，港股走 HKEXnews；年报沿用既有年报取数。"""
+    company = str(company or "").strip()
+    code = str(code or "").strip().upper()
+    market = str(market or "").lower()
+    if not market:
+        market = "hk" if code.endswith(".HK") else ("a" if code else "")
+    kind = str(kind or "interim").lower()
+    if kind == "annual":
+        return fetch_annual_report(company, code, market, limit=limit)
+    if market == "hk":
+        return fetch_hkex_periodic(company, code, kind=kind, days=days, limit=limit)
+    return fetch_cninfo_periodic(company, kind=kind, days=days, limit=limit)
 
 
 def fetch_annual_report(company, code="", market="", year=None, limit=1):
@@ -2279,11 +2387,18 @@ def run_fetch(source, params, tid=None, targets=None):
                 "entries_count": _ingest_counts(ingested),
                 "ingest_failed": _ingest_failures(ingested)}
 
-    if source == "annual_report":
-        res = fetch_annual_report(params.get("company"), params.get("code"),
-                                  params.get("market"), params.get("year"),
-                                  limit=params.get("limit") or 1)
-        summary = "年报下载 " + "、".join(it["file"] for it in res["items"])
+    if source in ("annual_report", "periodic_report"):
+        if source == "annual_report":
+            res = fetch_annual_report(params.get("company"), params.get("code"),
+                                      params.get("market"), params.get("year"),
+                                      limit=params.get("limit") or 1)
+            summary = "年报下载 " + "、".join(it["file"] for it in res["items"])
+        else:
+            res = fetch_periodic_report(params.get("company"), params.get("code"),
+                                        params.get("market"), params.get("kind") or "interim",
+                                        days=params.get("days") or 400,
+                                        limit=params.get("limit") or 1)
+            summary = "定期报告下载 " + "、".join(it["file"] for it in res["items"])
         ingested = {"classify": [], "ingest": []}
         if params.get("ingest", True):
             ingested = ingest_inbox([it["file"] for it in res["items"]], tid, targets=targets,
@@ -2485,6 +2600,22 @@ def source_specs():
                 {"name": "year", "label": "年份（可空）", "type": "number", "default": 0},
                 {"name": "limit", "label": "份数", "type": "number", "default": 1},
                 {"name": "ingest", "label": "下载后自动取名入库", "type": "checkbox", "default": True},
+            ],
+        },
+        {
+            "id": "periodic_report", "label": "公司定期报告·巨潮 / HKEXnews",
+            "desc": "按公司名取最近一期半年报或季报，A 股走巨潮、港股走 HKEXnews，下载后按财报结构入库。",
+            "params": [
+                {"name": "company", "label": "公司名", "type": "text", "default": "", "required": True},
+                {"name": "code", "label": "股票代码（可空）", "type": "text", "default": ""},
+                {"name": "market", "label": "市场", "type": "select", "options": ["", "a", "hk"], "default": ""},
+                {"name": "kind", "label": "报告类型", "type": "select",
+                 "options": ["interim", "q1", "q3", "quarterly"],
+                 "labels": {"interim": "半年报", "q1": "一季报", "q3": "三季报", "quarterly": "季报（港股）"},
+                 "default": "interim"},
+                {"name": "days", "label": "回溯天数", "type": "number", "default": 400},
+                {"name": "limit", "label": "份数", "type": "number", "default": 1},
+                {"name": "ingest", "label": "下载后自动入库", "type": "checkbox", "default": True},
             ],
         },
         {

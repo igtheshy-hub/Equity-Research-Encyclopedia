@@ -2,7 +2,7 @@
 
 个人行业知识库，网页版为主线程、Claude 会话为辅线。raw/ 存原始资料（研报、财报、政策、取数快照），wiki/ 存编译后的知识页（句句带锚点可溯源），data/ 是内部状态，outputs/ 是报告产出。本文件只把握大方向，操作细则（页面格式、收件台、摄入、问答、Lint、命令用法）见 schema/CLAUDE.md，会话工作流见 .claude/skills/：kb-ask（问答）、finstmt-qa（财报问答纪律）、finstmt-ingest（财报摄取流程）、company-report / industry-report（研报框架）。
 
-网页入口 `python manage.py serve`（http://127.0.0.1:5000）：/ 首页上传与提问、/ask 问答、/report 研报管线、/fetch 主动取数、/audit 审校、/files 原文件、/export 导出、/viewer 原文对照、/log 日志；报告正文经 /outputs/<文件名> 在线查看。网页问答走 src/ask.py 程序管道（选页 → 带锚点作答 → 回退）。研报按类型分流：行业研报与公司研报都走 src/industry_report.py 状态机（大纲、缺口、沉淀三处网页确认关卡），公司研报按 company-report 八节框架定大纲、公司年报是必选缺口（A 股走巨潮、港股走 HKEXnews，未补年报不能成文）；其余报告走内置 src/report.py 四段式底稿。
+网页入口 `python manage.py serve`（http://127.0.0.1:5000）：/ 首页上传与提问、/ask 问答、/report 研报管线、/fetch 主动取数、/audit 审校、/files 原文件、/export 导出、/viewer 原文对照、/log 日志；报告正文经 /outputs/<文件名> 在线查看。网页问答走 src/ask.py 程序管道（选页 → 带锚点作答 → 回退）。研报按类型分流：行业研报与公司研报都走 src/industry_report.py 状态机（大纲、缺口、沉淀三处网页确认关卡），公司研报按 company-report 八节框架定大纲、最近一年内的年报半年报季报是必选缺口（A 股走巨潮、港股走 HKEXnews，缺哪类补哪类，未补齐不能成文，港股季报不强制）；其余报告走内置 src/report.py 四段式底稿。
 
 ## 问答规则（会话内投研提问一律遵守，详细流程见 kb-ask 技能）
 
@@ -25,7 +25,7 @@
 
 ## 流水线分工（子代理，定义见 .claude/agents/）
 
-- 公司研报流水线：公司研报-资料员（年报、定期报告、公告、新财富前 3 券商研报）→ 公司研报-撰稿人（company-report 八节框架，年报为锚）→ 公司研报-审稿人（只读审校）。网页端对应 src/industry_report.py 的 kind=company 管线
+- 公司研报流水线：公司研报-资料员（最近一年内的年报、半年报、季报、公告、新财富前 3 券商研报）→ 公司研报-撰稿人（company-report 八节框架，年报为锚、半年报季报更新）→ 公司研报-审稿人（只读审校）。网页端对应 src/industry_report.py 的 kind=company 管线
 - 行业研报流水线：行业研报-资料员（行业数据、政策、样板研报）→ 行业研报-撰稿人（industry-report 框架）→ 行业研报-审稿人（只读审校）。网页端对应 src/industry_report.py 的 kind=industry 管线
 - 通用资料员、撰稿人、审稿人保留给非研报任务，description 已标明兼容用途，不要拿去跑公司或行业研报
 
