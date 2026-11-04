@@ -33,7 +33,12 @@ def test_no_false_positive():
     print("不误伤的场景：")
     check("无锚点可用时放过", ask_mod._violations(NO_ANCHOR_ANSWER, {}), [])
     check("无数字的说明答复", ask_mod._violations("页面介绍了比亚迪的主营业务与治理结构。", ALLOWED), [])
-    check("短答不足三个数字", ask_mod._violations("2025年营收增长3.46%。", ALLOWED), [])
+    # 收紧后（问题 21，PR#6）：判据从「数字个数 ≥ 3」改成「有没有带单位的数据陈述」，
+    # 「3.46%」这种一句话一个数也要查出处；不带单位的计数（次、年、个）仍不误伤
+    check("无单位的短答不误伤", ask_mod._violations("2026 年开了 3 次发布会。", ALLOWED), [])
+    check("短答带单位数据要查出处",
+          ask_mod._violations("2025年营收增长3.46%。", ALLOWED),
+          ["全文没有任何锚点，含数据的陈述句句尾必须带锚点"])
 
 
 def test_existing_checks_kept():
