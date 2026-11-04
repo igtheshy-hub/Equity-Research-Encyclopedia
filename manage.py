@@ -12,7 +12,7 @@ def cmd_selftest(args):
     ok = True
     print("== 依赖检查 ==")
     for mod in ("httpx", "pdfplumber", "flask", "dotenv", "yaml", "markdown", "docx",
-                "openpyxl", "jinja2", "requests"):
+                "openpyxl", "jinja2"):
         try:
             importlib.import_module(mod)
             print(f"  [好] {mod}")
