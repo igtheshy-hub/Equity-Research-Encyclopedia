@@ -78,6 +78,44 @@ def test_doubts_land_in_audit_list():
     check("计数里带锚点存疑", r["counts"].get("锚点存疑", 0) >= 1, True)
 
 
+def test_multi_anchor_attribution():
+    print("多锚点句子按段归因，不把 A 段数字拿到 B 页找：")
+    build_sandbox()
+    # 12% 只在第 2 页；后半句没有数字。旧逻辑把 12% 拿去第 1 页找 → 假存疑
+    a = f"行业销量增长 12% [[{REPORT_NAME}#p2]]；行业景气度持续回升 [[{REPORT_NAME}#p1]]"
+    check("各段只核自己的锚点", anchor_verify.check(a), [])
+    # 反向仍要抓得住：45% 标了第 1 页的锚点，但 45% 只在第 2 页 → 该报
+    b = f"龙头份额 45% [[{REPORT_NAME}#p1]]；行业销量增长 12% [[{REPORT_NAME}#p2]]"
+    bad = anchor_verify.check(b)
+    check("张冠李戴的数字仍被揪出", len(bad), 1)
+    check("存疑记在错误归属的那页", (bad[0]["file"], bad[0]["loc"]), (REPORT_NAME, "p1"))
+
+
+def test_anchor_filename_not_a_number():
+    print("锚点文件名里的日期不再被当成待核数字：")
+    build_sandbox()
+    # 句子本身没有数字 → 旧逻辑回退抓「有效位最多的数」，抓到文件名里的 20260101
+    a = f"自研架构迭代多代，产品覆盖高中低端 [[{REPORT_NAME}#p1]]"
+    check("文件名日期不进抽查", anchor_verify.check(a), [])
+
+
+def test_consecutive_anchors_share_text():
+    print("连排锚点共撑同一段，任一页找到即放行：")
+    build_sandbox()
+    # 12% 在第 2 页不在第 1 页，两个锚点连排标注同一句话
+    a = f"行业销量增长 12% [[{REPORT_NAME}#p1]][[{REPORT_NAME}#p2]]"
+    check("连排锚点按并集放行", anchor_verify.check(a), [])
+
+
+def test_year_not_spotchecked():
+    print("裸年份不算值得抽查的关键数字：")
+    build_sandbox()
+    a = f"下一代产品预计2027年量产 [[{REPORT_NAME}#p2]]"
+    check("裸年份不报存疑", anchor_verify.check(a), [])
+
+
 if __name__ == "__main__":
     run_tests(globals(), ["test_scope_tightened", "test_allowed_from_pages",
-                          "test_text_spotcheck", "test_doubts_land_in_audit_list"])
+                          "test_text_spotcheck", "test_doubts_land_in_audit_list",
+                          "test_multi_anchor_attribution", "test_anchor_filename_not_a_number",
+                          "test_consecutive_anchors_share_text", "test_year_not_spotchecked"])

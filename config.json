@@ -6,6 +6,12 @@
     "max_retries": 3,
     "extra_body": {"thinking": {"type": "disabled"}},
     "models": {
+      "glm-5.3-flash": {
+        "label": "GLM-5.3-Flash",
+        "provider": "智谱",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        "model": "glm-5.3-flash"
+      },
       "glm-5.1": {
         "label": "GLM-5.1",
         "provider": "智谱",

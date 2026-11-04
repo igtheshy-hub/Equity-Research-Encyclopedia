@@ -6,6 +6,11 @@
 AI 记混页码、或干脆编个在范围内的页号，校验照样显示「通过」。
 这里补一层文本级抽查：答案里最关键的那个数字，在锚点页的原文里找不找得到。
 
+抽查**按锚点分段归因**：锚点标在所支撑文字的句尾，一句挂多个锚点时，
+每段的数字只跟自己那段的支撑页比对。整句数字拿去核每一个锚点，会把
+A 段的数字拿到 B 页里找——一句话挂两个不同来源的锚点是常态，几乎
+每条都会中招，报出成批假存疑。
+
 抽查结果是**存疑待复核**，不是直接判失败 —— 页码定位、表格抽取、单位换算
 都可能让原文与答案的字面不一致，误杀会伤正常流程。
 真正拦得住的是范围校验（见 ask._violations）：锚点必须落在
@@ -79,8 +84,10 @@ def _key_numbers(sentence: str) -> list[float]:
             v = float(raw)
         except ValueError:
             continue
-        if abs(v) < 1000:          # 年份、小计数不抽查
+        if abs(v) < 1000:          # 小计数不抽查
             continue
+        if v == int(v) and 1900 <= v <= 2099:
+            continue               # 裸年份不抽查，锚点文件名里的日期更不该进来
         digits = len(re.sub(r"[^0-9]", "", raw))
         if digits > best_digits:
             best, best_digits = v, digits
@@ -130,6 +137,26 @@ def _sentences(text: str):
             yield ln
 
 
+def _segments(line: str):
+    """把一行按锚点切成（支撑文字, [锚点…]）段。
+
+    锚点标在所支撑文字的句尾，所以「上一个锚点之后、本锚点之前」的文字
+    归本锚点管；紧挨着的多个锚点（中间没有文字）视为共同支撑同一段。
+    数字只跟自己所在段的锚点比对，段内多个锚点任一页找到即放行。
+    """
+    out = []                                # [(文字, [(文件, 序号), …]), …]
+    pos = 0
+    for m in wiki.ANCHOR_RE.finditer(line):
+        gap = line[pos:m.start()]
+        pair = (m.group(1), m.group(2))
+        if out and not gap.strip():
+            out[-1][1].append(pair)         # 连排锚点，共撑同一段
+        else:
+            out.append((gap, [pair]))
+        pos = m.end()
+    return out
+
+
 def unit_text_map(files) -> dict:
     """取这些文件各单元的原文（只取有缓存的），返回 {(文件名, 序号): 原文}。"""
     from .pdf_extract import load_cached, raw_file_index
@@ -155,6 +182,10 @@ def check(answer: str, texts: dict | None = None) -> list[dict]:
       - 「原文 17.74%」vs「答案 18%」→ 放行（合法舍入）
       - 「原文 1450 万辆」vs「答案 45 万辆」→ 存疑（不是子串误判）
       - 「原文 2.53 元/股」vs「答案 2.55 元/股」→ 存疑
+
+    归因是**按段**的（见 _segments）：锚点标在所支撑文字的句尾，每段数字
+    只跟自己那段的支撑页比对；锚点文件名里的日期不在段文字里，不会被当成
+    待核数字。
     """
     files = {f for f, _loc in wiki.ANCHOR_RE.findall(answer)}
     if not files:
@@ -163,26 +194,26 @@ def check(answer: str, texts: dict | None = None) -> list[dict]:
         texts = unit_text_map(files)
     doubts = []
     for ln in _sentences(answer):
-        anchors = wiki.ANCHOR_RE.findall(ln)
-        if not anchors:
-            continue
-        nums = _key_numbers(ln)
-        if not nums:
-            continue
-        for f, loc in anchors:
-            n = wiki.loc_num(loc)
-            body = texts.get((f, n))
-            if body is None:
-                continue                    # 没有原文可比（文件已移走/无缓存），跳过
-            hay = _norm(body)
-            if not hay:
+        for text, anchors in _segments(ln):
+            nums = _key_numbers(text)
+            if not nums:
                 continue
-            values = _page_values(hay)
-            if not values:
-                continue
+            pages = []                      # 这段的支撑页：[(文件, 序号原文, 可接受数值集合)]
+            for f, loc in anchors:
+                n = wiki.loc_num(loc)
+                hay = _norm(texts.get((f, n)) or "")
+                if not hay:
+                    continue                # 没有原文可比（文件已移走/无缓存），跳过
+                values = _page_values(hay)
+                if values:
+                    pages.append((f, loc, values))
+            if not pages:
+                continue                    # 段内支撑页都没有原文可比，整段跳过
             for num in nums:
-                if _value_found(num, values):
-                    continue                # 数字在这一页里找得到，放行
+                if any(_value_found(num, vals) for _f, _l, vals in pages):
+                    continue                # 数字在这一段的支撑页里找得到，放行
+                f, loc, _vals = pages[0]    # 都找不到 → 存疑，记在第一个支撑页名下
+                n = wiki.loc_num(loc)
                 doubts.append({
                     "file": f, "loc": loc, "sentence": ln[:160],
                     "number": num,
