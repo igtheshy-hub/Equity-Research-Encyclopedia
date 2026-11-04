@@ -1,3 +1,4 @@
+import datetime as dt
 import hashlib
 import re
 import shutil
@@ -40,6 +41,22 @@ def sanitize(s):
     return UNSAFE.sub("", str(s or ""))
 
 
+def valid_date8(s):
+    """检查 8 位日期是否真实存在（问题 21）。
+
+    以前只判格式对不对，"20260300"（3 月 0 日）这种也照收，库里已经有这种文件。
+    现在按真实的日历校验，非法日期不写进文件名。
+    """
+    s = str(s or "")
+    if not re.fullmatch(r"\d{8}", s):
+        return False
+    try:
+        dt.date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+    except ValueError:
+        return False
+    return True
+
+
 def build_filename(cls, original_stem, suffix=".pdf"):
     kind_word = {"report": "研报", "filing": "财报", "policy": "政策文件"}[cls["kind"]]
     parts = []
@@ -48,8 +65,11 @@ def build_filename(cls, original_stem, suffix=".pdf"):
     topic = sanitize(cls.get("topic"))
     parts.append(f"{topic}{kind_word}" if topic else kind_word)
     date = sanitize(cls.get("date"))
-    if re.fullmatch(r"\d{8}", date):
+    if valid_date8(date):
         parts.append(date)
+    elif date:
+        # 日期格式对但日历上不存在（如 20260300）——不写进文件名，另记一条提示
+        cls["_bad_date"] = date
     name = "_".join(parts) + suffix
     if name == suffix or set(name[:-len(suffix)]) <= {"_"}:
         name = f"未归类_{sanitize(original_stem) or '文件'}{suffix}"

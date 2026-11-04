@@ -52,6 +52,7 @@ def _md_filter(text):
 def _inject():
     return {"TYPE_LABELS": TYPE_LABELS,
             "MODEL_CHOICES": config.model_choices(),
+            "MODEL_IDS": list(config.MODEL_PROFILES.keys()),
             "DEFAULT_MODEL": config.DEFAULT_MODEL}
 
 

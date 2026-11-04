@@ -178,53 +178,62 @@ def purge_one(name, manifest):
     stem = Path(name).stem
 
     # 1. 主题页正文：只摘掉指向该文件的锚点，保留其余内容和无锚点条目
-    pages = wiki.load_pages()
-    victims = {p["path"] for p in _source_pages(pages, rel, stem)}
-    for p in pages:
-        if p["path"] in victims:
-            continue
-        sections = wiki.body_to_sections(p["body"])
-        changed = 0
-        unanchored = 0
-        kept = {}
-        for s, lns in sections.items():
-            bucket = []
-            for ln in lns:
-                if not _cites(ln, name):
-                    bucket.append(ln)
-                    continue
-                changed += 1
-                new = _strip_anchor(ln, name)
-                if not _cited_files(new):
-                    unanchored += 1
-                if new.strip():
-                    bucket.append(new)
-            kept[s] = bucket
-        if not changed:
-            continue
-        title = str(p["meta"].get("title") or p["slug"])
-        if not any(kept.values()):
-            _drop_page(p, title, stats, changed, "已空")
-            continue
-        body = wiki.render_page(title, kept, p["type"])
-        meta = dict(p["meta"])
-        srcs = [s for s in (meta.get("sources") or []) if str(s) != rel]
-        if not srcs:  # 来源列表被删空时，按正文剩下的锚点回填
-            srcs = sorted({a[0] for a in wiki.anchors_of(body)})
-        stats["statements"] += changed
-        meta["sources"] = srcs
-        meta["updated"] = config.today_str()
-        hist = list(meta.get("history") or []) + [f"{config.today_str()} 删除 {name}（-{changed} 条）"]
-        if unanchored:
-            # 这一页还有无法归属到其他文件的条目：保留并标记，交给人工复核
-            stats["needs_review"] += unanchored
-            meta["needs_review"] = True
-            meta["review_reason"] = f"删除 {name} 后有 {unanchored} 条内容失去锚点，需人工复核"
-            hist.append(f"{config.today_str()} 标记需复核：{unanchored} 条内容失去锚点")
-        meta["history"] = hist
-        wiki.write_page(p["path"], meta, body)
-        note = f"，{unanchored} 条转为需复核" if unanchored else ""
-        stats["removed"].append(f"页面 {title}（-{changed} 条{note}）")
+    #    整段持 WIKI_LOCK（问题 4）：删除线与摄入线同时改同一页时，
+    #    不加锁会出现「删掉的条目又出现在页面上」（摄入线用旧快照写回）。
+    with wiki.WIKI_LOCK:
+        pages = wiki.load_pages()
+        victims = {p["path"] for p in _source_pages(pages, rel, stem)}
+        for p in pages:
+            if p["path"] in victims:
+                continue
+            # 锁内重读最新正文，避免用旧快照覆盖并发写入（问题 4）
+            if p["path"].exists():
+                try:
+                    p["meta"], p["body"] = wiki.parse_page(p["path"])
+                except (OSError, ValueError):
+                    pass
+            sections = wiki.body_to_sections(p["body"])
+            changed = 0
+            unanchored = 0
+            kept = {}
+            for s, lns in sections.items():
+                bucket = []
+                for ln in lns:
+                    if not _cites(ln, name):
+                        bucket.append(ln)
+                        continue
+                    changed += 1
+                    new = _strip_anchor(ln, name)
+                    if not _cited_files(new):
+                        unanchored += 1
+                    if new.strip():
+                        bucket.append(new)
+                kept[s] = bucket
+            if not changed:
+                continue
+            title = str(p["meta"].get("title") or p["slug"])
+            if not any(kept.values()):
+                _drop_page(p, title, stats, changed, "已空")
+                continue
+            body = wiki.render_page(title, kept, p["type"])
+            meta = dict(p["meta"])
+            srcs = [s for s in (meta.get("sources") or []) if str(s) != rel]
+            if not srcs:  # 来源列表被删空时，按正文剩下的锚点回填
+                srcs = sorted({a[0] for a in wiki.anchors_of(body)})
+            stats["statements"] += changed
+            meta["sources"] = srcs
+            meta["updated"] = config.today_str()
+            hist = list(meta.get("history") or []) + [f"{config.today_str()} 删除 {name}（-{changed} 条）"]
+            if unanchored:
+                # 这一页还有无法归属到其他文件的条目：保留并标记，交给人工复核
+                stats["needs_review"] += unanchored
+                meta["needs_review"] = True
+                meta["review_reason"] = f"删除 {name} 后有 {unanchored} 条内容失去锚点，需人工复核"
+                hist.append(f"{config.today_str()} 标记需复核：{unanchored} 条内容失去锚点")
+            meta["history"] = hist
+            wiki.write_page(p["path"], meta, body)
+            note = f"，{unanchored} 条转为需复核" if unanchored else ""
+            stats["removed"].append(f"页面 {title}（-{changed} 条{note}）")
 
     # 2. 来源页
     for p in _source_pages(pages, rel, stem):

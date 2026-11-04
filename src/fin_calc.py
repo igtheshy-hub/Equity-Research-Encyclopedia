@@ -451,10 +451,12 @@ def indicator_unit(name):
         return "元/股"
     if "FCF" in n or "资本支出" in n or "股东盈余" in n:
         return "元"
-    if any(k in n for k in ("率", "同比", "ROE", "ROA", "ROIC")):
-        return "%"
+    # 「比率 / 乘数 / 获现比」是倍数不是百分比——必须排在「率」前面，
+    # 否则「流动比率」会被当成百分比 ×100（0.793 变成 79.3，差 100 倍）
     if any(k in n for k in ("比率", "乘数", "获现比")):
         return "倍"
+    if any(k in n for k in ("率", "同比", "ROE", "ROA", "ROIC")):
+        return "%"
     return ""
 
 

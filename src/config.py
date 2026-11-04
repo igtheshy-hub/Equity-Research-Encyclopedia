@@ -26,6 +26,44 @@ MODEL_PROFILES = _LLM["models"]
 # 各模型可省略、从 llm 段继承的公共参数
 _SHARED_LLM_KEYS = ("max_tokens", "read_timeout_s", "max_retries", "extra_body")
 
+# config.json 必填项（问题 21：以前少了某项要跑到一半才崩，这里启动就查出来）
+# 路径：顶层段 → 段内必填键
+REQUIRED_CONFIG = {
+    "llm": ("models",),
+    "temperature": (),
+    "ask": ("max_pages", "history_turns"),
+    "audit": ("stale_days", "orphan_min_statements"),
+    "ingest": ("compile_chunk_pages", "min_chars_per_page"),
+}
+
+
+def validate_config():
+    """检查 config.json 的必填项。返回问题列表（空 = 没问题）。
+
+    少配一个键，以前要等到摄入跑到一半才 KeyError 崩掉，用户一脸茫然。
+    现在启动时就报清楚"缺哪一段哪个键"。
+    """
+    problems = []
+    for section, keys in REQUIRED_CONFIG.items():
+        if section not in CFG:
+            problems.append(f"config.json 缺整段「{section}」")
+            continue
+        if not isinstance(CFG[section], dict):
+            problems.append(f"config.json 的「{section}」必须是对象")
+            continue
+        for k in keys:
+            if k not in CFG[section]:
+                problems.append(f"config.json 缺「{section}.{k}」")
+    # llm 段的几项（models 之外）也要有，否则 model_profile 拿不到
+    for k in ("max_tokens", "read_timeout_s", "max_retries"):
+        if k not in _LLM:
+            problems.append(f"config.json 缺「llm.{k}」")
+    if not MODEL_PROFILES:
+        problems.append("config.json 的「llm.models」是空的")
+    if DEFAULT_MODEL not in MODEL_PROFILES:
+        problems.append(f"config.json 的「llm.default」={DEFAULT_MODEL} 不在 llm.models 里")
+    return problems
+
 
 def _resolve_api_key(base_url):
     host = urlparse(base_url).netloc

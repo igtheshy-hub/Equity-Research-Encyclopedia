@@ -5,8 +5,56 @@
 const $ = (sel, root) => (root || document).querySelector(sel);
 const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
 
+/* ---------- 同源头（问题 1 的 CSRF 防线） ----------
+   后端所有"会改状态"的接口都要求 X-Requested-With: wiki。
+   浏览器发跨站请求时带不上自定义头，所以这个头能挡住"别的网页偷偷调我的删除/上传接口"。
+   跨站表单也发不出这个头，所以删除接口的确认弹窗也绕不过去。 */
+(function () {
+  const origFetch = window.fetch;
+  window.fetch = function (input, init) {
+    try {
+      const url = typeof input === "string" ? input : (input && input.url) || "";
+      if (url.indexOf("/api/") === 0) {
+        init = init || {};
+        const headers = new Headers(init.headers || (input && input.headers) || {});
+        headers.set("X-Requested-With", "wiki");
+        init.headers = headers;
+      }
+    } catch (_) { /* 包装失败就按原样发 */ }
+    return origFetch.call(this, input, init);
+  };
+})();
+
 window.App = {
   onTasks: [],      // 页面脚本注册的轮询回调 (tasks, active) => void
+  /* 合法模型 id 清单（服务端注入）。用来挡住 URL 里带的非法模型名：
+     非法值存进 localStorage 会让问答/上传/审校全部 400，网页端直接瘫。 */
+  validModel(id) {
+    const list = window.MODEL_IDS || [];
+    if (!list.length) return true;         // 没注入就不拦（保守）
+    return list.indexOf(id) >= 0;
+  },
+  /* 当前选中的大模型：页面上有 #model-select 就用它，否则读本地记的那个。
+     问答、取名、摄入、审校、修复共用同一个选择，全站不用改 config.json。 */
+  model() {
+    const sel = document.getElementById("model-select");
+    if (sel && sel.value) return sel.value;
+    const saved = localStorage.getItem("askModel") || "";
+    if (saved && !App.validModel(saved)) {
+      localStorage.removeItem("askModel");   // 非法值清掉，别把网页打死
+      return "";
+    }
+    return saved;
+  },
+  /* 把模型选择挂到页面上，并让它与本地记忆同步 */
+  bindModelSelect() {
+    const sel = document.getElementById("model-select");
+    if (!sel) return null;
+    const saved = localStorage.getItem("askModel");
+    if (saved && Array.from(sel.options).some((o) => o.value === saved)) sel.value = saved;
+    sel.addEventListener("change", () => localStorage.setItem("askModel", sel.value));
+    return sel;
+  },
   escapeHtml(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => (
       { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
@@ -27,9 +75,9 @@ window.App = {
 /* ---------- 任务轮询 ---------- */
 
 function tickTasks() {
-  fetch("/api/tasks")
-    .then((r) => r.json())
-    .then((d) => {
+  fetch("/api/tasks", {cache: "no-cache"})
+    .then((r) => (r.status === 304 ? null : r.json()))
+    .then((d) => { if (!d) return;
       const tasks = d.tasks || [];
       const active = d.active || {};
       const running = Object.values(active).reduce((a, b) => a + b, 0);
@@ -78,16 +126,16 @@ App.doneText = function (t) {
   try {
     if (t.kind === "classify" && Array.isArray(r)) {
       const bad = r.filter((x) => !x.ok);
-      if (bad.length) return `完成，${bad.length} 份未归类：` + bad.map((x) => x.file).join("、");
+      if (bad.length) return `完成，${bad.length} 份未归类：` + bad.map((x) => App.escapeHtml(x.file)).join("、");
       return "全部文件都已取名并进入资料库";
     }
     if (t.kind === "ingest" && Array.isArray(r)) {
       const ok = r.filter((x) => !x.error);
       const bad = r.filter((x) => x.error);
       const parts = [];
-      if (ok.length) parts.push("已摄入：" + ok.map((x) => `${x.file}（${x.entries_count} 条）`).join("、"));
+      if (ok.length) parts.push("已摄入：" + ok.map((x) => `${App.escapeHtml(x.file)}（${x.entries_count} 条）`).join("、"));
       else parts.push("没有文件产出条目（可能取名未通过、已摄入过或是扫描版）");
-      if (bad.length) parts.push("摄入失败：" + bad.map((x) => `${x.file}（${x.error}）`).join("、"));
+      if (bad.length) parts.push("摄入失败：" + bad.map((x) => `${App.escapeHtml(x.file)}（${App.escapeHtml(x.error)}）`).join("、"));
       return parts.join("；");
     }
     if (t.kind === "delete" && Array.isArray(r)) {
@@ -97,12 +145,12 @@ App.doneText = function (t) {
       const parts = [];
       if (ok.length) {
         parts.push("已删除：" + ok.map((x) => {
-          const pages = (x.pages_deleted || []).length ? `，移除页面 ${x.pages_deleted.join("、")}` : "";
+          const pages = (x.pages_deleted || []).length ? `，移除页面 ${x.pages_deleted.map((t) => App.escapeHtml(t)).join("、")}` : "";
           const review = x.needs_review ? `，${x.needs_review} 条转为需复核` : "";
-          return `${x.file}（-${x.statements} 条${pages}${review}）`;
+          return `${App.escapeHtml(x.file)}（-${x.statements} 条${pages}${review}）`;
         }).join("、"));
       }
-      if (bad.length) parts.push("失败：" + bad.map((x) => `${x.file}（${x.error}）`).join("、"));
+      if (bad.length) parts.push("失败：" + bad.map((x) => `${App.escapeHtml(x.file)}（${App.escapeHtml(x.error)}）`).join("、"));
       if (aborted.length) parts.push("整批已中止，未继续删除后面的文件");
       return parts.join("；") || "没有删除任何文件";
     }

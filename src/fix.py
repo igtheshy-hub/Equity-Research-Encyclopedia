@@ -1,6 +1,6 @@
 from . import config, tasks, wiki
 from .audit import _norm_text
-from .ingest import _apply_merge, ingest_one, load_manifest, save_manifest
+from .ingest import _apply_merge, ingest_one, load_manifest, persist_new_entries
 from .purge import drop_links_to
 
 # 按审校报告执行修复。删除条目类操作出自人工决策（向导勾选），
@@ -21,8 +21,12 @@ def _fix_ingest(action, notes, task_id=None):
         notes.append(f"跳过摄入：{rel} 不在 raw/ 中")
         return
     manifest = load_manifest()
+    before = {f.get("sha256") for f in manifest.get("files", [])}
     r = ingest_one(p, manifest, task_id=task_id)
-    save_manifest(manifest)
+    # 只追加本份新增的条目（差集），不整体写回（问题 5）：
+    # 修复向导可能跑十几分钟，期间用户在网页上删了文件，整体写回会把删除痕迹冲掉
+    new_entries = [f for f in manifest.get("files", []) if f.get("sha256") not in before]
+    persist_new_entries(new_entries)
     wiki.rebuild_index_md(wiki.load_pages())
     if r:
         wiki.append_log("fix", f"按审校摄入 {r['file']}（{r['entries_count']} 条）")

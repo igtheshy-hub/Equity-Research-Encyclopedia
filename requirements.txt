@@ -1,9 +1,28 @@
-# 研报百科运行依赖（Python 3.10+；本机用 D:\python314\python.exe 验证过 3.14）
-Flask>=3.1
-httpx>=0.28
-pdfplumber>=0.11
-python-dotenv>=1.2
-PyYAML>=6.0
-Markdown>=3.11
-python-docx>=1.2
+# 依赖清单（问题 13：原来没有这个文件，新人只能靠猜）
+#
+#   python -m pip install -r requirements.txt
+#
+# 装完跑一次体检确认：
+#   python manage.py selftest
+
+# --- 网页 ---
+flask>=3.0
+jinja2>=3.1
+python-dotenv>=1.0
+
+# --- LLM 调用 ---
+httpx>=0.27
+
+# --- 文档解析 ---
+pdfplumber>=0.11          # PDF 文字层提取
+python-docx>=1.1          # Word（.docx）支持
+
+# --- 格式 ---
+pyyaml>=6.0               # wiki 页 frontmatter
+markdown>=3.5             # Markdown → HTML
+
+# --- Excel 导出（问题 13：体检原来漏查它，点导出页才报错）---
 openpyxl>=3.1
+
+# --- 测试 ---
+pytest>=8.0

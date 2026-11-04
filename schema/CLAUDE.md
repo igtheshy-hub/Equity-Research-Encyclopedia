@@ -28,6 +28,8 @@ updated: 2026-04-20
 
 frontmatter 除必填的 title / type / sources / updated 外，可加 aliases（别名，匹配用）、summary（一句话摘要，进总索引）、history（更新历史，每次摄入追加一行）、focus（用户关注点）、focus_hits（命中关注点的原文片段，最多 50 条）、needs_review（删除原文件后有内容失去锚点时置 true）、review_reason（需复核原因）。`needs_review: true` 的页面允许 sources 暂时为空、允许【数据】/【指标】行暂时无锚点（这两类豁免只在页面标记期间生效），页面顶部会显示「需复核」提示，审校报告单列「需复核」并在修复向导里提供确认动作；人工确认后清除这两个字段，逐行锚点检查恢复。type 决定页面所在子目录：company → wiki/companies/，industry → wiki/industries/，concept → wiki/concepts/，source → wiki/sources/。
 
+导入时若填了**关注点**（首页「导入设置」），命中关注点的条目另记两个页级字段：focus（本次用的关注点列表）、focus_hits（命中的条目原文片段，最多 50 条）。这两个字段只写在 frontmatter，不进正文，不影响锚点格式。
+
 页面间互引用用 `[[页面标题]]`，只能指向已存在的页面；跨类型引用也算有效入链。
 
 ## 收件台规则
@@ -82,6 +84,7 @@ frontmatter 除必填的 title / type / sources / updated 外，可加 aliases�
 - 三级回退：选页为空 → 程序把 raw/ 全部文件名 + 来源摘要喂给模型挑候选（最多 5 个），按固定话术询问用户是否进一步查询（无候选与有候选话术不同）；用户确认 → 后台深查：指定文件用其全部页/段文本，全库模式先按关键词粗筛取片段，再由模型作答，锚点直指 raw 原文
 - 深查锚点校验放宽为「文件存在于 raw/ 且序号不超过提取单元数」（manifest ∪ 提取缓存）；深查答案不自动写 wiki
 - 答案锚点只能引用所选页面中出现过的来源文件；程序逐锚点校验，违规重试一次，仍违规在答案上方标记警告
+- JSON 格式关卡：要求 AI 返回 JSON 的调用统一走 llm.chat 出口把关——约定要「对象」（dict）时，模型偶尔交回的「清单」（数组）等一律算格式失败，带着明确要求重试一次；两次不合规抛 LLMParseError（LLMError 子类），调用方既有的 `except llm.LLMError` 即可优雅降级（如沉淀提案返回 None、候选推荐返回空表），不让错误类型流到调用方 .get 处崩溃。约定本来就是数组的调用（归并规划）传 json_any=True 放行
 - 页面没有的信息必须回答「知识库中没有该信息」，禁止用模型自身知识补全
 - 会话提取：答案中跨页面综合的新知识由模型提案（只算不写），网页端弹窗征求确认、可勾选行子集，写入时 history 记「会话中提取」/「会话中提取新建」，已提取过的行不再重复呈现；命令行 y/N 确认
 - 提案提醒语义：GET /api/proposals/pending 是只读查询，刷新或切页不会把提案标记为已提醒；「稍后处理」只推迟 24 小时（proposal_snoozed_until），「不再提醒」才写 proposal_dismissed=true；关闭弹窗既不推迟也不丢弃，下次仍会出现
@@ -116,18 +119,24 @@ frontmatter 除必填的 title / type / sources / updated 外，可加 aliases�
 - 所有耗时操作（问答、取名入库、摄入、审校、修复、报告、删除）跑在服务端后台线程，状态存进程内任务注册表（src/tasks.py），前端轮询 /api/tasks 取进度；完成卡片点掉后移除，注册表最多保留 200 条，超出自动清理最老的已结束任务
 - 取名入库 / 摄入 / 审校 / 修复 / 报告按类型互斥排队；问答不限并发。等待中的任务也会显示；运行中与排队中的任务可点「取消」，后台循环在下一个可中断点停止；摄入链另设总超时
 - 模型选择：网页下拉选中的模型随请求传给后台任务，取名、摄入、审校、修复、问答全部生效；config.json 的 llm.default 可写 "auto"，按 .env 里配了 key 的模型顺序自动选，协作者不必改配置文件
-- 网页路由：/ 首页（提问框 + 上传区 + 进度）、/kb 知识库、/ask 问答（支持双栏会话分屏）、/files 原文件（列表、重复名警告、批量删除）、/audit 审校、/outputs 产出、/export Excel 导出（科目 / 指标 / 条目 / 来源四张表，需 openpyxl）、/log 日志（按 wiki 条目展示元数据）、/viewer 原文对照（PDF.js 渲染 PDF：定位页 + 文本层高亮 + 缩放；docx 转 HTML：定位段落 + 高亮）
+- 网页路由：/ 首页（提问框 + 上传区 + 导入设置 + 进度）、/kb 知识库、/ask 问答（支持双栏会话分屏）、/files 原文件（列表、重复名警告、批量删除）、/audit 审校、/outputs 产出、/export Excel 导出（科目 / 指标 / 条目 / 来源四张表，需 openpyxl）、/log 日志（按 wiki 条目展示元数据）、/viewer 原文对照（PDF.js 渲染 PDF：定位页 + 文本层高亮 + 缩放；docx 转 HTML：定位段落 + 高亮）
 - 数据隔离：wiki/、data/、outputs/、raw/ 都进 .gitignore，克隆后首次启动自动创建空目录与 index/log。每人的知识库、会话、LLM 日志、材料清单都只在自己机器上；data/conversations.json 损坏时先备份成 conversations.corrupt-<时间>.json 再以空会话启动，网页启动自检会提示
+- 会改状态的接口（上传 / 删除 / 审校 / 修复 / 问答 / 深查 / 沉淀）都要带 `X-Requested-With: wiki` 头，否则 403。这是防跨站请求（CSRF）：浏览器发跨站请求时带不上自定义头，挡住「别的网页偷偷调我的删除接口」
+- 渲染顺序固定：先 HTML 转义、再过 Markdown、最后放回程序自己生成的锚点/双链标签。用户与研报提供的内容永远只是文字，不能变成可执行 HTML
+- 知识页的读-改-写整段持 wiki.WIKI_LOCK（摄入线与删除线可能同时改同一页）；写盘用「临时文件 → 原子替换」，临时文件名带 pid+随机后缀
+- 清单（data/manifest.json）是全库总账本：写入用「临时文件 → 原子替换」，旧版备份 .bak，读坏自动从备份恢复（坏文件另存 .corrupt）；摄入/修复只「追加本轮新增的条目」，绝不整体写回，否则并发删除的痕迹会被冲掉
 
 ## 命令用法
 
 ```
 python -m pip install -r requirements.txt   # 首次安装依赖（含导出用的 openpyxl）
 python manage.py selftest              # 体检：依赖、API 连通、库外问答回退、全库校验
+python manage.py selftest --offline    # 只查配置不联网（不调模型、不花 API 钱）
 python manage.py sort                  # 收件台：归类 raw/inbox/ 中的新文件（PDF 与 .docx）
 python manage.py ingest [--all | --file 路径] [--dry-run]
 python manage.py ask "问题"            # 检出新知识时 y/N 确认沉淀；报告请求自动转生成
 python manage.py audit
 python manage.py validate
 python manage.py serve                 # 本地网页 http://127.0.0.1:5000
+pytest tests/ -q                       # 跑测试（全程隔离真实数据）
 ```
