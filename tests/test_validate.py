@@ -15,7 +15,13 @@ for p in (str(ROOT), str(HERE)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from _common import check, run_tests  # noqa: E402
+from _common import check, run_tests, redirect_config  # noqa: E402
+import tempfile
+
+# pytest 由 conftest 的 autouse 沙盒兜底；直接 `python tests/test_validate.py` 时
+# conftest 不加载，_clear_pages() 会对着真实 wiki/ 动手（问题 7 的老坑）。
+# 导入时就把路径指到临时目录，两种跑法都安全。
+redirect_config(Path(tempfile.mkdtemp(prefix="validate-test-")))
 
 
 def _write_page(type_, slug, meta, body, *, in_index=True):
