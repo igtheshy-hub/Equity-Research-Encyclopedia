@@ -130,6 +130,7 @@ frontmatter 除必填的 title / type / sources / updated 外，可加 aliases�
 ```
 python -m pip install -r requirements.txt   # 首次安装依赖（含导出用的 openpyxl）
 python manage.py selftest              # 体检：依赖、API 连通、库外问答回退、全库校验
+python manage.py selftest --offline    # 只查配置不联网（不调模型、不花 API 钱）
 python manage.py sort                  # 收件台：归类 raw/inbox/ 中的新文件（PDF 与 .docx）
 python manage.py ingest [--all | --file 路径] [--dry-run]
 python manage.py ask "问题"            # 检出新知识时 y/N 确认沉淀；报告请求自动转生成

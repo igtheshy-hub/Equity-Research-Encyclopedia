@@ -24,6 +24,7 @@
 1. 安装依赖（首次一次即可）：`python -m pip install -r requirements.txt`
 2. 复制 `.env.example` 为 `.env`，填入模型服务商的 API Key（配置里备了 GLM-5.1 与 DeepSeek-V4.1-Flash 两家，各填各的 key）
 3. 体检：`python manage.py selftest`
+   - 只想查配置不想花钱（体检默认会真调每个模型问一句话）：`python manage.py selftest --offline`
 4. 启动网页：`python manage.py serve`，浏览器打开 http://127.0.0.1:5000
 
 每个人的 `wiki/`、`data/`、`outputs/`、`raw/` 都在自己电脑上，不进 Git。新克隆第一次启动会自动建空目录和空索引，不会看到别人的知识、会话、日志或材料清单。
