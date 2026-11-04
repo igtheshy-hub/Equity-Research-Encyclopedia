@@ -928,7 +928,7 @@ GAPS_PROMPT = """你在给研报大纲列数据缺口。报告主题：{TITLE}
 - cpca_sales：乘联会汽车销量，params {{"charttype": "只填数字：1=整体，2=厂商，3=车型，4=国别，5=级别，6=新能源", "metric": "产量 / 批发 / 零售 / 出口 / 当月销量 / 累计销量 / 当月份额 / 累计份额 / 全部，只填一个", "months": 月数}}
 - csindex_index：中证指数行情估值与权重，params {{"code": "指数代码"}}
 - pbc_stat：人民银行统计表，params {{"dataset": "货币统计概览 / 金融业机构资产负债统计 / 金融机构信贷收支统计 / 金融市场统计，只填一个", "keyword": "表名关键词", "months": 月数}}
-- fred_series：FRED 美国宏观，params {{"series_id": "序列号", "periods": 期数}}
+- fred_series：FRED 宏观序列（含汇率），params {{"series_id": "序列号，如 DEXCHUS=美元兑人民币", "periods": 期数}}
 - imf_series：IMF DataMapper，params {{"indicator": "指标代码", "countries": "CHN,USA", "periods": 期数}}
 - dbnomics_series：DBnomics，params {{"series": "provider/dataset/series", "periods": 期数}}
 - worldbank_series：World Bank，params {{"indicator": "指标代码", "countries": "CHN", "periods": 期数}}

@@ -96,7 +96,8 @@ AKSHARE_SERIES = {
     "macro_china_fx_reserves_yearly": "外汇储备",
     "macro_china_foreign_exchange_gold": "外汇与黄金储备",
     "macro_china_fx_gold": "黄金储备",
-    "macro_china_rmb": "人民币汇率",
+    # macro_china_rmb 已移除：akshare 1.19.3 该接口数据停在 2021-05，取到也只会是旧数，
+    # 汇率改用 fred_series 的 DEXCHUS（美元兑人民币）
     "macro_china_money_supply": "货币供应量",
     "macro_china_supply_of_money": "货币供应量（分口径）",
     "macro_china_m2_yearly": "M2 同比",
