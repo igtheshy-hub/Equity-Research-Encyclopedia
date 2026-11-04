@@ -227,6 +227,7 @@ def run(task_id=None):
 
     out_lines = [f"# 审校报告 {datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
     out_lines += [f"范围：wiki/ 共 {len(pages)} 页（含来源摘要页）", ""]
+    out_lines += ["口径说明：未摄入与文件重复按 SHA256 比对 manifest，是确定性检查；矛盾与内容缺口由模型逐页判断，供人工复核，不是错误清单。", ""]
 
     out_lines += [f"## 矛盾（{len(conflicts)}）"]
     if conflicts:
@@ -254,17 +255,22 @@ def run(task_id=None):
     out_lines += [f"- {s['title']}" + (f"（{s['note']}）" if s.get("note") else "") for s in stale] or ["（无）"]
     out_lines.append("")
 
-    out_lines += [f"## 未摄入（文件 {len(missing_files)}，重复件 {len(duplicate_files)}，同名变更 {len(changed_files)}，内容缺口 {len(gaps_by_page)} 页）"]
+    out_lines += [f"## 未摄入（文件 {len(missing_files)}，重复件 {len(duplicate_files)}，同名变更 {len(changed_files)}）"]
     for f in missing_files:
         out_lines += [f"- raw/ 中存在但未摄入：{f.relative_to(config.ROOT).as_posix()}"]
     for d in duplicate_files:
         out_lines += [f"- 重复件（SHA256 与已摄入文件一致，未摄入）：{d['path']} ← {d['duplicate_of']}"]
     for c in changed_files:
         out_lines += [f"- 同名但内容已变化，需重新确认：{c['path']}"]
+    if not missing_files and not duplicate_files and not changed_files:
+        out_lines += ["（无）"]
+    out_lines.append("")
+
+    out_lines += [f"## 内容缺口（{len(gaps_by_page)} 页，模型建议的补全点，不是错误）"]
     for g in gaps_by_page:
         out_lines += [f"- [{g['page']}] 内容缺口："]
         out_lines += [f"  - {x['point']}（{x.get('why', '')}）" for x in g["gaps"]]
-    if not missing_files and not duplicate_files and not changed_files and not gaps_by_page:
+    if not gaps_by_page:
         out_lines += ["（无）"]
     out_lines.append("")
 
@@ -305,8 +311,8 @@ def run(task_id=None):
     wiki.append_log(
         "audit",
         f"审校报告 {out_path.name}：矛盾 {len(conflicts)}、过期 {len(stale)}、"
-        f"未摄入 {len(missing_files)} 文件/重复 {len(duplicate_files)} 件/同名变更 {len(changed_files)} 件/"
-        f"{len(gaps_by_page)} 页缺口、孤立 {len(orphans)}",
+        f"未摄入 {len(missing_files)} 文件/重复 {len(duplicate_files)} 件/同名变更 {len(changed_files)} 件、"
+        f"内容缺口 {len(gaps_by_page)} 页、孤立 {len(orphans)}",
     )
     return {
         "path": out_path,

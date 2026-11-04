@@ -31,7 +31,7 @@ from urllib.parse import quote, urljoin, urlparse
 import httpx
 
 from . import config, ingest as ingest_mod, llm, snapshot, tasks
-from .classify import find_duplicate, sanitize, unique_target
+from .classify import find_duplicate, sanitize, sha256_of, unique_target
 from .pipeline import build_lines
 
 HIBOR_AUTHOR_URL = "https://www.hibor.com.cn/author.html"
@@ -200,6 +200,36 @@ class FetchError(RuntimeError):
     pass
 
 
+def _enum_or_raise(value, keys, name, hint=None):
+    """枚举参数容错解析，返回 keys 里的原始键。
+    模型会把选项列表或标签拼进取值（"6新能源"、"1行业"、"interim|q1"），
+    逐段拆开匹配、取开头数字匹配、按 dict 值反查，都不中才报错，报错带原值。"""
+    s = str(value if value is not None else "").strip()
+    norm = {str(k): k for k in keys}
+    if s in norm:
+        return norm[s]
+    for part in re.split(r"[|/、,，;；\s]+", s):
+        part = part.strip()
+        if not part:
+            continue
+        if part in norm:
+            return norm[part]
+        m = re.match(r"^(\d+)(.*)$", part)
+        if m:
+            num, rest = m.group(1), m.group(2).strip()
+            if num in norm:
+                return norm[num]
+            if num.lstrip("0") in norm:
+                return norm[num.lstrip("0")]
+            if rest in norm:
+                return norm[rest]
+    if isinstance(keys, dict):
+        for k, v in keys.items():
+            if s == str(v):
+                return k
+    raise FetchError(hint or f"{name} 只能是 {'、'.join(norm)} 之一，收到的是「{s}」")
+
+
 def _cfg():
     return config.CFG.get("fetcher") or {}
 
@@ -301,9 +331,7 @@ def _parse_author_rows(html):
 
 def fetch_hibor_ranking(year=None, bigtype=2):
     year = int(year or (datetime.now().year - 1))
-    bigtype = str(bigtype or 2)
-    if bigtype not in HIBOR_BIGTYPE:
-        raise FetchError("慧博榜单类型只能是 1（金牛）、2（新财富）、3（水晶球）")
+    bigtype = _enum_or_raise(bigtype or 2, HIBOR_BIGTYPE, "慧博榜单类型")
     params = {"year": year, "bigtype": bigtype}
     headers = {"Referer": "https://www.hibor.com.cn/", "Accept-Language": "zh-CN,zh;q=0.9",
                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
@@ -407,9 +435,8 @@ def fetch_eastmoney_reports(industry=None, broker=None, limit=3, months=24, brok
                             qtype=1, stock_code="", industry_code="", org_code="",
                             rating_change="", page=1):
     limit = max(1, min(int(limit or 3), int(_cfg().get("eastmoney_max") or 3)))
-    qtype = str(qtype if qtype is not None else 1)
-    if qtype not in EASTMONEY_QTYPE:
-        raise FetchError("东财研报类型只能是 0（个股）、1（行业）、2（策略）")
+    qtype = _enum_or_raise(qtype if qtype is not None else 1, EASTMONEY_QTYPE,
+                           "东财研报 qtype（0=个股，1=行业，2=策略）")
     end = datetime.now()
     begin = end - timedelta(days=int(months or 24) * 31)
     params = {
@@ -498,7 +525,15 @@ def _download_pdf(url, stem):
             raise FetchError("下载到的 PDF 是空文件")
         dup = find_duplicate(tmp)
         if dup is not None:
-            raise FetchError(f"内容与已有文件重复，未重复下载：{dup.relative_to(config.ROOT).as_posix()}")
+            sha = sha256_of(tmp)
+            entry = next((f for f in ingest_mod.load_manifest()["files"]
+                          if f.get("sha256") == sha), None)
+            if entry is None:
+                raise FetchError(f"内容与已有文件重复、且尚未摄入，先处理库里那份："
+                                 f"{dup.relative_to(config.ROOT).as_posix()}")
+            # 已摄入的重复件直接复用库内文件：缺口取数拿它照样有锚点，不算失败
+            tmp.unlink(missing_ok=True)
+            return dup
         name = unique_target(config.INBOX_DIR, f"{stem}.pdf")
         dest = config.INBOX_DIR / name
         tmp.replace(dest)
@@ -668,8 +703,9 @@ def _cninfo_search(query, page_size=10, category="", stock="", column="szse", se
 def fetch_cninfo_announce(query, limit=5, code="", category="", days=0, column="szse"):
     query = str(query or "").strip()
     code = str(code or "").strip()
-    if category and category not in CNINFO_CATEGORIES:
-        raise FetchError(f"未知巨潮公告分类：{category}")
+    if category:
+        category = _enum_or_raise(category, CNINFO_CATEGORIES, "巨潮公告分类",
+                                  hint=f"未知巨潮公告分类：{category}")
     stock = ""
     if code:
         if code.upper().endswith(".HK"):
@@ -801,9 +837,8 @@ CNINFO_PERIODIC = {
 def fetch_cninfo_periodic(company, kind="interim", days=400, limit=1):
     """取 A 股半年报或季报。只留正式全文，跳过摘要、英文版与更正稿。"""
     company = str(company or "").strip()
-    kind = str(kind or "interim").lower()
-    if kind not in CNINFO_PERIODIC:
-        raise FetchError(f"未知定期报告类型：{kind}")
+    kind = _enum_or_raise(str(kind or "interim").lower(), CNINFO_PERIODIC,
+                          "A 股定期报告类型", hint=f"未知定期报告类型：{kind}")
     if not company:
         raise FetchError("取定期报告需要公司名")
     category, patterns, label = CNINFO_PERIODIC[kind]
@@ -963,8 +998,8 @@ def fetch_hkex_annual(company, code="", year=None, limit=1):
 
 
 def fetch_hkex_announce(company, code="", category="annual", year=None, title="", limit=5, days=0, title_any=None):
-    if category not in HKEX_CATEGORIES:
-        raise FetchError(f"未知港交所公告分类：{category}")
+    category = _enum_or_raise(category or "annual", HKEX_CATEGORIES,
+                              "港交所公告分类", hint=f"未知港交所公告分类：{category}")
     t1code, t2gcode, t2code, label = HKEX_CATEGORIES[category]
     stock = _hkex_stock(company, code)
     now = datetime.now()
@@ -1038,9 +1073,8 @@ HKEX_PERIODIC = {
 
 
 def fetch_hkex_periodic(company, code="", kind="interim", days=400, limit=1):
-    kind = str(kind or "interim").lower()
-    if kind not in HKEX_PERIODIC:
-        raise FetchError(f"未知港股定期报告类型：{kind}")
+    kind = _enum_or_raise(str(kind or "interim").lower(), HKEX_PERIODIC,
+                          "港股定期报告类型", hint=f"未知港股定期报告类型：{kind}")
     category, patterns = HKEX_PERIODIC[kind]
     return fetch_hkex_announce(company, code, category=category, days=days,
                                title_any=patterns, limit=limit)
@@ -1053,6 +1087,8 @@ def fetch_periodic_report(company, code="", market="", kind="interim", days=400,
     market = str(market or "").lower()
     if not market:
         market = "hk" if code.endswith(".HK") else ("a" if code else "")
+    else:
+        market = _enum_or_raise(market, ("a", "hk"), "market（a=A股，hk=港股）")
     kind = str(kind or "interim").lower()
     if kind == "annual":
         return fetch_annual_report(company, code, market, limit=limit)
@@ -1067,6 +1103,8 @@ def fetch_annual_report(company, code="", market="", year=None, limit=1):
     market = str(market or "").lower()
     if not market:
         market = "hk" if code.endswith(".HK") else ("a" if code else "")
+    else:
+        market = _enum_or_raise(market, ("a", "hk"), "market（a=A股，hk=港股）")
     if market == "hk":
         return fetch_hkex_annual(company, code, year=year, limit=limit)
     try:
@@ -1083,8 +1121,18 @@ def fetch_annual_report(company, code="", market="", year=None, limit=1):
 # ---------- AKShare（conda macro-data 子进程） ----------
 
 AKSHARE_SCRIPT = """
-import contextlib, io, json
+import contextlib, io, json, sys
 import akshare as ak
+try:
+    import pandas as _pd
+    if int(str(_pd.__version__).split(".")[0]) >= 3:
+        # akshare 尚未适配 pandas 3（pandas 3 对字符串列赋整数从警告升级为报错）
+        print("AKSHARE_ENV_INCOMPAT: akshare %s 未适配 pandas %s，"
+              "宏观序列会报 TypeError。把 macro-data 环境的 pandas 降到 2.x 可解"
+              % (ak.__version__, _pd.__version__))
+        sys.exit(3)
+except ImportError:
+    pass
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
     df = getattr(ak, {series!r})()
 df = df.tail({rows})
@@ -1110,6 +1158,9 @@ def macro_via_akshare(series, periods=24):
                               encoding="utf-8", errors="replace", timeout=_timeout(), env=env)
     except subprocess.TimeoutExpired:
         raise FetchError(f"AKShare 取数超时（{_timeout():.0f} 秒），稍后重试")
+    if proc.returncode == 3 and "AKSHARE_ENV_INCOMPAT" in proc.stdout:
+        msg = proc.stdout.strip().rsplit("AKSHARE_ENV_INCOMPAT:", 1)[1].strip()
+        raise FetchError(f"AKShare 环境不兼容：{msg}")
     if proc.returncode != 0:
         raise FetchError("AKShare 取数失败：" + (proc.stderr or proc.stdout or "未知错误").strip()[-300:])
     marker = "<<<JSON>>>"
@@ -1281,16 +1332,10 @@ def _cpca_rows(data, charttype, months=12, metric="全部", top=15):
 
 
 def fetch_cpca_sales(charttype=1, months=12, metric="全部", top=15):
-    try:
-        ct = int(charttype or 1)
-    except (TypeError, ValueError):
-        raise FetchError("乘联会 charttype 必须是 1-6")
-    if ct not in CPCA_CHARTS:
-        raise FetchError("乘联会 charttype 必须是 1-6")
-    metric = str(metric or "全部").strip()
-    if metric not in ("全部", "产量", "批发", "零售", "出口") + tuple(CPCA_PERIOD_LABELS):
-        raise FetchError("乘联会指标只能是：全部、产量、批发、零售、出口、"
-                         "当月销量、累计销量、当月份额、累计份额")
+    ct = _enum_or_raise(charttype or 1, CPCA_CHARTS, "乘联会 charttype（1-6）")
+    metric = _enum_or_raise(metric or "全部",
+                            ("全部", "产量", "批发", "零售", "出口") + tuple(CPCA_PERIOD_LABELS),
+                            "乘联会指标")
     data = _get_json(CPCA_API_URL, params={"charttype": ct})
     if isinstance(data, dict):
         data = data.get("data") or []
@@ -1519,9 +1564,7 @@ def _pbc_rows_from_df(df, title, months=12):
 
 
 def fetch_pbc_stat(dataset="货币统计概览", keyword="", months=12):
-    dataset = str(dataset or "货币统计概览").strip()
-    if dataset not in PBC_PAGES:
-        raise FetchError("人行统计数据集只能是：" + "、".join(PBC_PAGES))
+    dataset = _enum_or_raise(dataset or "货币统计概览", PBC_PAGES, "人行统计数据集")
     links = _pbc_links(PBC_PAGES[dataset])
     if not links:
         raise FetchError(f"人行「{dataset}」页面没有挂 Excel 附件")
@@ -1670,9 +1713,7 @@ CAAM_CATES = {"行业要闻": "cate_2", "协会动态": "cate_3"}
 
 
 def fetch_caam_article(keyword, category="行业要闻", limit=1):
-    category = str(category or "行业要闻").strip()
-    if category not in CAAM_CATES:
-        raise FetchError("中汽协栏目只能是：" + "、".join(CAAM_CATES))
+    category = _enum_or_raise(category or "行业要闻", CAAM_CATES, "中汽协栏目")
     list_url = f"{CAAM_BASE}/chn/1/{CAAM_CATES[category]}/list_1.html"
     try:
         with _client({"Referer": CAAM_BASE}) as c:
@@ -2196,10 +2237,11 @@ def top_brokers(industry, limit=3):
 
 
 def sample_download_chain(industry, limit=3, tid=None, subject=None, skip_orgs=None):
-    """样板链：慧博免登录取新财富榜单，按名次逐家到东财下载综合最优 1 篇。
+    """样板链：慧博免登录取新财富榜单，按名次到东财下载综合最优研报，取满 limit 份。
 
-    某家券商在东财没有该主题研报时按榜单名次顺延（第 4、第 5…）补足 limit 家；
-    榜单取不到或全组都取不到时退回东财热度兜底。skip_orgs 是库内已有的券商，跳过不重复下载。
+    前 3 券商合计不足 limit 份时按榜单名次顺延（第 4、第 5…）补；
+    同一家券商可出多份，不要求每家都有。
+    榜单取不到或全组都取不到时退回东财热度兜底。skip_orgs 是库内已有样板的券商，跳过不重复下载。
     """
     industry = str(industry or "").strip()
     query = str(subject or industry).strip()
@@ -2214,8 +2256,8 @@ def sample_download_chain(industry, limit=3, tid=None, subject=None, skip_orgs=N
         if group:
             pool = sorted([it for it in ranking["items"] if it["group"] == group],
                           key=lambda x: x.get("rank") or 99)
-            top = "、".join(f"{b['org']}（第{b['rank']}）" for b in pool[:limit])
-            notes.append(f"慧博 {ranking['year']} 年新财富「{group}」前 {min(limit, len(pool))}：{top}")
+            top = "、".join(f"{b['org']}（第{b['rank']}）" for b in pool[:3])
+            notes.append(f"慧博 {ranking['year']} 年新财富「{group}」前 3：{top}")
         else:
             notes.append(f"慧博 {ranking['year']} 年榜单没有匹配到「{industry or query}」的行业组，改按东财热度找")
     except FetchError as e:
@@ -2224,17 +2266,18 @@ def sample_download_chain(industry, limit=3, tid=None, subject=None, skip_orgs=N
     tasks.update(tid, detail="东财按榜单名次逐家下载样板")
     items = []
     for b in pool:
-        if len(items) >= limit:
+        need = limit - len(items)
+        if need <= 0:
             break
         if b["org"] in skip:
             notes.append(f"{b['org']}：库内已有样板，跳过下载")
             continue
         try:
-            one = fetch_eastmoney_reports(query, b["org"], limit=1, months=36, brokers_only=True)
+            one = fetch_eastmoney_reports(query, b["org"], limit=need, months=36, brokers_only=True)
         except FetchError as e:
             notes.append(f"{b['org']}（第{b['rank']}）：{e}，按榜单名次顺延")
             continue
-        items += one["items"]
+        items += one["items"][:need]
         if one.get("skipped"):
             notes.append("跳过：" + "；".join(f"{s['title']}（{s['error']}）" for s in one["skipped"]))
     if 0 < len(items) < limit:
@@ -2273,15 +2316,15 @@ def _ingest_summary(ingested):
 
 
 def _ingest_failures(ingested):
-    """下载成功但没能入库的文件名。取数缺口不能只看下载，材料没进库就取不到锚点。"""
-    names = []
+    """下载成功但没能入库的文件与原因。取数缺口不能只看下载，材料没进库就取不到锚点。"""
+    items = {}
     for r in ingested.get("classify") or []:
         if r and not r.get("ok"):
-            names.append(Path(str(r.get("file") or "")).name)
+            items[Path(str(r.get("file") or "")).name] = str(r.get("error") or "取名失败")
     for r in ingested.get("ingest") or []:
         if r and r.get("error"):
-            names.append(Path(str(r.get("file") or "")).name)
-    return [n for n in dict.fromkeys(names) if n]
+            items[Path(str(r.get("file") or "")).name] = str(r.get("error"))
+    return [f"{name}：{reason[:80]}" for name, reason in items.items() if name]
 
 
 def _ingest_counts(ingested):
@@ -2294,6 +2337,20 @@ def _ingested_files(names):
     """按文件名回查清单里的相对路径，供成文选页时把新材料的页面带进上下文。"""
     wanted = {Path(str(n)).name for n in names if n}
     return [f["path"] for f in ingest_mod.load_manifest()["files"] if f.get("file") in wanted]
+
+
+def _ingest_downloads(file_names, tid=None, targets=None, force_kind=None):
+    """下载类源的入库入口：库内已有的文件（重复下载被 _download_pdf 复用）不再摄入，
+    条目数按 manifest 记录累计，只有新文件走收件台摄入。"""
+    by_name = {f.get("file"): f for f in ingest_mod.load_manifest()["files"]}
+    fresh = [Path(n).name for n in file_names if Path(n).name not in by_name]
+    known = [Path(n).name for n in file_names if Path(n).name in by_name]
+    ingested = {"classify": [], "ingest": []}
+    if fresh:
+        ingested = ingest_inbox(fresh, tid, targets=targets, force_kind=force_kind)
+    entries = _ingest_counts(ingested) + sum(
+        int((by_name[n] or {}).get("entries_count") or 0) for n in known)
+    return ingested, entries, known
 
 
 def run_fetch(source, params, tid=None, targets=None):
@@ -2333,18 +2390,21 @@ def run_fetch(source, params, tid=None, targets=None):
                                       org_code=params.get("org_code"),
                                       rating_change=params.get("rating_change"),
                                       page=params.get("page") or 1)
-        summary = "下载 " + "、".join(it["file"] for it in res["items"])
+        files = [it["file"] for it in res["items"]]
+        summary = "下载 " + "、".join(files)
         if res.get("skipped"):
             summary += "；跳过 " + "、".join(s["title"] for s in res["skipped"])
-        ingested = {"classify": [], "ingest": []}
+        ingested, entries, known = {"classify": [], "ingest": []}, 0, []
         if params.get("ingest", True):
-            ingested = ingest_inbox([it["file"] for it in res["items"]], tid, targets=targets)
-            done = _ingest_summary(ingested)
-            if done:
-                summary += "｜" + done
+            ingested, entries, known = _ingest_downloads(files, tid, targets=targets)
+        if known:
+            summary += f"；{len(known)} 份库内已有、未重复下载"
+        done = _ingest_summary(ingested)
+        if done:
+            summary += "｜" + done
         return {"summary": summary, "items": res["items"],
-                "files": _ingested_files([it.get("file") for it in res["items"]]),
-                "entries_count": _ingest_counts(ingested),
+                "files": _ingested_files(files),
+                "entries_count": entries,
                 "ingest_failed": _ingest_failures(ingested)}
 
     if source == "cninfo_announce":
@@ -2353,18 +2413,21 @@ def run_fetch(source, params, tid=None, targets=None):
                                     category=params.get("category") or "",
                                     days=params.get("days") or 0,
                                     column=params.get("column") or "szse")
-        summary = "下载 " + "、".join(it["file"] for it in res["items"])
+        files = [it["file"] for it in res["items"]]
+        summary = "下载 " + "、".join(files)
         if res.get("skipped"):
             summary += "；跳过 " + "、".join(s["title"] for s in res["skipped"])
-        ingested = {"classify": [], "ingest": []}
+        ingested, entries, known = {"classify": [], "ingest": []}, 0, []
         if params.get("ingest", True):
-            ingested = ingest_inbox([it["file"] for it in res["items"]], tid, targets=targets)
-            done = _ingest_summary(ingested)
-            if done:
-                summary += "｜" + done
+            ingested, entries, known = _ingest_downloads(files, tid, targets=targets)
+        if known:
+            summary += f"；{len(known)} 份库内已有、未重复下载"
+        done = _ingest_summary(ingested)
+        if done:
+            summary += "｜" + done
         return {"summary": summary, "items": res["items"],
-                "files": _ingested_files([it.get("file") for it in res["items"]]),
-                "entries_count": _ingest_counts(ingested),
+                "files": _ingested_files(files),
+                "entries_count": entries,
                 "ingest_failed": _ingest_failures(ingested)}
 
     if source == "hkex_announce":
@@ -2373,18 +2436,21 @@ def run_fetch(source, params, tid=None, targets=None):
                                   year=params.get("year"), title=params.get("title"),
                                   limit=params.get("limit") or 5,
                                   days=params.get("days") or 0)
-        summary = "下载 " + "、".join(it["file"] for it in res["items"])
+        files = [it["file"] for it in res["items"]]
+        summary = "下载 " + "、".join(files)
         if res.get("skipped"):
             summary += "；跳过 " + "、".join(s["title"] for s in res["skipped"])
-        ingested = {"classify": [], "ingest": []}
+        ingested, entries, known = {"classify": [], "ingest": []}, 0, []
         if params.get("ingest", True):
-            ingested = ingest_inbox([it["file"] for it in res["items"]], tid, targets=targets)
-            done = _ingest_summary(ingested)
-            if done:
-                summary += "｜" + done
+            ingested, entries, known = _ingest_downloads(files, tid, targets=targets)
+        if known:
+            summary += f"；{len(known)} 份库内已有、未重复下载"
+        done = _ingest_summary(ingested)
+        if done:
+            summary += "｜" + done
         return {"summary": summary, "items": res["items"],
-                "files": _ingested_files([it.get("file") for it in res["items"]]),
-                "entries_count": _ingest_counts(ingested),
+                "files": _ingested_files(files),
+                "entries_count": entries,
                 "ingest_failed": _ingest_failures(ingested)}
 
     if source in ("annual_report", "periodic_report"):
@@ -2399,16 +2465,19 @@ def run_fetch(source, params, tid=None, targets=None):
                                         days=params.get("days") or 400,
                                         limit=params.get("limit") or 1)
             summary = "定期报告下载 " + "、".join(it["file"] for it in res["items"])
-        ingested = {"classify": [], "ingest": []}
+        files = [it["file"] for it in res["items"]]
+        ingested, entries, known = {"classify": [], "ingest": []}, 0, []
         if params.get("ingest", True):
-            ingested = ingest_inbox([it["file"] for it in res["items"]], tid, targets=targets,
-                                    force_kind="filing")
-            done = _ingest_summary(ingested)
-            if done:
-                summary += "｜" + done
+            ingested, entries, known = _ingest_downloads(files, tid, targets=targets,
+                                                         force_kind="filing")
+        if known:
+            summary += f"；{len(known)} 份库内已有、未重复下载"
+        done = _ingest_summary(ingested)
+        if done:
+            summary += "｜" + done
         return {"summary": summary, "items": res["items"],
-                "files": _ingested_files([it.get("file") for it in res["items"]]),
-                "entries_count": _ingest_counts(ingested),
+                "files": _ingested_files(files),
+                "entries_count": entries,
                 "ingest_failed": _ingest_failures(ingested)}
 
     if source == "web_search":

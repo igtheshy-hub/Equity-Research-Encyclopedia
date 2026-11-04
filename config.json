@@ -17,6 +17,13 @@
         "provider": "火山方舟",
         "base_url": "https://ark.cn-beijing.volces.com/api/plan/v1/messages",
         "model": "deepseek-v4.1-flash"
+      },
+      "deepseek-v4-flash": {
+        "label": "DeepSeek-V4-Flash",
+        "provider": "DeepSeek官方",
+        "base_url": "https://api.deepseek.com/chat/completions",
+        "model": "deepseek-v4-flash",
+        "extra_body": {"thinking": {"type": "disabled"}}
       }
     }
   },

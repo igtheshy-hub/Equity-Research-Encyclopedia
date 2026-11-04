@@ -6,6 +6,22 @@ const CLASS_LABELS = { A: "综合判断", D: "前瞻预测", E: "推导计算" }
 let currentJobId = null;
 let currentJob = null;
 let outlineLoading = false;
+let SOURCE_LABELS = {};
+
+/* 取数源 id → 中文名，缺口清单里显示中文，查不到回落原 id */
+function loadSourceLabels() {
+  fetch("/api/fetch/sources")
+    .then((r) => r.json())
+    .then((d) => {
+      const map = {};
+      (d.items || []).forEach((s) => { map[s.id] = s.label || s.id; });
+      SOURCE_LABELS = map;
+      if (currentJob && currentJobId) loadJob(currentJobId);
+    })
+    .catch(() => {});
+}
+
+function sourceLabel(id) { return SOURCE_LABELS[id] || id; }
 
 function esc(s) { return App.escapeHtml(s); }
 
@@ -145,7 +161,7 @@ function gapsHTML(job) {
     const rows = gaps.map((g) => {
       const can = !!(g.fetch && g.fetch.source);
       const required = !!g.required;
-      const src = can ? `${g.fetch.source}` : "无免登录源";
+      const src = can ? sourceLabel(g.fetch.source) : "无免登录源";
       return `<label class="gap-line">
         <input type="checkbox" value="${esc(g.id)}"${can ? " checked" : ""}${(!can || required) ? " disabled" : ""}>
         <span class="gap-main">${required ? '<span class="tag must">必选</span>' : ""}<b>${esc(g.item)}</b>${g.why ? `<span class="muted">（${esc(g.why)}）</span>` : ""}</span>
@@ -200,6 +216,12 @@ function candidatesHTML(job) {
 function reviewHTML(job) {
   const rev = job.review || {};
   const note = rev.sample_note || "";
+  const missingRows = (job.missing_data || []).map((m) => `<li class="finding">
+    <div class="f-line"><span class="f-tag">数据缺失</span>${esc(m.item || "")}</div>
+    <div class="f-note">${m.skipped ? "跳过未取数" : esc(m.error || "取数失败")}，需手动补充</div>
+  </li>`).join("");
+  const missingBlock = missingRows
+    ? `<h3>数据缺失（${(job.missing_data || []).length} 项，需手动补充）</h3><ul class="plain-list">${missingRows}</ul>` : "";
   if (Array.isArray(rev.findings)) {
     const groups = [
       { key: "已修复", title: "已修复" },
@@ -207,7 +229,8 @@ function reviewHTML(job) {
       { key: null, title: "遗留（附原因，待人工）" },
     ];
     const blocks = groups.map((g) => {
-      const rows = rev.findings.filter((f) => (g.key ? f.outcome === g.key : f.outcome !== "已修复" && f.outcome !== "误报"));
+      const rows = rev.findings.filter((f) => f.where !== "数据缺口"
+        && (g.key ? f.outcome === g.key : f.outcome !== "已修复" && f.outcome !== "误报"));
       if (!rows.length) return "";
       const items = rows.map((f) => `<li class="finding">
         <div class="f-line"><span class="f-tag">${esc(f.kind || "")}·${esc(f.level || "")}</span>${esc(f.where || "")}：${esc(f.problem || "")}</div>
@@ -215,19 +238,21 @@ function reviewHTML(job) {
       </li>`).join("");
       return `<h3>${g.title}（${rows.length}）</h3><ul class="plain-list">${items}</ul>`;
     }).join("");
-    if (!blocks && !note) return "";
+    if (!blocks && !note && !missingRows) return "";
     return `<details class="report-card"><summary>${esc(rev.summary || "审校记录")}</summary>
       ${note ? `<h3>样板覆盖提示</h3><p>${esc(note)}</p>` : ""}
+      ${missingBlock}
       ${blocks}
     </details>`;
   }
   const mech = rev.mechanical || [];
   const issues = rev.issues || [];
-  if (!mech.length && !issues.length && !note) return "";
+  if (!mech.length && !issues.length && !note && !missingRows) return "";
   const mechRows = mech.map((m) => `<li>${esc(m)}</li>`).join("");
   const issueRows = issues.map((i) => `<li><b>${esc(i.level || "")}</b> ${esc(i.where || "")}：${esc(i.problem || "")}</li>`).join("");
   return `<details class="report-card"><summary>审校记录（程序 ${mech.length} 条，模型 ${issues.length} 条${rev.repaired ? "，硬伤已修一轮" : ""}）</summary>
     ${note ? `<h3>样板覆盖提示</h3><p>${esc(note)}</p>` : ""}
+    ${missingBlock}
     ${mechRows ? `<h3>程序核对</h3><ul class="plain-list">${mechRows}</ul>` : ""}
     ${issueRows ? `<h3>模型审稿</h3><ul class="plain-list">${issueRows}</ul>` : ""}
   </details>`;
@@ -387,4 +412,5 @@ setInterval(() => {
 
 document.addEventListener("DOMContentLoaded", () => {
   loadJobs(hashJobId());
+  loadSourceLabels();
 });

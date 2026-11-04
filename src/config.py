@@ -24,7 +24,10 @@ _PROVIDER_KEY_ENV = {
 _LLM = CFG["llm"]
 MODEL_PROFILES = _LLM["models"]
 DEFAULT_MODEL = _LLM.get("default") or next(iter(MODEL_PROFILES))
-# 各模型可省略、从 llm 段继承的公共参数
+# 各模型可省略、从 llm 段继承的公共参数。注意：模型级写 "extra_body": {} 空对象
+# 也算已设置、会阻断继承（setdefault 语义），不想继承就在模型级显式写全内容。
+# DeepSeek 官方端点关闭思考用的是 thinking: {"type": "disabled"}，各模型在
+# config.json 里按自家 API 文档显式配置，不依赖继承。
 _SHARED_LLM_KEYS = ("max_tokens", "read_timeout_s", "max_retries", "extra_body")
 
 

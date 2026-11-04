@@ -309,15 +309,15 @@ def _company_industry_titles(subject):
     return sorted(set(titles), key=len)
 
 
-def _library_top3_samples(terms, brokers):
-    """库里已摄入、且出自榜单券商的研报，每家取最新一份；terms 任一词命中文件名或主题即算覆盖。"""
-    out, seen = [], set()
+def _library_top3_samples(terms, brokers, limit=3):
+    """库里已摄入、出自榜单券商的研报，按报告日期取最新 limit 份；同一券商可出多份。"""
+    out = []
     for f in ingest_mod.load_manifest()["files"]:
         if f.get("source_type") != "report":
             continue
         name = str(f.get("file") or "")
         broker = next((b for b in brokers if b["org"] in name), None)
-        if not broker or broker["org"] in seen:
+        if not broker:
             continue
         blob = name + " " + " ".join(str(t) for t in (f.get("topics_touched") or []))
         if not any(t and t in blob for t in terms):
@@ -325,10 +325,10 @@ def _library_top3_samples(terms, brokers):
         path = config.ROOT / f["path"]
         if not path.exists():
             continue
-        seen.add(broker["org"])
         out.append({"file": name, "path": f["path"], "score": 0,
                     "date": str(f.get("report_date") or ""), "broker": broker["org"]})
-    return out
+    out.sort(key=lambda s: s["date"], reverse=True)
+    return out[:limit]
 
 
 def _chain_samples(res):
@@ -344,32 +344,33 @@ def _chain_samples(res):
 
 
 def _log_manual_broker_gap(job, brokers, samples):
-    """前 3 券商还有缺时提醒用户：可自行从慧博终端下 PDF 传入库再重跑。"""
+    """前 3 样板不足 3 份时提醒用户：可自行从慧博终端下 PDF 传入库再重跑。"""
     if not brokers:
         return
-    have = {s.get("broker") for s in samples if s.get("broker")}
-    missing = [b["org"] for b in brokers if b["org"] not in have]
-    if missing:
-        _log(job, "新财富前 3 中 " + "、".join(missing)
-             + " 在东财没有可用研报，本次未当样板；确需其研报时可自行在慧博终端下载 PDF，"
-               "从首页上传或放 raw/inbox 摄入后重新发起研报")
+    orgs = {b["org"] for b in brokers}
+    hit = [s for s in samples if str(s.get("broker") or "") in orgs]
+    if len(hit) >= 3:
+        return
+    have = sorted({str(s.get("broker")) for s in hit if s.get("broker")})
+    _log(job, f"新财富前 3 样板只有 {len(hit)} 份（{('、'.join(have) or '无')}），"
+              "本次按综合最优研报补足；确需补齐时可自行在慧博终端下载前 3 券商研报 PDF，"
+              "从首页上传或放 raw/inbox 摄入后重新发起研报")
 
 
 def _sample_top3_note(job):
-    """样板前 3 覆盖不全时的审校提示：占比 + 放宽说明 + 手动补齐路径。"""
+    """样板前 3 不足 3 份时的审校提示：占比 + 放宽说明 + 手动补齐路径。"""
     top3 = job.get("top3") or {}
     brokers = [str(b) for b in (top3.get("brokers") or [])]
     samples = job.get("samples") or []
     if not brokers or not samples:
         return ""
-    have = {str(s.get("broker") or "") for s in samples}
-    hit = [b for b in brokers if b in have]
-    if len(hit) == len(brokers):
+    hit = [s for s in samples if str(s.get("broker") or "") in brokers]
+    if len(hit) >= 3:
         return ""
-    missing = [b for b in brokers if b not in have]
+    have = sorted({str(s.get("broker")) for s in hit if s.get("broker")})
     return (f"样板研报 {len(samples)} 份中仅 {len(hit)} 份出自新财富「{top3.get('group') or ''}」前 3"
-            f"（{('、'.join(hit)) or '无'}），缺 {'、'.join(missing)}，本轮已放宽为综合最优研报成文。"
-            "补齐方法：在慧博终端下载缺失券商的本主题研报 PDF，从首页上传摄入，"
+            f"（{('、'.join(have)) or '无'}），按规则至少需 3 份，本轮已放宽为综合最优研报成文。"
+            "补齐方法：在慧博终端下载前 3 券商的本主题研报 PDF，从首页上传摄入，"
             "然后删除本报告重新发起，管线会优先用库内新财富前 3 研报当样板")
 
 
@@ -396,11 +397,11 @@ def _ensure_company_samples(job, tid):
                      key=lambda x: x.get("rank") or 99)[:3]
     job["top3"] = {"group": group, "brokers": [b["org"] for b in brokers]}
     hits = _library_top3_samples([subject], brokers)
-    if len(hits) >= len(brokers):
-        _log(job, f"样板取库内新财富「{group}」前 {len(brokers)} 研报：" + "、".join(s["file"] for s in hits))
+    if len(hits) >= 3:
+        _log(job, f"样板取库内新财富「{group}」前 3 研报：" + "、".join(s["file"] for s in hits))
         return hits[:3]
-    _log(job, f"库内新财富「{group}」前 3 覆盖 {subject} 的研报只有 "
-              + ("、".join(s["broker"] for s in hits) or "无")
+    _log(job, f"库内新财富「{group}」前 3 覆盖 {subject} 的样板只有 {len(hits)} 份"
+              + ("（" + "、".join(s["broker"] for s in hits) + "）" if hits else "")
               + "，缺的走东财下载补齐")
     _tick(tid, 15, f"库内前 3 样板不足，走榜单加东财找「{subject}」")
     try:
@@ -427,7 +428,7 @@ def _ensure_company_samples(job, tid):
 
 
 def _ensure_samples(job, tid):
-    """行业研报样板：新财富该行业组前 3 券商研报，每家 1 份、至少 3 份，库内优先、缺的东财下载。"""
+    """行业研报样板：新财富该行业组前 3 券商研报，合计至少 3 份，库内优先、缺的东财下载。"""
     if job.get("kind") == "company":
         return _ensure_company_samples(job, tid)
     industry = _industry_of(job["title"], job["question"])
@@ -445,12 +446,13 @@ def _ensure_samples(job, tid):
     samples = []
     if brokers:
         hits = _library_top3_samples(keys, brokers)
-        if len(hits) >= len(brokers):
-            _log(job, f"样板取库内新财富「{group}」前 {len(brokers)} 研报：" + "、".join(s["file"] for s in hits))
+        if len(hits) >= 3:
+            _log(job, f"样板取库内新财富「{group}」前 3 研报：" + "、".join(s["file"] for s in hits))
             return hits[:3]
         if hits:
             _log(job, "库内新财富「" + str(group) + "」前 3 样板只有 "
-                      + "、".join(s["broker"] for s in hits) + "，缺的走东财下载补齐")
+                      + str(len(hits)) + " 份（" + "、".join(s["broker"] for s in hits)
+                      + "），缺的走东财下载补齐")
         samples += hits
         _tick(tid, 15, f"库内前 3 样板不足，走榜单加东财找「{industry}」")
     else:
@@ -915,23 +917,24 @@ GAPS_PROMPT = """你在给研报大纲列数据缺口。报告主题：{TITLE}
 知识库已有页面：{PAGES}
 
 可用的免登录取数源（source / params），source 必须原样使用下面的英文 id：
-- stats_series：国家统计局，params {{"keyword": "中文指标名，多个用分号", "region": "全国或省市", "freq": "auto|月|季|年", "periods": 期数}}
+- stats_series：国家统计局，params {{"keyword": "中文指标名，多个用分号", "region": "全国或省市", "freq": "auto / 月 / 季 / 年，只填一个", "periods": 期数}}
 - akshare_series：AKShare 宏观序列，params {{"series": "以下之一：{SERIES}", "periods": 期数}}
-- eastmoney_reports：东财研报下载，params {{"qtype": "0个股|1行业|2策略", "industry": "行业", "stock_code": "代码", "broker": "券商可空", "limit": 份数}}
+- eastmoney_reports：东财研报下载，params {{"qtype": "只填数字：0=个股，1=行业，2=策略", "industry": "行业", "stock_code": "代码", "broker": "券商可空", "limit": 份数}}
 - cninfo_announce：巨潮 A 股公告（港股不覆盖），params {{"query": "检索词", "code": "A股代码可空", "category": "分类代码可空", "days": 天数, "limit": 份数}}
-- hkex_announce：港交所公告，params {{"company": "公司名", "code": "港股代码", "category": "annual|interim|quarterly|esg|results|all", "limit": 份数}}
-- annual_report：公司年报，params {{"company": "公司名", "market": "a|hk"}}
-- periodic_report：公司定期报告，params {{"company": "公司名", "code": "代码可空", "market": "a|hk", "kind": "interim|q1|q3|quarterly", "days": 天数}}
+- hkex_announce：港交所公告，params {{"company": "公司名", "code": "港股代码", "category": "annual / interim / quarterly / esg / results / all，只填一个", "limit": 份数}}
+- annual_report：公司年报，params {{"company": "公司名", "market": "a 或 hk"}}
+- periodic_report：公司定期报告，params {{"company": "公司名", "code": "代码可空", "market": "a 或 hk", "kind": "interim / q1 / q3 / quarterly，只填一个", "days": 天数}}；每次只取最近一期，要对比多期时缺口仍只列最近一期，更早期间由撰稿人从库内已有材料取
 - sample_chain：行业样板研报下载链，params {{"industry": "行业", "limit": 份数}}
-- cpca_sales：乘联会汽车销量，params {{"charttype": "1整体|2厂商|3车型|4国别|5级别|6新能源", "metric": "产量|批发|零售|出口|当月销量|累计销量|当月份额|累计份额|全部", "months": 月数}}
+- cpca_sales：乘联会汽车销量，params {{"charttype": "只填数字：1=整体，2=厂商，3=车型，4=国别，5=级别，6=新能源", "metric": "产量 / 批发 / 零售 / 出口 / 当月销量 / 累计销量 / 当月份额 / 累计份额 / 全部，只填一个", "months": 月数}}
 - csindex_index：中证指数行情估值与权重，params {{"code": "指数代码"}}
-- pbc_stat：人民银行统计表，params {{"dataset": "货币统计概览|金融业机构资产负债统计|金融机构信贷收支统计|金融市场统计", "keyword": "表名关键词", "months": 月数}}
+- pbc_stat：人民银行统计表，params {{"dataset": "货币统计概览 / 金融业机构资产负债统计 / 金融机构信贷收支统计 / 金融市场统计，只填一个", "keyword": "表名关键词", "months": 月数}}
 - fred_series：FRED 美国宏观，params {{"series_id": "序列号", "periods": 期数}}
 - imf_series：IMF DataMapper，params {{"indicator": "指标代码", "countries": "CHN,USA", "periods": 期数}}
 - dbnomics_series：DBnomics，params {{"series": "provider/dataset/series", "periods": 期数}}
 - worldbank_series：World Bank，params {{"indicator": "指标代码", "countries": "CHN", "periods": 期数}}
-- caam_article：中汽协行业要闻文字稿，params {{"keyword": "标题关键词", "category": "行业要闻|协会动态", "limit": 篇数}}；产销数据文章正文是图片，不要用它取销量，改用 cpca_sales
+- caam_article：中汽协行业要闻文字稿，params {{"keyword": "标题关键词", "category": "行业要闻 / 协会动态，只填一个", "limit": 篇数}}；产销数据文章正文是图片，不要用它取销量，改用 cpca_sales
 - web_search：网络检索兜底，params {{"query": "检索式", "limit": 份数}}
+枚举参数只填一个值：数字型只填数字本身（charttype 填 6，不要填 6新能源），词表型只填一个词（freq 填 月，不要把整串选项抄进去）。
 先配专用源；专用源明确取不到的再用 web_search，不要直接放弃。
 
 只列大纲需要、但知识库页面里明显没有的关键数据，最多 8 条；每条都必须配上面能执行的源。
@@ -1216,16 +1219,28 @@ def approve_gaps(job_id, gap_ids):
                 _log(j, notes[-1])
                 save_job(j)
         j = load_job(job_id)
-        lost = [g for g in (j.get("gaps") or []) if g.get("status") not in ("done", "skipped")]
-        if lost:
-            tasks.update(tid, current=len(fetchable), detail="缺口没补齐，停回缺口关卡")
+        failed = [g for g in (j.get("gaps") or []) if g.get("status") == "failed"]
+        unmet = [g for g in failed if g.get("required")]
+        if unmet:
+            tasks.update(tid, current=len(fetchable), detail="必选缺口没补齐，停回缺口关卡")
             j["status"] = "gaps_pending"
-            j["error"] = ("这些缺口没补上，不能带着数据缺失成文：" + "、".join(
-                f"{g['item']}（{g.get('error') or g.get('status')}）" for g in lost)
-                + "。换检索词重试、上传材料，或取消勾选后重试")
+            j["error"] = ("公司研报必选的定期报告没补上，不能成文：" + "、".join(
+                f"{g['item']}（{g.get('error') or g.get('status')}）" for g in unmet)
+                + "。缺了没有锚点可写，换检索词重试或上传材料")
             _log(j, j["error"])
             save_job(j)
             return {"summary": "；".join(notes + [j["error"]])}
+        skipped_gaps = [g for g in (j.get("gaps") or []) if g.get("status") == "skipped"]
+        if failed or skipped_gaps:
+            # 非必选缺口缺失不再阻断：汇总进 missing_data，成文跳过对应内容，审校记录单列
+            j["missing_data"] = (
+                [{"item": g["item"], "error": g.get("error") or ""} for g in failed]
+                + [{"item": g["item"], "error": "", "skipped": True} for g in skipped_gaps])
+            _log(j, "以下数据本次缺失，成文不写、审校记录单列需手动补充："
+                 + "、".join(g["item"] for g in failed + skipped_gaps))
+        else:
+            j.pop("missing_data", None)
+        save_job(j)
         tasks.update(tid, current=len(fetchable), detail="缺口处理完，开始成文")
         _begin_write(j)
         return {"summary": "；".join(notes)}
@@ -1236,11 +1251,12 @@ def approve_gaps(job_id, gap_ids):
 
 def _begin_write(job):
     job = load_job(job["id"]) or job
+    # failed 缺口不阻断：取数失败/被跳过的已记进 missing_data，成文按缺失处理
     pending = [g for g in job.get("gaps") or []
-               if g.get("status") in ("pending", "selected", "failed")]
+               if g.get("status") in ("pending", "selected")]
     if pending:
         job["status"] = "gaps_pending"
-        job["error"] = ("还有缺口没处理完，不能成文：" + "、".join(
+        job["error"] = ("还有缺口没确认完，不能成文：" + "、".join(
             g.get("item") or g.get("id") for g in pending))
         _log(job, job["error"])
         save_job(job)
@@ -1420,6 +1436,12 @@ def _phase_write(job_id, tid):
             continue
         _tick(tid, 5 + int(85 * (i - 1) / len(sections)), f"写第 {i}/{len(sections)} 节：{heading}")
         extra = ""
+        missing = job.get("missing_data") or []
+        if missing:
+            extra += ("14. 本次以下数据缺口未取到：" + "、".join(m["item"] for m in missing)
+                      + "。这些方面的内容整段不写：不写标题占位、不写「数据缺失」等字样、"
+                        "不用外部估计顶替、不编数字，相关论点改用库内已有材料支撑；"
+                        "规则 1 的「缺口在成文前已经补完」对这些条目不适用\n")
         if job.get("kind") == "company":
             extra = ("11. 公司研报纪律：财务数字按第 13 条来源优先级取自已摄入的年报、半年报、季报；"
                      "券商研报里的公司数字只能做对照，不能替代公司自己的披露。币种与单位写清，"
@@ -2365,12 +2387,21 @@ def _phase_review(job_id, tid):
             findings.append({"kind": "程序", "level": "硬伤", "where": "交付闸门",
                              "problem": p, "outcome": "未解决", "note": "转 Word 前未清零"})
     findings = _order_findings(job, report_md, findings, tid)
+    # 数据缺口取数失败/被跳过的：成文时已按缺失处理，这里单列提示需手动补充，不进修复循环
+    missing = job.get("missing_data") or []
+    for m in missing:
+        findings.append({"kind": "程序", "level": "提示", "where": "数据缺口",
+                         "problem": f"{m['item']}：本次未取到，报告未写该方面内容",
+                         "outcome": "未解决",
+                         "note": ("用户跳过未取数，需手动补充" if m.get("skipped")
+                                  else f"取数失败，需手动补充（{str(m.get('error') or '原因未记录')[:120]}）")})
     fixed_n = [f for f in findings if f.get("outcome") == "已修复"]
     fp_n = [f for f in findings if f.get("outcome") == "误报"]
     left_n = [f for f in findings if f.get("outcome") not in ("已修复", "误报")]
     n_prog = sum(1 for f in findings if f["kind"] == "程序")
     summary = (f"审校闭环：发现 {len(findings)} 条（程序 {n_prog}、模型 {len(findings) - n_prog}），"
                f"修复 {len(fixed_n)} 条，误报排除 {len(fp_n)} 条，遗留 {len(left_n)} 条"
+               + (f"，数据缺失 {len(missing)} 项需手动补充" if missing else "")
                + (f"（遗留已逐条注明原因，待人工定夺）" if left_n else ""))
     note = _sample_top3_note(job)
     job["review"] = {"summary": summary, "findings": findings,
