@@ -64,6 +64,8 @@ def test_normalize():
     check("旧名 可供出售金融资产", fin_calc.normalize_item("可供出售金融资产"), ("其他债权投资", True))
     check("字典外保留原名", fin_calc.normalize_item("星球大战基金"), ("星球大战基金", False))
     check("序号前缀 一、营业收入", fin_calc.normalize_item("一、 营业收入"), ("营业收入", True))
+    check("括号序号前缀 （一）基本每股收益（元/股）",
+          fin_calc.normalize_item("（一）基本每股收益（元/股）"), ("基本每股收益", True))
     check("尾部括号 营业收入（元）", fin_calc.normalize_item("营业收入（元）"), ("营业收入", True))
 
 

@@ -11,10 +11,12 @@ spec.json 字段：
   fetched_at  取数时点，YYYY-MM-DD
   note        口径或使用说明，可空
   rows        [{指标, 数值, 单位, 口径, 时点}]，每行一条数据
+  paragraphs  文字稿段落列表，与 rows 二选一或同时给（中汽协这类以文字为主的来源）
 
 文件名、来源机构、取数时点、口径都写进正文，摄入后锚点可追溯到块号。
 """
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -26,6 +28,14 @@ from docx import Document  # noqa: E402
 from src import config  # noqa: E402
 
 
+def _clean(value):
+    """去掉 XML 不接受的控制字符（网页正文常带 \x08、\x0b 等），否则 python-docx 直接报错。"""
+    text = str(value if value is not None else "")
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", text)
+    text = text.replace("​", "").replace("﻿", "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def build(spec):
     out = Path(spec["out"])
     if not out.is_absolute():
@@ -33,27 +43,33 @@ def build(spec):
     out.parent.mkdir(parents=True, exist_ok=True)
 
     doc = Document()
-    doc.add_heading(spec["title"], level=0)
-    doc.add_paragraph(f"出具机构：{spec['org']}")
-    doc.add_paragraph(f"数据来源：{spec['org']}")
-    doc.add_paragraph(f"来源地址：{spec.get('url') or '未记录'}")
-    doc.add_paragraph(f"取数时点：{spec['fetched_at']}")
+    doc.add_heading(_clean(spec["title"]), level=0)
+    doc.add_paragraph(f"出具机构：{_clean(spec['org'])}")
+    doc.add_paragraph(f"数据来源：{_clean(spec['org'])}")
+    doc.add_paragraph(f"来源地址：{_clean(spec.get('url') or '未记录')}")
+    doc.add_paragraph(f"取数时点：{_clean(spec['fetched_at'])}")
 
-    rows = spec["rows"]
-    if not rows:
-        raise SystemExit("rows 为空，没有可写入的数据")
-    cols = list(rows[0].keys())
-    table = doc.add_table(rows=1, cols=len(cols))
-    table.style = "Table Grid"
-    for i, c in enumerate(cols):
-        table.rows[0].cells[i].text = c
-    for r in rows:
-        cells = table.add_row().cells
+    rows = spec.get("rows") or []
+    paragraphs = spec.get("paragraphs") or []
+    if not rows and not paragraphs:
+        raise SystemExit("rows 与 paragraphs 都为空，没有可写入的数据")
+    if rows:
+        cols = list(rows[0].keys())
+        table = doc.add_table(rows=1, cols=len(cols))
+        table.style = "Table Grid"
         for i, c in enumerate(cols):
-            cells[i].text = str(r.get(c, ""))
+            table.rows[0].cells[i].text = _clean(c)
+        for r in rows:
+            cells = table.add_row().cells
+            for i, c in enumerate(cols):
+                cells[i].text = _clean(r.get(c, ""))
+    for p in paragraphs:
+        text = _clean(p)
+        if text:
+            doc.add_paragraph(text)
 
     if spec.get("note"):
-        doc.add_paragraph(spec["note"])
+        doc.add_paragraph(_clean(spec["note"]))
 
     doc.save(str(out))
     print(f"快照已生成：{out}")

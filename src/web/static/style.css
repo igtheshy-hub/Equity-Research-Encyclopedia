@@ -194,6 +194,7 @@ td a { font-weight: 600; }
   padding: 20px 26px; box-shadow: var(--shadow);
 }
 .page-body table { background: #fafbfd; border-radius: 8px; }
+.page-body img { max-width: min(100%, 720px); height: auto; display: block; margin: 6px auto; }
 .hint { color: var(--ink-2); font-size: 13px; }
 details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; }
 
@@ -297,6 +298,7 @@ body.split-ask .pane:last-child { border-radius: 0 var(--radius) var(--radius) 0
 .md p { margin: 6px 0; }
 .md ul, .md ol { margin: 6px 0; padding-left: 22px; }
 .md table { margin: 8px 0; font-size: 13px; }
+.md img { max-width: min(100%, 720px); height: auto; display: block; margin: 6px auto; }
 .cand-list { margin: 8px 0; display: flex; flex-direction: column; gap: 4px; }
 .cand { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
 .cand input { margin: 0; }
@@ -377,6 +379,7 @@ body.viewer-page { background: #e8ebf1; display: flex; flex-direction: column; h
   color: #aab3c5; font-size: 11px; width: 26px; text-align: right;
 }
 .docx-view table { border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+.docx-view img { max-width: min(100%, 720px); height: auto; display: block; margin: 6px auto; }
 .docx-view td { border: 1px solid var(--line); padding: 5px 10px; }
 .docx-view .hl-block { background: rgba(255, 213, 0, .5); border-radius: 4px; }
 .docx-view .hl-soft { background: rgba(255, 213, 0, .22); border-radius: 4px; }

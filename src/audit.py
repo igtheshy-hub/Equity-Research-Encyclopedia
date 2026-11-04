@@ -1,14 +1,17 @@
 import re
 from datetime import date, datetime
 
-from . import config, llm, wiki
+from . import config, llm, source_priority, wiki
+from .classify import sha256_of
 from .ingest import iter_pdfs, load_manifest
 
 CONFLICT_PROMPT = """你是知识库审校员。下面是 wiki 页面「{TITLE}」的全部条目。找出页内互相冲突的陈述对。
 
 规则：
 - 只报告页面里确有的冲突，摘录必须与原文逐字一致（不含句尾锚点部分）
-- 区分两类：「矛盾」= 同一事实的不同说法（如相反评级、同一数据打架）；「时点差异」= 不同日期报告对同一指标的不同预测（属正常更新，不是错误）
+- 区分两类：「矛盾」= 同一口径、同一时点的同一事实出现互相排斥的数值或说法；「时点差异」= 不同日期报告对同一指标的不同读数或预测（属正常更新，不是错误）
+- 以下情况不是矛盾，不要报告：单季与累计/年化口径不同；不同日期的周度行情、估值、原材料价格；不同机构的评级标准或基准指数不同；货币资金与现金及现金等价物、基本 EPS 与稀释 EPS、不同计算口径的衍生指标；名称不同但数值一致
+- 公司财务数据的来源优先级：财报（年报、季报、半年报）> 公告/招股书 > 券商研报 > 其他材料。同一公司同一口径的财务指标，财报与研报数字不同，按「矛盾」报告，以最新报告期的财报为准；单季对累计的口径差异按「时点差异」处理并写明口径
 - 每对冲突给出双方摘录、各自句尾的锚点（原样复制 [[文件.pdf#pN]]）、一句话说明
 - 没有冲突就给空数组
 
@@ -27,6 +30,12 @@ GAP_PROMPT = """你是行业知识库审校员。wiki 页面「{TITLE}」当前�
 --- 页面条目开始 ---
 {BODY}
 --- 页面条目结束 ---"""
+
+
+_SELF_NEGATING = re.compile(
+    r"不构成(?:实质|直接|数值|数据)?矛盾|无矛盾|并非矛盾|不属于矛盾|"
+    r"不构成(?:数据|实质|数值)?冲突|属于正常(?:差异|更新)|信息详略|不同财务指标"
+)
 
 
 def _norm_text(s):
@@ -65,7 +74,7 @@ def _llm_page(task_prompt, page, key):
     return out.get(key) or []
 
 
-def _conflicts_of(page):
+def _conflicts_of(page, manifest=None):
     lines = [ln for ln in page["body"].splitlines() if ln.strip().startswith("- ")]
     if len(lines) < 2:
         return []
@@ -80,12 +89,42 @@ def _conflicts_of(page):
             continue
         if _anchor_of(c.get("anchor_a"), page) is None or _anchor_of(c.get("anchor_b"), page) is None:
             continue
+        # 模型常把「相关但不是冲突」的配对也返回，并在 note 里自认不矛盾；这类噪声不进报告
+        if _SELF_NEGATING.search(str(c.get("note") or "")):
+            continue
+        c.update(source_priority.conflict_note(c.get("anchor_a"), c.get("anchor_b"), manifest))
         res.append(c)
     return res
 
 
 def _gaps_of(page):
     return [g for g in _llm_page(GAP_PROMPT, page, "gaps") if isinstance(g, dict) and g.get("point")]
+
+
+def audit_raw_files(manifest):
+    """按 SHA256 区分真未摄入、重复下载件、同名但内容变化的文件。"""
+    by_path, by_sha = {}, {}
+    for f in manifest["files"]:
+        if f.get("path"):
+            by_path[f["path"]] = f
+        if f.get("sha256"):
+            by_sha.setdefault(f["sha256"], f)
+    missing, duplicates, changed = [], [], []
+    for p in iter_pdfs():
+        rel = p.relative_to(config.ROOT).as_posix()
+        sha = sha256_of(p)
+        entry = by_path.get(rel)
+        if entry is not None:
+            if entry.get("sha256") == sha:
+                continue
+            changed.append({"path": rel, "manifest_sha256": entry.get("sha256"), "sha256": sha})
+            continue
+        same = by_sha.get(sha)
+        if same is not None:
+            duplicates.append({"path": rel, "duplicate_of": same.get("path") or same["file"]})
+            continue
+        missing.append(rel)
+    return missing, duplicates, changed
 
 
 def run(task_id=None):
@@ -103,7 +142,7 @@ def run(task_id=None):
     check_pages = [p for p in pages if p["type"] != "source"]
     for i, p in enumerate(check_pages, 1):
         tick(i, len(check_pages), str(p["meta"].get("title") or p["slug"]))
-        for c in _conflicts_of(p):
+        for c in _conflicts_of(p, manifest):
             c["page"] = str(p["meta"].get("title") or p["slug"])
             c["slug"] = p["slug"]
             (conflicts if c.get("kind") == "矛盾" else time_diffs).append(c)
@@ -142,8 +181,10 @@ def run(task_id=None):
                     "note": f"观点依据期早于最新数据期，待复核：{ln[:60]}",
                 })
 
-    known = {f["file"] for f in manifest["files"]}
-    missing_files = [p for p in iter_pdfs() if p.name not in known]
+    # 未摄入审计按内容而不是文件名判断：同名重复下载件会被 unique_target 改成
+    # -2/-3，旧逻辑把它当成新文件；内容相同的副本应单列为「重复件」。
+    missing_rel, duplicate_files, changed_files = audit_raw_files(manifest)
+    missing_files = [config.ROOT / p for p in missing_rel]
 
     non_source = [p for p in pages if p["type"] != "source"]
 
@@ -192,8 +233,9 @@ def run(task_id=None):
         for c in conflicts:
             out_lines += [
                 f"### [{c['page']}] {c.get('note', '')}",
-                f"- A：「{c['quote_a']}」{c['anchor_a']}",
-                f"- B：「{c['quote_b']}」{c['anchor_b']}",
+                f"- A：「{c['quote_a']}」{c['anchor_a']}（{c.get('source_a', '')}）",
+                f"- B：「{c['quote_b']}」{c['anchor_b']}（{c.get('source_b', '')}）",
+                f"- 取舍：{c.get('source_note', '')}",
                 "",
             ]
     else:
@@ -201,7 +243,9 @@ def run(task_id=None):
     out_lines += [f"### 时点差异（{len(time_diffs)}，属正常更新，不报警）"]
     if time_diffs:
         for c in time_diffs:
-            out_lines += [f"- [{c['page']}] {c.get('note', '')}：A「{c['quote_a']}」{c['anchor_a']} vs B「{c['quote_b']}」{c['anchor_b']}"]
+            out_lines += [f"- [{c['page']}] {c.get('note', '')}：A「{c['quote_a']}」{c['anchor_a']}"
+                          f"（{c.get('source_a', '')}） vs B「{c['quote_b']}」{c['anchor_b']}"
+                          f"（{c.get('source_b', '')}）；{c.get('source_note', '')}"]
     else:
         out_lines += ["（无）"]
     out_lines.append("")
@@ -210,13 +254,17 @@ def run(task_id=None):
     out_lines += [f"- {s['title']}" + (f"（{s['note']}）" if s.get("note") else "") for s in stale] or ["（无）"]
     out_lines.append("")
 
-    out_lines += [f"## 未摄入（文件 {len(missing_files)}，内容缺口 {len(gaps_by_page)} 页）"]
+    out_lines += [f"## 未摄入（文件 {len(missing_files)}，重复件 {len(duplicate_files)}，同名变更 {len(changed_files)}，内容缺口 {len(gaps_by_page)} 页）"]
     for f in missing_files:
         out_lines += [f"- raw/ 中存在但未摄入：{f.relative_to(config.ROOT).as_posix()}"]
+    for d in duplicate_files:
+        out_lines += [f"- 重复件（SHA256 与已摄入文件一致，未摄入）：{d['path']} ← {d['duplicate_of']}"]
+    for c in changed_files:
+        out_lines += [f"- 同名但内容已变化，需重新确认：{c['path']}"]
     for g in gaps_by_page:
         out_lines += [f"- [{g['page']}] 内容缺口："]
         out_lines += [f"  - {x['point']}（{x.get('why', '')}）" for x in g["gaps"]]
-    if not missing_files and not gaps_by_page:
+    if not missing_files and not duplicate_files and not changed_files and not gaps_by_page:
         out_lines += ["（无）"]
     out_lines.append("")
 
@@ -242,11 +290,14 @@ def run(task_id=None):
         "report": out_path.name,
         "counts": {
             "矛盾": len(conflicts), "时点差异": len(time_diffs), "过期": len(stale),
-            "未摄入文件": len(missing_files), "内容缺口页": len(gaps_by_page), "孤立": len(orphans),
+            "未摄入文件": len(missing_files), "重复文件": len(duplicate_files),
+            "同名变更": len(changed_files), "内容缺口页": len(gaps_by_page), "孤立": len(orphans),
         },
         "conflicts": conflicts,
         "stale": stale,
         "missing_files": [p.relative_to(config.ROOT).as_posix() for p in missing_files],
+        "duplicate_files": duplicate_files,
+        "changed_files": changed_files,
         "gaps_by_page": gaps_by_page,
         "orphans": orphans,
         "merge_suggestions": merge_suggestions,
@@ -254,7 +305,8 @@ def run(task_id=None):
     wiki.append_log(
         "audit",
         f"审校报告 {out_path.name}：矛盾 {len(conflicts)}、过期 {len(stale)}、"
-        f"未摄入 {len(missing_files)} 文件/{len(gaps_by_page)} 页、孤立 {len(orphans)}",
+        f"未摄入 {len(missing_files)} 文件/重复 {len(duplicate_files)} 件/同名变更 {len(changed_files)} 件/"
+        f"{len(gaps_by_page)} 页缺口、孤立 {len(orphans)}",
     )
     return {
         "path": out_path,
@@ -263,6 +315,8 @@ def run(task_id=None):
             "时点差异": len(time_diffs),
             "过期": len(stale),
             "未摄入文件": len(missing_files),
+            "重复文件": len(duplicate_files),
+            "同名变更": len(changed_files),
             "内容缺口页": len(gaps_by_page),
             "孤立": len(orphans),
         },

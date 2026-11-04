@@ -1,6 +1,6 @@
 import re
 
-from . import config, llm, wiki
+from . import config, llm, source_priority, wiki
 from .ingest import _apply_create, _apply_merge, load_manifest
 from .pdf_extract import extract_to_store, load_cached, raw_file_index
 
@@ -52,6 +52,7 @@ ANSWER_PROMPT = """你是行业知识库的问答员，只能用给定页面内�
 - 每个陈述句句尾带锚点 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]]，锚点只能引用给定页面中出现过的来源文件
 - 页面没有的信息，明说「知识库中没有该信息」
 - 不允许出现没有任何锚点的数据性陈述
+- 公司财务数据的来源优先级：财报（年报、季报、半年报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
 - 回答用中文，markdown 格式
 {FIN}
 {HISTORY}--- 页面内容开始 ---
@@ -80,6 +81,7 @@ INDEX_ANSWER_PROMPT = """你是行业知识库的问答员，用户问的是知�
 # 财报分析类问题的附加纪律，浓缩自 .claude/skills/finstmt-qa v1.1；{FIN} 占位符按 domain 注入
 FIN_ANALYSIS_BLOCK = """
 本次问题属财报分析类，再遵守以下纪律（方法论来源：financial-statement-reading skill，张明辉、Berman 等三本书整合）：
+- 公司财务数据的来源优先级：财报（年报、季报、半年报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
 - 呈现顺序倒金字塔：第一屏直接回答用户问题。问单一数据或事实时直接给数带口径；问分析、评价、风险类问题时，先给 3-5 条一句话判断（每条独立一行，句后括注一句依据），再给综合结论，六步框架的详细盘点放在其后展开，展开部分不重复抄写判断清单里已给的数字
 - 先盘点给定内容中已有的财报数据再下判断：wiki 页面里的【数据】行是报表原值、【指标】行是固定口径的派生值、【管理层】行是原文摘录；原始材料则直接读报表数字。数据缺失的项明说「无法核验」，不用自身知识补
 - 引用任何指标必须带口径标签与报告期（如 ROE(归母平均)@2025FY），中途换口径必须说明理由
@@ -100,6 +102,7 @@ DISTILL_PROMPT = """判断这次问答是否产生了值得沉淀进知识库的
 lines 规则：
 - 每行句尾必须带至少一个锚点，格式 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]]，只能原样复用答案中已出现的锚点，禁止新造；判断句综合多个数据、无法精确对应单个数据点时，挂到支撑该判断最核心的数据所在锚点
 - 答案中属财报分析判断的行以【观点】前缀开头（格式：【观点】报告期 判断句，报告期如 2025FY），普通事实结论不加前缀
+- 比较两家及以上公司的结论，type 填 concept（新建对比概念页），不要填 company
 
 问题：{Q}
 答案：{A}"""
@@ -129,6 +132,7 @@ DEEP_ANSWER_PROMPT = """你是行业研究助手，只能用给定的原始材�
 - 每个陈述句句尾带锚点：PDF 片段用 [[文件名.pdf#p页码]]，Word 片段用 [[文件名.docx#para段落号]]，页码/段落号取片段标记中的序号
 - 片段标记形如「[文件名 | 第3页]」，请原样使用其中的文件名与序号
 - 不允许出现没有任何锚点的数据性陈述
+- 公司财务数据的来源优先级：财报（年报、季报、半年报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
 - 回答用中文，markdown 格式
 {FIN}
 {HISTORY}--- 材料片段开始 ---
@@ -449,9 +453,13 @@ def ask(question, history=None, propose=True):
         return result
 
     sel_pages = [p for p in pages if p["slug"] in slugs and p["type"] != "source"]
-    pages_text = "\n\n".join(
-        f"### {p['meta'].get('title', p['slug'])}（slug: {p['slug']}）\n{p['body']}" for p in sel_pages
-    )
+    manifest = load_manifest()
+    chunks = []
+    for p in sel_pages:
+        legend = source_priority.page_legend(p, manifest)
+        head = f"### {p['meta'].get('title', p['slug'])}（slug: {p['slug']}）"
+        chunks.append("\n".join(x for x in (head, legend, p["body"]) if x))
+    pages_text = "\n\n".join(chunks)
     fin = FIN_ANALYSIS_BLOCK if domain == "finstmt" else ""
     messages = [{"role": "user", "content": ANSWER_PROMPT
                  .replace("{FIN}", fin)
@@ -528,17 +536,25 @@ def _propose_distill(question, answer):
         "target_title": "",
         "target_type": "",
     }
-    # 命中已有页则改为 merge（应用时按 slug 重新定位，防止这期间页面变化）
+    # 命中已有页则改为 merge（应用时按 slug 重新定位，防止这期间页面变化）。
+    # 标题同时命中多个页面说明是跨页对比，不能按页序并进其中一家，改新建对比概念页。
+    matches = []
     for p in wiki.load_pages():
         t = str(p["meta"].get("title") or p["slug"])
         if p["type"] != ptype:
             continue
         if t == proposal["title"] or t in proposal["title"] or proposal["title"] in t:
-            proposal["action"] = "merge"
-            proposal["target_slug"] = p["slug"]
-            proposal["target_title"] = t
-            proposal["target_type"] = p["type"]
-            break
+            matches.append((p, t))
+    if len(matches) == 1:
+        p, t = matches[0]
+        proposal["action"] = "merge"
+        proposal["target_slug"] = p["slug"]
+        proposal["target_title"] = t
+        proposal["target_type"] = p["type"]
+    elif len(matches) > 1:
+        proposal["action"] = "create"
+        if ptype == "company":
+            proposal["type"] = "concept"
     return proposal
 
 

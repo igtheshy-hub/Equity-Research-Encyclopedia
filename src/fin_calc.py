@@ -30,7 +30,9 @@ def _clean_name(s):
     return re.sub(r"\s+", "", s)
 
 
-_PREFIX_RE = re.compile(r"^(?:其中：|加：|减：|[一二三四五六七八九十]+、|\d+、|\d+[．.])")
+_PREFIX_RE = re.compile(
+    r"^(?:其中：|加：|减：|[一二三四五六七八九十]+、|\d+、|\d+[．.]|"
+    r"[（(][一二三四五六七八九十]+[）)]|[（(]\d+[）)])")
 
 
 def load_items():

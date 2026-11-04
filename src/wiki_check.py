@@ -5,6 +5,7 @@
 """
 import re
 
+from . import anchor_match as am
 from . import config, wiki
 from .ingest import load_manifest
 from .pdf_extract import load_cached, raw_file_index
@@ -78,6 +79,47 @@ def files_info():
     return info
 
 
+def file_paths():
+    paths = {f["file"]: config.ROOT / f["path"] for f in load_manifest()["files"]}
+    for name, path in raw_file_index().items():
+        paths.setdefault(name, path)
+    return paths
+
+
+def _number_anchor_problems(name, body, info, unit_cache):
+    """带数字的知识行，数字必须真在所挂单元的原文里；挂错页直接报出来。"""
+    problems = []
+    paths = file_paths()
+    for ln in body.splitlines():
+        anchors = wiki.ANCHOR_RE.findall(ln)
+        if not anchors or re.search(r"[（(]\s*测算\s*[:：]", ln):
+            continue
+        # 指标行由 fin_calc 按已带锚点的科目计算，锚点指向计算所用原始页，结果数字不必在原文出现。
+        # 观点行是判断句，句中的比率、差值、增速多为按锚点页原始数据计算所得，同样不逐字出现；
+        # 观点行仍须带锚点（由 _line_format_problems 把关），锚点页只需存在且序号合法。
+        if ln.lstrip("- ").startswith(("【指标】", "【观点】", "【个人观点】")):
+            continue
+        terms = am.line_terms(ln)
+        if not terms:
+            continue
+        for f, loc in anchors:
+            fi = info.get(f)
+            if not fi:
+                continue
+            if f not in unit_cache:
+                p = paths.get(f)
+                unit_cache[f] = load_cached(p) if p else None
+            cached = unit_cache[f]
+            if not cached:
+                continue
+            unit = next((u for u in cached["units"] if u["n"] == wiki.loc_num(loc)), None)
+            if unit is None or any(am.unit_has_term(unit.get("text") or "", t) for t in terms):
+                continue
+            nums = "、".join(n for n, _u in terms[:3])
+            problems.append(f"{name}: 锚点 {f}#{loc} 的原文里找不到数字（{nums}）")
+    return problems
+
+
 def _expected_type(path):
     try:
         parts = path.resolve().relative_to(config.WIKI_DIR.resolve()).parts
@@ -87,7 +129,7 @@ def _expected_type(path):
 
 
 def content_problems(name, meta, body, expected_type=None, info=None, titles=None,
-                     check_wikilinks=True):
+                     check_wikilinks=True, unit_cache=None):
     """对单页内容跑全部单页校验。path 未知时用 name 标识，expected_type 需显式给。
 
     程序批量写入时同一批页面可能互相引用、后写的页尚不存在，可按需跳过 wikilink 存在性检查，
@@ -110,6 +152,7 @@ def content_problems(name, meta, body, expected_type=None, info=None, titles=Non
             problems.append(f"{name}: 锚点 {f}#{loc} 单元类型不对（应为{'段落' if fi[0] == 'para' else '页'}）")
         elif not 1 <= wiki.loc_num(loc) <= fi[1]:
             problems.append(f"{name}: 锚点 {f}#{loc} 序号越界（该文件共 {fi[1]} 单元）")
+    problems.extend(_number_anchor_problems(name, body, info, unit_cache if unit_cache is not None else {}))
     if check_wikilinks:
         if titles is None:
             titles = {str(p["meta"].get("title") or p["slug"]) for p in wiki.load_pages()}

@@ -3,7 +3,7 @@ import re
 import threading
 from pathlib import Path
 
-from . import config, llm, wiki
+from . import anchor_match, config, llm, wiki
 from .classify import sha256_of, sanitize
 from .pdf_extract import SUPPORTED_SUFFIXES, extract_to_store, unit_kind_of
 
@@ -17,6 +17,7 @@ COMPILE_PROMPT = """你是行业知识编辑，把一份材料的逐单元文本
 - 每条知识一句话，句尾必须带锚点 {ANCHOR_EXAMPLE}
 - 保留原文关键数字（金额、增速、比率、评级、目标价等），不改口径
 - 营销表述、免责声明、分析师介绍一律丢弃
+- 材料的检索词、来源地址、取数时点、引用提示等元信息不是知识，不写成条目；材料明确说没有的数据，也不写「未给出」条目
 - 主题划分：公司给 type=company，行业给 type=industry，估值方法/政策术语等给 type=concept
 - 主题名与别名用中文规范名（英文材料也译成中文通用名；证券代码等专有缩写可保留英文）
 - 分节只能用这些节名——公司/行业页：公司概况、行业格局、经营与财务、盈利预测、估值、风险提示、其他；概念页：定义与口径、方法要点、政策背景、应用示例、其他
@@ -111,13 +112,24 @@ def _safe_type(t):
     return t if t in ("company", "industry", "concept") else "concept"
 
 
-def _valid_lines(lines, fname, unit_kind, count):
-    # 锚点校验：每条必须有锚点且全部指向本文件、单元类型与序号范围正确，违规行丢弃
+# 快照的来源、检索词、取数时点、引用提示是材料元信息，不是知识，编译时直接丢弃
+_META_LINE_RE = re.compile(
+    r"材料检索词|检索日为|检索词[：:]|取数时点|数据来源标注|材料取数|"
+    r"摘录正文(?:未|没有)|正文为网页摘录|引用前请点原网址|本快照由|"
+    r"未给出.{0,20}(?:数值|数据)|未提供.{0,20}(?:数值|数据)"
+)
+
+
+def _valid_lines(lines, fname, unit_kind, count, units=None):
+    # 锚点校验：每条必须有锚点且全部指向本文件、单元类型与序号范围正确；数字还要
+    # 真出现在所挂单元里，挂错页的行先按数字回找正确单元，找不到才丢弃。
     keep, dropped = [], 0
+    texts = [(u.get("n"), u.get("text") or "") for u in (units or [])]
+    prefix = "para" if unit_kind == "para" else "p"
     for ln in lines:
         ln = str(ln).strip()
         ln = ln.removeprefix("- ").strip()
-        if not ln:
+        if not ln or _META_LINE_RE.search(ln):
             continue
         found = wiki.ANCHOR_RE.findall(ln)
         ok = bool(found) and all(
@@ -127,6 +139,18 @@ def _valid_lines(lines, fname, unit_kind, count):
         if not ok:
             dropped += 1
             continue
+        if texts and not re.search(r"[（(]\s*测算\s*[:：]", ln):
+            terms = anchor_match.line_terms(ln)
+            if terms:
+                current = "\n".join(t for n, t in texts
+                                    if n in {wiki.loc_num(loc) for f, loc in found if f == fname})
+                if not anchor_match.unit_covers_terms(current, terms):
+                    best = anchor_match.best_units_for_terms(units, terms, hint_text=ln)
+                    if not best:
+                        dropped += 1
+                        continue
+                    ln = wiki.ANCHOR_RE.sub("", ln).rstrip()
+                    ln += "".join(f"[[{fname}#{prefix}{n}]]" for n in best)
         if ln not in keep:
             keep.append(ln)
     return keep, dropped
@@ -190,7 +214,7 @@ def compile_file(path, units, unit_kind, focus=None):
             ex["focus_hits"].extend(str(x).strip() for x in (t.get("focus_hits") or []) if str(x).strip())
             for s, lines in (t.get("sections") or {}).items():
                 s = str(s).strip() or "其他"
-                keep, dropped = _valid_lines(lines, fname, unit_kind, len(units))
+                keep, dropped = _valid_lines(lines, fname, unit_kind, len(units), units=units)
                 total_dropped += dropped
                 bucket = ex["sections"].setdefault(s, [])
                 for ln in keep:
@@ -408,8 +432,16 @@ def ingest_one(path, manifest, focus=None, targets=None):
             known.add(f)
     focus = focus or [t["item"] for t in targets]
     sha = sha256_of(path)
-    if any(f["sha256"] == sha for f in manifest["files"]):
-        print("  已摄入过（SHA256 一致），跳过")
+    dup_entry = next((f for f in manifest["files"] if f["sha256"] == sha), None)
+    if dup_entry:
+        rel = path.relative_to(config.ROOT).as_posix()
+        same_file = dup_entry.get("path") == rel or (
+            not dup_entry.get("path") and dup_entry.get("file") == path.name)
+        if same_file:
+            print("  已摄入过（SHA256 一致），跳过")
+        else:
+            print(f"  重复件（与 {dup_entry.get('path') or dup_entry['file']} 相同），删除")
+            path.unlink(missing_ok=True)
         return None
     dup_name = next((f for f in manifest["files"] if f["file"] == path.name), None)
     if dup_name:
@@ -505,10 +537,41 @@ def finish(manifest, results):
     return problems
 
 
+def dedupe_raw(manifest):
+    """删除 raw 正式目录里与已摄入文件 SHA256 相同的副本，返回 [(副本, 保留件)]。
+
+    历史上下载层每次重下都会用 -2/-3 或换目录再落一份，摄入层只跳过不清理。
+    这里把清理接到每次摄入前，和归名/下载时的即时去重形成两道闸。
+    """
+    by_path = {f.get("path"): f for f in manifest["files"] if f.get("path")}
+    by_sha = {f["sha256"]: f for f in manifest["files"] if f.get("sha256")}
+    removed = []
+    for p in iter_raw_files():
+        rel = p.relative_to(config.ROOT).as_posix()
+        if rel in by_path:
+            continue
+        try:
+            same = by_sha.get(sha256_of(p))
+        except OSError:
+            continue
+        if same is None:
+            continue
+        keep = same.get("path") or same.get("file") or ""
+        if keep == rel:
+            continue
+        p.unlink(missing_ok=True)
+        removed.append((rel, keep))
+    return removed
+
+
 def run_all(paths, progress=None, focus=None):
     manifest = load_manifest()
+    removed = dedupe_raw(manifest)
+    if removed:
+        print(f"[去重] 删除 {len(removed)} 个与已摄入文件同内容的副本")
+        wiki.append_log("dedupe", "；".join(f"{d} ← {k}" for d, k in removed))
     results = []
-    paths = list(paths)
+    paths = [p for p in paths if p.exists()]
     focus = focus or []
     if focus:
         print(f"[关注点] {len(focus)} 项：{'、'.join(focus)}")

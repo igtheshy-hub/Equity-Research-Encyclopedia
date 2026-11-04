@@ -62,8 +62,9 @@ def render(spec, number=1):
     series = [{"name": s["name"], "values": (s["values"] + [None] * n)[:n]} for s in series]
 
     kind = spec.get("kind") if spec.get("kind") in ("line", "bar", "hbar", "pie") else "bar"
-    fig, ax = plt.subplots(figsize=(8.2, 4.4), dpi=160)
-    title = str(spec.get("title") or f"附图{number}")
+    fig, ax = plt.subplots(figsize=(6.6, 3.6), dpi=200)
+    title = re.sub(r"^(?:附?图)\s*\d+\s*[·.、:：-]?\s*", "",
+                   str(spec.get("title") or "").strip()) or f"附图{number}"
     unit = str(spec.get("unit") or "")
 
     if kind == "pie":

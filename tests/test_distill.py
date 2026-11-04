@@ -99,6 +99,22 @@ def test_repair_hallucinated_anchor():
     check("提案为空", p is None, True)
 
 
+def test_multi_company_match_creates_concept_page():
+    print("标题命中多家公司页时新建对比概念页：")
+    fake = FakeLLM(
+        {"new_knowledge": True, "topic": "比亚迪与长安汽车盈利能力对比", "type": "company",
+         "summary": "两家公司盈利能力对比", "lines": [GOOD_LINE]},
+    )
+    setup(fake)
+    ask_mod.wiki.load_pages = lambda: [
+        {"type": "company", "slug": "比亚迪", "meta": {"title": "比亚迪"}},
+        {"type": "company", "slug": "长安汽车", "meta": {"title": "长安汽车"}},
+    ]
+    p = ask_mod._propose_distill("比亚迪和长安汽车盈利能力对比", ANSWER)
+    check("不并入单一公司页", p["action"] if p else None, "create")
+    check("改新建概念页", p["type"] if p else None, "concept")
+
+
 def test_not_new_knowledge():
     print("非新知识直接空提案：")
     fake = FakeLLM({"new_knowledge": False, "topic": "", "type": "concept", "summary": "", "lines": []})
@@ -121,7 +137,7 @@ def test_answer_without_anchors():
 if __name__ == "__main__":
     for fn in (test_repair_round, test_lines_already_anchored,
                test_repair_hallucinated_anchor, test_not_new_knowledge,
-               test_answer_without_anchors):
+               test_answer_without_anchors, test_multi_company_match_creates_concept_page):
         try:
             fn()
         finally:

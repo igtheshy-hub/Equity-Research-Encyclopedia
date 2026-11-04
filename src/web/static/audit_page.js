@@ -23,7 +23,7 @@ function renderSummary(d) {
   box.innerHTML = `
     <div class="meta-card">
       <div>最新报告：<a href="/outputs/${encodeURIComponent(d.report)}" target="_blank" rel="noopener">${App.escapeHtml(d.report)}</a></div>
-      <div>矛盾 ${c["矛盾"] || 0} · 时点差异 ${c["时点差异"] || 0} · 过期 ${c["过期"] || 0} · 未摄入 ${c["未摄入文件"] || 0} 文件 / ${c["内容缺口页"] || 0} 页缺口 · 孤立 ${c["孤立"] || 0}</div>
+      <div>矛盾 ${c["矛盾"] || 0} · 时点差异 ${c["时点差异"] || 0} · 过期 ${c["过期"] || 0} · 未摄入 ${c["未摄入文件"] || 0} 文件 · 重复件 ${c["重复文件"] || 0} · 同名变更 ${c["同名变更"] || 0} · ${c["内容缺口页"] || 0} 页缺口 · 孤立 ${c["孤立"] || 0}</div>
       <p><button class="ghost" id="fix-open">按最新报告修改 wiki</button></p>
     </div>`;
   document.getElementById("fix-open").addEventListener("click", () => openWizard(window.__latestAudit));
@@ -101,6 +101,22 @@ function openWizard(d) {
     missing.forEach((p) => {
       parts.push(`<div class="fix-item"><label class="fix-check" data-kind="ingest" data-path="${App.escapeHtml(p)}">
         <input type="checkbox" checked>${App.escapeHtml(p)}</label></div>`);
+    });
+  }
+
+  const duplicates = d.duplicate_files || [];
+  if (duplicates.length) {
+    parts.push(`<h3>重复件（SHA256 与已摄入文件一致，不入库，可人工清理）</h3>`);
+    duplicates.forEach((x) => {
+      parts.push(`<div class="fix-item"><div class="fi-title">${App.escapeHtml(x.path)} ← ${App.escapeHtml(x.duplicate_of)}</div></div>`);
+    });
+  }
+
+  const changed = d.changed_files || [];
+  if (changed.length) {
+    parts.push(`<h3>同名但内容已变化（需确认是否重新摄入）</h3>`);
+    changed.forEach((x) => {
+      parts.push(`<div class="fix-item"><div class="fi-title">${App.escapeHtml(x.path)}</div></div>`);
     });
   }
 

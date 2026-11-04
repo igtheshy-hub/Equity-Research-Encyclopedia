@@ -84,13 +84,14 @@ def prettify(docx_path):
 
     doc = Document(docx_path)
 
-    # 图片等比缩进版心：matplotlib 原始像素宽常超 A4 版心，直接插入会撑破页面
+    # 图片等比缩到版心内，并限制最大宽高：只按版心宽度缩，图仍会占满整页显得过大
     sec = doc.sections[0]
     avail = sec.page_width - sec.left_margin - sec.right_margin
+    max_w, max_h = min(avail, Cm(12.0)), Cm(8.0)
     for shape in doc.inline_shapes:
-        if shape.width > avail:
-            ratio = avail / shape.width
-            shape.width = avail
+        ratio = min(max_w / shape.width, max_h / shape.height, 1.0)
+        if ratio < 1:
+            shape.width = int(shape.width * ratio)
             shape.height = int(shape.height * ratio)
 
     def cell_bg(cell, color):
@@ -138,8 +139,9 @@ def prettify(docx_path):
         # 注释表与来源说明顶格
         if re.match(r"^\[\d+\]", txt) or txt.startswith("数据来源"):
             p.paragraph_format.first_line_indent = Cm(0)
-        # 题注居中加粗
-        if "caption" in (p.style.name or "").lower() and txt:
+        # 题注居中加粗：pandoc 把 **表N…** 排成普通段落，不能只认 caption 样式
+        if txt and (re.match(r"^(?:表|附图)\d+", txt)
+                    or "caption" in (p.style.name or "").lower()):
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             for r in p.runs:
                 r.font.bold = True

@@ -61,6 +61,21 @@ def main():
     got = problems(BASE_META, body, INFO, TITLES)
     check("观点行缺锚点命中", any("【观点】行缺锚点" in x for x in got), True)
 
+    print("== 数字锚点 ==")
+    orig_paths, orig_cached = wiki_check.file_paths, wiki_check.load_cached
+    wiki_check.file_paths = lambda: {"x.pdf": ROOT / "x.pdf"}
+    wiki_check.load_cached = lambda _p: {
+        "unit": "page", "count": 10,
+        "units": [{"n": 5, "text": "营业收入 100 亿元"}],
+    }
+    try:
+        got = problems(BASE_META, "- 营收 200 亿元 [[x.pdf#p5]]", INFO, TITLES)
+        check("数字不在锚点页命中", any("找不到数字" in x for x in got), True)
+        got = problems(BASE_META, "- 【观点】2024FY 净利率 2.48%，高于去年 [[x.pdf#p5]]", INFO, TITLES)
+        check("观点行计算数字不误报", any("找不到数字" in x for x in got), False)
+    finally:
+        wiki_check.file_paths, wiki_check.load_cached = orig_paths, orig_cached
+
     print("== 锚点与 wikilink ==")
     got = problems(BASE_META, "- 一句判断 [[y.pdf#p1]]", INFO, TITLES)
     check("锚点文件不存在命中", any("raw 中不存在" in x for x in got), True)

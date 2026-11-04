@@ -6,8 +6,9 @@
 """
 import json
 import re
+import unicodedata
 
-from . import config, fin_calc, llm, wiki
+from . import anchor_match, config, fin_calc, llm, wiki
 from .classify import sanitize
 from .ingest import (_apply_create, _apply_merge, _dir_type, _write_source_page,
                      normalize_targets)
@@ -236,7 +237,110 @@ def _transcribe_batch(path, units, batch, with_tables=True):
     return rows
 
 
+_SCOPE_HEAD_RE = re.compile(
+    r"(合并|母公司)\s*(?:资产负债表|利润表|现金流量表|所有者权益变动表|股东权益变动表)")
+
+
+def _scope_marks(text):
+    return [(m.start(), "母公司" if m.group(1) == "母公司" else "合并")
+            for m in _SCOPE_HEAD_RE.finditer(text)]
+
+
+def _item_offsets(text, item, value, unit):
+    """科目名在页内的出现位置；数值能在该行找到的位置优先，用于判断它属于哪张表。"""
+    head = re.sub(r"[（(].*?[）)]", "", str(item or ""))
+    head = re.sub(r"[\s:：]", "", head)[:8]
+    if len(head) < 2:
+        return []
+    pat = r"\s*".join(re.escape(ch) for ch in head)
+    num = fin_calc.parse_value(value)
+    hits = []
+    for m in re.finditer(pat, text):
+        start = text.rfind("\n", 0, m.start()) + 1
+        end = text.find("\n", m.end())
+        snippet = text[start:end if end >= 0 else len(text)]
+        ok = num is not None and _value_on_page(snippet, item, num, unit)
+        hits.append((m.start(), ok))
+    return [pos for pos, ok in hits if ok] or [pos for pos, _ in hits]
+
+
+def _mechanical_scopes(units, rows):
+    """按页内「合并/母公司 × 报表名」标题的位置给每行定归属。
+
+    季报常把合并表、母公司表甚至上年比较表排在同一页，只按页码归属会把母公司数
+    抄进合并口径，勾稽因此不平。标题之前的行归前一张表，标题之后归新表。"""
+    texts = {u["n"]: unicodedata.normalize("NFKC", u["text"]) for u in units}
+    marks = {n: _scope_marks(t) for n, t in texts.items()}
+    page_start, cur = {}, None
+    for n in sorted(texts):
+        page_start[n] = cur
+        if marks[n]:
+            cur = marks[n][-1][1]
+    scopes = []
+    for r in rows:
+        n = r["page"]
+        scope = page_start.get(n) or r["scope"]
+        for off in _item_offsets(texts.get(n, ""), r["item"], r["value"], r["unit"]):
+            before = [s for pos, s in marks.get(n, []) if pos <= off]
+            if before:
+                scope = before[-1]
+                break
+        scopes.append(scope)
+    return scopes
+
+
+def _transcribe_pages(path, units, batch, with_tables):
+    """一批页抄写失败（多为输出超过 max_tokens 被截断）时拆小重抄，单页仍失败向上抛。"""
+    try:
+        return _transcribe_batch(path, units, batch, with_tables)
+    except llm.LLMParseError:
+        if len(batch) <= 1:
+            raise
+        mid = len(batch) // 2
+        print(f"  [分批] 第{batch[0]}-{batch[-1]}页抄录失败，拆成 {len(batch[:mid])}+{len(batch[mid:])} 页重抄")
+        return (_transcribe_pages(path, units, batch[:mid], with_tables)
+                + _transcribe_pages(path, units, batch[mid:], with_tables))
+
+
+_HEAD_LINE_RE = re.compile(
+    r"^(?:[（(][一二三四五六七八九十\d]+[）)]|[一二三四五六七八九十]+、|\d+[.、])?\s*"
+    r"(合并|母公司)\s*(资产负债表|利润表|现金流量表|所有者权益变动表|股东权益变动表)$")
+_SEC_FOR_STMT = {"资产负债表": "bs", "利润表": "is", "现金流量表": "cf",
+                 "所有者权益变动表": "eq", "股东权益变动表": "eq"}
+
+
+def _ensure_header_pages(units, meta):
+    """报表首页常与「财务报表」「审计意见」同页，定位阶段容易漏掉，导致流动资产、
+    收入前几行整段缺失。凡是页里有独立成行的「合并/母公司 × 报表名」标题、又不属于
+    任何已定页的，补进对应报表页集合。"""
+    secs = meta["sections"]
+    have = set()
+    for k in ("key", "bs", "is", "cf", "eq", "cf_supp",
+              "parent_bs", "parent_is", "parent_cf", "parent_eq"):
+        have.update(secs.get(k) or [])
+    added = []
+    for u in units:
+        if u["n"] in have:
+            continue
+        for line in unicodedata.normalize("NFKC", u["text"]).splitlines():
+            m = _HEAD_LINE_RE.match(line.strip())
+            if not m:
+                continue
+            key = _SEC_FOR_STMT.get(m.group(2))
+            if not key:
+                continue
+            sec = ("parent_" if m.group(1) == "母公司" else "") + key
+            secs.setdefault(sec, []).append(u["n"])
+            secs[sec].sort()
+            have.add(u["n"])
+            added.append((u["n"], sec))
+            print(f"  [定位] 补入第{u['n']}页（{sec} 表头漏定位）")
+            break
+    return added
+
+
 def _transcribe(path, units, meta):
+    _ensure_header_pages(units, meta)
     # 权益变动表单独成批：pdfplumber 对该表只能抽出无行标的碎列，表格区是噪声
     eq_pages = _pages_from(meta["sections"], "eq", "parent_eq")
     want = [n for n in _pages_from(meta["sections"], "key", "bs", "is", "cf", "cf_supp",
@@ -244,17 +348,13 @@ def _transcribe(path, units, meta):
             if n not in eq_pages]
     batches = [(want[i:i + BATCH_PAGES], True) for i in range(0, len(want), BATCH_PAGES)]
     batches += [(eq_pages[i:i + BATCH_PAGES], False) for i in range(0, len(eq_pages), BATCH_PAGES)]
-    cons_pages = set(_pages_from(meta["sections"], "key", "bs", "is", "cf", "eq", "cf_supp"))
-    parent_pages = set(_pages_from(meta["sections"], "parent_bs", "parent_is", "parent_cf", "parent_eq"))
     rows = []
     for batch, with_tables in batches:
-        rows.extend(_transcribe_batch(path, units, batch, with_tables))
-    # scope 按页归属机械覆盖：LLM 常把母公司表判成合并（表头相似），页码归属是硬事实
-    for r in rows:
-        if r["page"] in parent_pages:
-            r["scope"] = "母公司"
-        elif r["page"] in cons_pages:
-            r["scope"] = "合并"
+        rows.extend(_transcribe_pages(path, units, batch, with_tables))
+    # scope 按页内表头位置机械覆盖：LLM 常把母公司表判成合并（表头相似），
+    # 而定位阶段又可能漏掉母公司页，页码归属不如标题位置可靠
+    for r, scope in zip(rows, _mechanical_scopes(units, rows)):
+        r["scope"] = scope
     return rows
 
 
@@ -513,9 +613,51 @@ def _eq_fallback(path, units, meta):
 _STMT_CLASS = {"资产负债表": "BS", "利润表": "IS", "现金流量表": "CF", "所有者权益变动表": "EQ"}
 
 
-def _normalize_rows(path, rows, global_unit=None):
-    """归一科目名与单位，返回 (合并 items, 母公司 items, 丢弃数)。items: {名: {v, a}}
-    global_unit 为报表声明单位（机械解析），四表行一律以它为准——LLM 逐页填单位易整体看错。"""
+def _row_snippets(text, item):
+    """按科目名截取所有出现处的所在行；科目名换行断开时把下一行也带上。"""
+    text = unicodedata.normalize("NFKC", text)
+    head = re.sub(r"[（(].*?[）)]", "", unicodedata.normalize("NFKC", str(item or "")))
+    head = re.sub(r"[\s:：]", "", head)[:8]
+    if len(head) < 2:
+        return []
+    out = []
+    for m in re.finditer(r"\s*".join(re.escape(ch) for ch in head), text):
+        start = text.rfind("\n", 0, m.start()) + 1
+        end = text.find("\n", m.end())
+        snippet = text[start:end if end >= 0 else len(text)]
+        # 行首序号「1.」「（1）」不算金额；只有这种数字时把下一行带上，避免漏掉换行后的数值
+        if not re.search(r"\d[\d,]*\.\d+|\d{2,}", snippet) and end >= 0:
+            nxt = text.find("\n", end + 1)
+            snippet = text[start:nxt if nxt >= 0 else len(text)]
+        out.append(snippet)
+    return out
+
+
+def _value_on_page(text, item, value, unit):
+    """抄录值必须真出现在所标页码的原文里；负数按绝对值再试，财报空值列用「-」记 0。"""
+    if not text:
+        return False
+    cands = [(str(value), unit)]
+    if value < 0:
+        cands.append((str(abs(value)), unit))
+    snippets = _row_snippets(text, item) or [text]
+    if any(anchor_match.unit_has_term(s, t) for s in snippets for t in cands):
+        return True
+    if abs(value) < 10 and value == int(value):
+        # number_terms 会把无单位的一位数当噪声滤掉，小额行在行内按严格边界单独认一次
+        n = str(abs(int(value)))
+        pat = (r"[（(]\s*" + n + r"\s*[）)]" if value < 0
+               else r"(?<![\d.])" + n + r"(?![\d.])")
+        if any(re.search(pat, s) for s in snippets):
+            return True
+    return value == 0 and any(
+        re.search(r"(?<![\d.])[-—‐](?![\d.])", s) for s in snippets)
+
+
+def _normalize_rows(path, rows, global_unit=None, page_texts=None):
+    """归一科目名与单位，返回 (合并 items, 母公司 items, 丢弃数)。items: {名: {v, a, unit}}
+    global_unit 为报表声明单位（机械解析），四表行一律以它为准——LLM 逐页填单位易整体看错。
+    page_texts 给出页码→原文时，抄录值不在该页原文里的行直接丢弃，不把看错的数字写进库。"""
     cons, parent, dropped = {}, {}, 0
     items_dict = fin_calc.load_items()
     for r in rows:
@@ -529,6 +671,11 @@ def _normalize_rows(path, rows, global_unit=None):
         if raw_v is None or not r["item"]:
             dropped += 1
             continue
+        if page_texts is not None and not r.get("_fallback") \
+                and not _value_on_page(page_texts.get(r["page"], ""), r["item"], raw_v, unit):
+            dropped += 1
+            print(f"  [核对] 丢弃第{r['page']}页 {r['item']} = {raw_v:g} {unit}：该页原文找不到这个数")
+            continue
         name, listed = fin_calc.normalize_item(r["item"])
         v = fin_calc.to_yuan(raw_v, unit)
         if v is None:  # 百分数等非金额（主要会计数据披露值）保留原值
@@ -537,17 +684,25 @@ def _normalize_rows(path, rows, global_unit=None):
             else:
                 dropped += 1
                 continue
+        display_unit = "%" if "%" in unit or "％" in unit else ("元/股" if "股" in unit else "元")
         bucket = parent if r["scope"] == "母公司" else cons
         cls = (items_dict.get(name) or {}).get("s")
         cls_ok = not cls or _STMT_CLASS.get(r["statement"]) == cls
         entry = {"v": v, "a": anchor_of(path, r["page"]), "statement": r["statement"], "listed": listed,
-                 "_cls_ok": cls_ok}
+                 "unit": display_unit, "_cls_ok": cls_ok}
         if name in bucket:
             old = bucket[name]
             if old.get("_cls_ok") is False and cls_ok:
                 bucket[name] = entry  # 报表归属与字典一致的行优先，避免现金流量表调整行冒充资产负债表科目
                 continue
             if old.get("_cls_ok") and not cls_ok:
+                continue
+            # 三季报「主要会计数据」同时列本报告期与年初至报告期末，同名的正表行是累计口径，优先保留
+            primary = {"资产负债表", "利润表", "现金流量表"}
+            if r.get("statement") in primary and old.get("statement") not in primary:
+                bucket[name] = entry
+                continue
+            if old.get("statement") in primary and r.get("statement") not in primary:
                 continue
             if old["v"] and v and not 0.1 <= abs(v / old["v"]) <= 10:
                 print(f"  [警告] 同名科目量级冲突：{name} 已存 {old['v']:,.0f}，新值 {v:,.0f}（第{r['page']}页），保留先入值")
@@ -599,10 +754,23 @@ def _drop_stale_lines(body, title, page_path, pk, file_name):
     return wiki.render_page(title, sections, _dir_type(page_path)), dropped
 
 
+def _fmt_value(v):
+    if abs(v - round(v)) < 1e-9:
+        return f"{v:,.0f}"
+    # 大额金额只留 2 位：千元换算成元后 51,203,109,216.36 会带出 .360001 的浮点尾数；
+    # 小额（三季报每股收益常给 3 位小数，如 0.493）按原文保留最多 6 位
+    return (f"{v:,.2f}" if abs(v) >= 100 else f"{v:,.6f}").rstrip("0").rstrip(".")
+
+
 def _render_lines(path, pk, cons, ind, anc, quotes):
     data_lines = []
     for name, spec in sorted(cons.items(), key=lambda kv: STATEMENT_ORDER.get(kv[1].get("statement"), 9)):
-        data_lines.append(f"【数据】{pk} 合并 {name} = {spec['v']:,.0f} 元 {spec['a']}")
+        unit = spec.get("unit") or "元"
+        if unit == "%":
+            body = f"{_fmt_value(spec['v'])}%"
+        else:
+            body = f"{_fmt_value(spec['v'])} {unit}"
+        data_lines.append(f"【数据】{pk} 合并 {name} = {body} {spec['a']}")
     ind_lines = []
     for name, v in ind.items():
         if any(mark in name for mark in ABS_INDICATOR):
@@ -615,8 +783,13 @@ def _render_lines(path, pk, cons, ind, anc, quotes):
     return data_lines, ind_lines, quote_lines
 
 
+def _code6(s):
+    m = re.search(r"(?<!\d)(\d{6})(?!\d)", str(s or ""))
+    return m.group(1) if m else ""
+
+
 def _resolve_company_page(company, code):
-    """精确/别名/包含三级匹配现有公司页。返回 page dict 或 None。"""
+    """精确/股票代码/别名/包含四级匹配现有公司页。返回 page dict 或 None。"""
     pages = wiki.load_pages()
     keys = {_norm_key(company)}
     if code:
@@ -628,6 +801,16 @@ def _resolve_company_page(company, code):
         meta_keys.update(_norm_key(a) for a in (p["meta"].get("aliases") or []))
         if keys & meta_keys:
             return p
+    # 财报里给的是法定全称（浙江三花智能控制股份有限公司）与裸代码（002050），
+    # 已有页多用简称与带市场后缀的别名（002050.SZ），按 6 位代码认同一家公司
+    code6 = _code6(code)
+    if code6:
+        for p in pages:
+            if p["type"] != "company":
+                continue
+            if any(_code6(a) == code6 for a in
+                   [p["meta"].get("title")] + list(p["meta"].get("aliases") or [])):
+                return p
     for p in pages:
         if p["type"] != "company":
             continue
@@ -670,14 +853,15 @@ def ingest_filing(path, units, unit_kind, manifest, sha, targets=None):
                                             and r["scope"] == "合并" and r["item"] in fb_items)]
             print(f"  [权益表] 机械兜底 {len(fb)} 行（覆盖 LLM 抄列）")
             rows.extend(fb)
-    cons, parent, dropped = _normalize_rows(path, rows, global_unit)
+    page_texts = {u["n"]: u["text"] for u in units}
+    cons, parent, dropped = _normalize_rows(path, rows, global_unit, page_texts)
     want = ("资产总计", "负债合计", "所有者权益合计", "营业收入", "净利润")
     missing = [n for n in want if n not in cons]
     key_pages = meta["sections"].get("key") or []
     if missing and key_pages:
         print(f"  [补录] 主要会计数据缺 {'、'.join(missing)}，重抄关键页")
         extra_cons, extra_parent, _ = _normalize_rows(
-            path, _transcribe_batch(path, units, key_pages, True), global_unit)
+            path, _transcribe_batch(path, units, key_pages, True), global_unit, page_texts)
         for name, spec in extra_cons.items():
             cons.setdefault(name, spec)
         for name, spec in extra_parent.items():

@@ -9,8 +9,9 @@ import shutil
 import threading
 import uuid
 
+from . import anchor_match as am
 from . import ask as ask_mod
-from . import charts, config, fetcher, ingest as ingest_mod, llm, tasks, wiki
+from . import charts, config, fetcher, ingest as ingest_mod, llm, source_priority, tasks, wiki, wiki_check
 from .classify import sanitize
 from .pdf_extract import load_cached
 
@@ -648,17 +649,44 @@ def _material_base(job):
     return sel, have
 
 
+def _material_gap_pages(job, have, cap=4):
+    """缺口取数刚落库的文件，其 wiki 页必须进成文上下文，否则取到的数据用不上。"""
+    files = set()
+    for g in job.get("gaps") or []:
+        if g.get("status") == "done":
+            files.update(str(x) for x in (g.get("materials") or []))
+    if not files:
+        return []
+    out = []
+    for p in wiki.load_pages():
+        if len(out) >= cap:
+            break
+        if p["slug"] in have:
+            continue
+        if files & set(p["meta"].get("sources") or []):
+            out.append(p)
+            have.add(p["slug"])
+    return out
+
+
+def _pages_with_legend(sel):
+    manifest = ingest_mod.load_manifest()
+    chunks = []
+    for p in sel:
+        head = f"### {p['meta'].get('title', p['slug'])}（slug: {p['slug']}，类型 {p['type']}）"
+        legend = source_priority.page_legend(p, manifest)
+        chunks.append("\n".join(x for x in (head, legend, p["body"]) if x))
+    return "\n\n".join(chunks)
+
+
 def _material_industry(job):
     """行业研报取料人：行业页与概念页优先，公司页只留少量做竞争格局对照。"""
-    sel, _have = _material_base(job)
+    sel, have = _material_base(job)
     order = {"industry": 0, "concept": 1, "company": 2}
     sel.sort(key=lambda p: order.get(p["type"], 3))
-    sel = sel[:10]
-    text = "\n\n".join(
-        f"### {p['meta'].get('title', p['slug'])}（slug: {p['slug']}，类型 {p['type']}）\n{p['body']}"
-        for p in sel
-    )
-    return sel, text, ask_mod._allowed_from_pages(sel)
+    extra = _material_gap_pages(job, have)
+    sel = (extra + sel)[:10]
+    return sel, _pages_with_legend(sel), ask_mod._allowed_from_pages(sel)
 
 
 def _material_company(job):
@@ -682,12 +710,10 @@ def _material_company(job):
         extra = [p for p in wiki.load_pages()
                  if p["slug"] not in have and rel in (p["meta"].get("sources") or [])][:2]
         sel = head + extra + sel[1:]
-    sel = sel[:10]
-    text = "\n\n".join(
-        f"### {p['meta'].get('title', p['slug'])}（slug: {p['slug']}，类型 {p['type']}）\n{p['body']}"
-        for p in sel
-    )
-    return sel, text, ask_mod._allowed_from_pages(sel)
+        have.update(p["slug"] for p in extra)
+    gap_pages = _material_gap_pages(job, have)
+    sel = (sel[:1] + gap_pages + sel[1:])[:10]
+    return sel, _pages_with_legend(sel), ask_mod._allowed_from_pages(sel)
 
 
 def _material(job):
@@ -716,9 +742,9 @@ OUTLINE_PROMPT = """你是中文卖方行业研报的主笔，现在只定大纲
 
 要求：
 1. 章节顺序固定按行业分析的展开逻辑，最多 {MAXS} 节：产业链（上游、中游、下游与价值分布）→ 生产端（产能、产量、成本与供给格局）→ 需求端（需求结构、下游景气、渗透率）→ 市场规模（量价与规模测算）→ 竞争格局（份额、集中度、玩家分层）→ 增长驱动（政策、技术、渗透率、出口等）→ 盈利与估值 → 投资要点 → 风险提示。产业链必须放在第一节，投资要点必须放在行业分析之后，不得用投资要点开篇；缺料的章节可合并，但产业链、生产端、需求端、市场规模、竞争格局、增长驱动六节必须保留
-2. 每节写清：本节论点、需要的数据与表、图表位、取料页面（写 slug）
+2. 每节写清：本节论点、需要的数据与表、可画图表的建议（只写数据、图型与口径，不编号、不写图题）、取料页面（写 slug）
 3. 只用知识库页面里有的材料定结构；库里没有的数据不要在这里编，缺口由下一道程序另列
-4. 输出 markdown：第一行 "# 大纲：{TITLE}"，其后每节 "## 一、标题" 形式，节内用短横线列论点/数据/图表/取料页
+4. 输出 markdown：第一行 "# 大纲：{TITLE}"，其后每节 "## 一、标题" 形式，节内用短横线列论点/数据/图表建议/取料页
 5. 不写正文，不写套话"""
 
 GAPS_PROMPT = """你在给研报大纲列数据缺口。报告主题：{TITLE}
@@ -729,17 +755,26 @@ GAPS_PROMPT = """你在给研报大纲列数据缺口。报告主题：{TITLE}
 知识库已有页面：{PAGES}
 
 可用的免登录取数源（source / params），source 必须原样使用下面的英文 id：
-- stats_series：国家统计局，params {{"keyword": "中文指标名", "freq": "auto|月|季|年", "periods": 期数}}
+- stats_series：国家统计局，params {{"keyword": "中文指标名，多个用分号", "region": "全国或省市", "freq": "auto|月|季|年", "periods": 期数}}
 - akshare_series：AKShare 宏观序列，params {{"series": "以下之一：{SERIES}", "periods": 期数}}
-- eastmoney_reports：东财研报下载，params {{"industry": "行业", "broker": "券商可空", "limit": 份数}}
-- cninfo_announce：巨潮公告，params {{"query": "检索词", "limit": 份数}}
+- eastmoney_reports：东财研报下载，params {{"qtype": "0个股|1行业|2策略", "industry": "行业", "stock_code": "代码", "broker": "券商可空", "limit": 份数}}
+- cninfo_announce：巨潮 A 股公告（港股不覆盖），params {{"query": "检索词", "code": "A股代码可空", "category": "分类代码可空", "days": 天数, "limit": 份数}}
+- hkex_announce：港交所公告，params {{"company": "公司名", "code": "港股代码", "category": "annual|interim|quarterly|esg|results|all", "limit": 份数}}
 - annual_report：公司年报，params {{"company": "公司名", "market": "a|hk"}}
 - sample_chain：行业样板研报下载链，params {{"industry": "行业", "limit": 份数}}
+- cpca_sales：乘联会汽车销量，params {{"charttype": "1整体|2厂商|3车型|4国别|5级别|6新能源", "metric": "产量|批发|零售|出口|当月销量|累计销量|当月份额|累计份额|全部", "months": 月数}}
+- csindex_index：中证指数行情估值与权重，params {{"code": "指数代码"}}
+- pbc_stat：人民银行统计表，params {{"dataset": "货币统计概览|金融业机构资产负债统计|金融机构信贷收支统计|金融市场统计", "keyword": "表名关键词", "months": 月数}}
+- fred_series：FRED 美国宏观，params {{"series_id": "序列号", "periods": 期数}}
+- imf_series：IMF DataMapper，params {{"indicator": "指标代码", "countries": "CHN,USA", "periods": 期数}}
+- dbnomics_series：DBnomics，params {{"series": "provider/dataset/series", "periods": 期数}}
+- worldbank_series：World Bank，params {{"indicator": "指标代码", "countries": "CHN", "periods": 期数}}
+- caam_article：中汽协行业要闻文字稿，params {{"keyword": "标题关键词", "category": "行业要闻|协会动态", "limit": 篇数}}；产销数据文章正文是图片，不要用它取销量，改用 cpca_sales
 - web_search：网络检索兜底，params {{"query": "检索式", "limit": 份数}}
-先配专用源；专用源明确取不到的再用 web_search，补不了源的就用 "none"。
+先配专用源；专用源明确取不到的再用 web_search，不要直接放弃。
 
-只列大纲需要、但知识库页面里明显没有的关键数据，最多 8 条；每条必须能用上面的源取到，或写 none。
-只输出 JSON：{{"gaps": [{{"item": "缺什么数据", "why": "哪节要用", "source": "stats_series|akshare_series|eastmoney_reports|cninfo_announce|annual_report|sample_chain|web_search|none", "params": {{}}}}]}}"""
+只列大纲需要、但知识库页面里明显没有的关键数据，最多 8 条；每条都必须配上面能执行的源。
+只输出 JSON：{{"gaps": [{{"item": "缺什么数据", "why": "哪节要用", "source": "stats_series|akshare_series|eastmoney_reports|cninfo_announce|hkex_announce|annual_report|sample_chain|cpca_sales|csindex_index|pbc_stat|fred_series|imf_series|dbnomics_series|worldbank_series|caam_article|web_search", "params": {{}}}}]}}"""
 
 
 OUTLINE_PROMPT_COMPANY = """你是中文卖方公司研报的主笔，现在只定大纲，不写正文。
@@ -759,9 +794,9 @@ OUTLINE_PROMPT_COMPANY = """你是中文卖方公司研报的主笔，现在只�
 要求：
 1. 章节按上面的权威框架走，最多 {MAXS} 节。八节依次是投资摘要与评级、公司概况与历史沿革、行业空间与竞争格局、核心竞争力与护城河、经营与财务分析、盈利预测与关键假设、估值与投资建议、风险提示；缺料的节可以合并，但财务分析与估值两节必须保留
 2. 财务分析节必须以公司年报为锚，写明营收拆分、毛利率、费用率、ROE、现金流与资产负债的关键科目；年报还没入库时，大纲里照常列出这一节并标注「待补年报」
-3. 每节写清：本节论点、需要的数据与表、图表位、取料页面（写 slug）
+3. 每节写清：本节论点、需要的数据与表、可画图表的建议（只写数据、图型与口径，不编号、不写图题）、取料页面（写 slug）
 4. 只用知识库页面里有的材料定结构；库里没有的数据不要在这里编，缺口由下一道程序另列
-5. 输出 markdown：第一行 "# 大纲：{TITLE}"，其后每节 "## 一、标题" 形式，节内用短横线列论点/数据/图表/取料页
+5. 输出 markdown：第一行 "# 大纲：{TITLE}"，其后每节 "## 一、标题" 形式，节内用短横线列论点/数据/图表建议/取料页
 6. 不写正文，不写套话"""
 
 SOURCE_ALIASES = {
@@ -769,10 +804,17 @@ SOURCE_ALIASES = {
     "akshare": "akshare_series", "ak": "akshare_series",
     "eastmoney": "eastmoney_reports", "东财": "eastmoney_reports",
     "cninfo": "cninfo_announce", "巨潮": "cninfo_announce",
+    "hkex": "hkex_announce", "港交所": "hkex_announce", "披露易": "hkex_announce",
     "annual": "annual_report", "年报": "annual_report", "annual_report": "annual_report",
     "web": "web_search", "web_search": "web_search", "网络检索": "web_search",
     "sample": "sample_chain", "sample_chain": "sample_chain",
     "hibor": "hibor_ranking", "hibor_ranking": "hibor_ranking",
+    "cpca": "cpca_sales", "乘联会": "cpca_sales",
+    "csindex": "csindex_index", "中证": "csindex_index", "中证指数": "csindex_index",
+    "pbc": "pbc_stat", "人行": "pbc_stat", "央行": "pbc_stat", "人民银行": "pbc_stat",
+    "fred": "fred_series", "imf": "imf_series",
+    "dbnomics": "dbnomics_series", "worldbank": "worldbank_series",
+    "世界银行": "worldbank_series", "caam": "caam_article", "中汽协": "caam_article",
 }
 
 
@@ -861,9 +903,15 @@ def _extract_gaps(job, outline, page_titles):
         source = str(g.get("source") or "none").strip().lower()
         source = SOURCE_ALIASES.get(source, source)
         params = g.get("params") if isinstance(g.get("params"), dict) else {}
+        # 没有专用源不等于放弃：一律转网络检索，取不到再由取数环节停回缺口关卡
+        if source not in valid or source == "none":
+            source = "web_search"
+            params = {"query": item, "limit": 3}
+        elif source == "web_search" and not str(params.get("query") or "").strip():
+            params["query"] = item
         gaps.append({
             "id": f"g{len(gaps) + 1}", "item": item, "why": str(g.get("why") or "").strip(),
-            "fetch": {"source": source, "params": params} if source in valid else None,
+            "fetch": {"source": source, "params": params},
             "status": "pending",
         })
     return gaps
@@ -911,6 +959,11 @@ def approve_gaps(job_id, gap_ids):
     missing = [g["item"] for g in (job.get("gaps") or []) if g.get("required") and g["id"] not in chosen]
     if missing:
         raise ValueError("公司研报必须先补公司年报，不能跳过：" + "、".join(missing))
+    no_source = [g["item"] for g in (job.get("gaps") or [])
+                 if g["id"] in chosen and not ((g.get("fetch") or {}).get("source"))]
+    if no_source:
+        raise ValueError("这些缺口不能在网页端自动补，先摄入材料或取消勾选："
+                         + "、".join(no_source))
     fetchable = []
     for g in job.get("gaps") or []:
         if g["id"] in chosen:
@@ -934,69 +987,70 @@ def approve_gaps(job_id, gap_ids):
 
     def _fetch_gaps(tid):
         notes = []
+
+        def shortfall(r):
+            """取数成功不等于数据可用：材料没入库、或入库 0 条，都算缺口没补上。"""
+            failed = (r or {}).get("ingest_failed") or []
+            if failed:
+                return f"材料没入库（{'、'.join(failed)}），没有锚点"
+            if int((r or {}).get("entries_count") or 0) <= 0:
+                return "取到材料但没有形成可用的 wiki 知识条目"
+            return ""
+
         # 本次勾选的数据缺口随取数带进摄入：财报摄入据此补抄 skill 字典外的目标数据
         targets = _gap_targets(job)
         for i, g in enumerate(fetchable, 1):
             tasks.update(tid, current=i - 1, detail=f"补缺口 {i}/{len(fetchable)}：{g['item']}")
+            source = (g.get("fetch") or {}).get("source")
+            params = (g.get("fetch") or {}).get("params") or {}
+            r, err = None, ""
             try:
-                r = fetcher.run_fetch(g["fetch"]["source"], g["fetch"].get("params") or {}, tid,
-                                      targets=targets)
-                failed_files = r.get("ingest_failed") or []
-                if failed_files:
-                    g["status"] = "failed"
-                    g["ingest_failed"] = True
-                    notes.append(f"{g['item']}：下载完成但入库失败（{'、'.join(failed_files)}），"
-                                 "材料没进库就没有锚点")
-                else:
-                    g["status"] = "done"
-                    g.pop("ingest_failed", None)
-                    notes.append(f"{g['item']}：{r.get('summary', '完成')}")
+                r = fetcher.run_fetch(source, params, tid, targets=targets)
+                err = shortfall(r)
             except Exception as e:
-                fb = None
-                source = (g.get("fetch") or {}).get("source")
-                if not g.get("required") and source and source != "web_search":
-                    tasks.update(tid, detail=f"专用源失败，改网络检索：{g['item']}")
-                    try:
-                        fb = fetcher.run_fetch("web_search",
-                                               {"query": g["item"], "limit": 3}, tid,
-                                               targets=targets)
-                    except Exception as e2:
-                        e = f"{e}；网络检索也失败：{e2}"
-                if fb and not fb.get("ingest_failed"):
-                    g["status"] = "done"
-                    notes.append(f"{g['item']}：专用源失败（{e}），改网络检索，{fb.get('summary', '')}")
-                else:
-                    g["status"] = "failed"
-                    extra = ("，网络检索入库失败：" + "、".join(fb.get("ingest_failed") or [])) if fb else ""
-                    notes.append(f"{g['item']}：失败（{e}）{extra}")
-                    if fb:
-                        g["ingest_failed"] = True
+                err = str(e)
+            if err and not g.get("required") and source != "web_search":
+                tasks.update(tid, detail=f"专用源没补上，改网络检索：{g['item']}")
+                try:
+                    fb = fetcher.run_fetch("web_search", {"query": g["item"], "limit": 3}, tid,
+                                           targets=targets)
+                    ferr = shortfall(fb)
+                    if ferr:
+                        err += f"；网络检索也没补上：{ferr}"
+                    else:
+                        r, err = fb, ""
+                        notes.append(f"{g['item']}：专用源没补上，网络检索补到")
+                except Exception as e2:
+                    err += f"；网络检索也失败：{e2}"
+            if err:
+                g["status"] = "failed"
+                g["error"] = err
+                notes.append(f"{g['item']}：失败（{err}）")
+            else:
+                g["status"] = "done"
+                g["materials"] = list(dict.fromkeys(r.get("files") or []))
+                g.pop("error", None)
+                notes.append(f"{g['item']}：{r.get('summary', '完成')}")
             j = load_job(job_id)
             if j:
                 for old in j.get("gaps") or []:
                     if old["id"] == g["id"]:
                         old["status"] = g["status"]
-                        if g.get("ingest_failed"):
-                            old["ingest_failed"] = True
+                        old["materials"] = list(g.get("materials") or [])
+                        if g.get("error"):
+                            old["error"] = g["error"]
                         else:
-                            old.pop("ingest_failed", None)
+                            old.pop("error", None)
                 _log(j, notes[-1])
                 save_job(j)
         j = load_job(job_id)
-        bad = [g["item"] for g in (j.get("gaps") or []) if g.get("required") and g["status"] != "done"]
-        if bad:
-            tasks.update(tid, current=len(fetchable), detail="年报未取到，停回缺口关卡")
+        lost = [g for g in (j.get("gaps") or []) if g.get("status") not in ("done", "skipped")]
+        if lost:
+            tasks.update(tid, current=len(fetchable), detail="缺口没补齐，停回缺口关卡")
             j["status"] = "gaps_pending"
-            j["error"] = "公司年报未取到，不能成文：" + "、".join(bad)
-            _log(j, j["error"])
-            save_job(j)
-            return {"summary": "；".join(notes + [j["error"]])}
-        no_anchor = [g["item"] for g in (j.get("gaps") or []) if g.get("ingest_failed")]
-        if no_anchor:
-            tasks.update(tid, current=len(fetchable), detail="材料未入库，停回缺口关卡")
-            j["status"] = "gaps_pending"
-            j["error"] = ("补到的材料没入库，不能成文（材料没进库就取不到锚点）："
-                          + "、".join(no_anchor) + "。可重试取数，或到首页上传材料后重试")
+            j["error"] = ("这些缺口没补上，不能带着数据缺失成文：" + "、".join(
+                f"{g['item']}（{g.get('error') or g.get('status')}）" for g in lost)
+                + "。换检索词重试、上传材料，或取消勾选后重试")
             _log(j, j["error"])
             save_job(j)
             return {"summary": "；".join(notes + [j["error"]])}
@@ -1010,10 +1064,20 @@ def approve_gaps(job_id, gap_ids):
 
 def _begin_write(job):
     job = load_job(job["id"]) or job
+    pending = [g for g in job.get("gaps") or []
+               if g.get("status") in ("pending", "selected", "failed")]
+    if pending:
+        job["status"] = "gaps_pending"
+        job["error"] = ("还有缺口没处理完，不能成文：" + "、".join(
+            g.get("item") or g.get("id") for g in pending))
+        _log(job, job["error"])
+        save_job(job)
+        return False
     job["status"] = "writing"
     job["error"] = ""
     save_job(job)
     _start(job["id"], _phase_write, f"{kind_label(job)}成文《{job['title']}》")
+    return True
 
 
 # ---------- 成文 ----------
@@ -1030,7 +1094,7 @@ WRITE_PROMPT = """你是中文卖方研报的主笔，正在写《{TITLE}》的�
 {PAGES}
 
 写作规则：
-1. 只用上面的页面内容，禁止编造。页面没有的信息明说「数据缺失」或直接不写
+1. 只用上面的页面内容，禁止编造。页面没有的信息直接不写；禁止写「数据缺失」「待补」「页码待补」「——」「暂无数据」等占位符，表格单元格也不得用 — 表示缺数，缺数的行或列直接不写；缺口在成文前已经补完
 2. 每个陈述句句尾带锚点 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]]，锚点只能原样取自页面内容里出现过的
 3. 含数据的句子必须有锚点；无锚点的句子只能是判断、推断或行业常识，不得承载数据
 4. 派生值（ROE、毛利率、增速、占比、差额、人均等由原文数字算出的值）写成「数值（测算：公式）」，如「17.76%（测算：归母净利/期末权益）」；公式用到的原始数字要在同句或相邻句写出，锚点挂在原始数字所在页
@@ -1040,6 +1104,9 @@ WRITE_PROMPT = """你是中文卖方研报的主笔，正在写《{TITLE}》的�
 8. 中文写作：少引号少冒号，删套话，一句一事，长句拆短
 9. 输出本节 markdown：第一行 "## 本节标题"，正文分段，可用 markdown 表格
 10. 不写其他节的内容，不写封面、目录、注释表
+11. 每个表格上方必须有题注「**表N 标题**」，正文只写表格；不写图题、图N占位、「图表位说明」，实际图表由系统在文末以附图N生成
+12. 表格里的每个数字也要能追溯到本节文字或表格题注里的锚点；找不到出处的数字不要放进表格
+13. 公司财务数据的来源优先级：财报（年报、季报、半年报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
 {EXTRA}"""
 
 CHARTS_PROMPT = """下面是刚写完的研报全文。挑出能画图的数据，给图表 spec。
@@ -1048,7 +1115,7 @@ CHARTS_PROMPT = """下面是刚写完的研报全文。挑出能画图的数据�
 - 每个图至少 3 个时间点或 3 个类别；数值必须能在报告正文中找到，禁止新造或外推
 - kind 用 line（趋势）、bar（分类对比）、hbar（横向排名）、pie（结构占比）
 - 最多 {MAXC} 张；没有合适数据就给空数组
-- note 写数据来源文件名与口径，可取正文锚点里的文件名
+- note 只写数据来源文件名与统计口径，不重复具体数值，可取正文锚点里的文件名
 只输出 JSON：{{"charts": [{{"title": "...", "kind": "line", "x": ["2024","2025"], "series": [{{"name": "...", "values": [1.2, 3.4]}}], "xlabel": "", "ylabel": "", "unit": "万辆", "note": "..."}}]}}
 
 报告全文：
@@ -1067,7 +1134,10 @@ REVIEW_PROMPT = """你是研报审稿人，只找硬伤，不改写全文。
 程序已发现的锚点问题：
 {MECH}
 
-检查：数字与锚点是否对得上、口径是否写明、结论有没有超出材料、有无空话套话。只有章节在「全文章节」里确实不存在才算缺章节。
+本段引用的锚点原文（判断数字与口径是否有据，先看这里）：
+{EVIDENCE}
+
+检查：数字与锚点是否对得上、口径是否写明、结论有没有超出材料、有无空话套话。判断口径与数字时以锚点原文为准，原文本身没写的年份拆分或统计范围，不能要求报告补写，也不能据此判硬伤。只有章节在「全文章节」里确实不存在才算缺章节。
 只输出 JSON：{{"issues": [{{"level": "硬伤|建议", "where": "节名或原句", "problem": "一句话"}}]}}，最多 10 条。"""
 
 REPAIR_PROMPT = """按下面列出的硬伤，给最小改动的替换对，不改写全文。
@@ -1076,13 +1146,17 @@ REPAIR_PROMPT = """按下面列出的硬伤，给最小改动的替换对，不�
 - old 必须从报告里逐字复制，能唯一定位到一处；new 是改好的同一片段
 - 不改结构、不删节、不新造数字；涉及锚点的，只能换成报告里已出现过的真实锚点
 - 数据缺失或口径对不上的表述，改法是删掉残缺部分或改成泛称，不是编造数值
+- 每条问题都附了报告原句与锚点原文。口径缺失、期间不明、两处表述冲突，先核对原文再改：
+  - 原文写明期间、范围、统计对象的，把该口径补进句子
+  - 原文本身只给区间或合并口径的，按原文口径改写，不替原文拆分年份或补它没写的范围
+  - 原文直接支持原句、原判罚不成立的，不为改而改
 - 没有问题就给空数组
 
 只输出 JSON：{{"fixes": [{{"old": "...", "new": "..."}}]}}
 
 注意：new 必须是改好的正文片段本身。不要输出修订说明、核对结论（如「已核对，修正如下」「该锚点无误，保留」「原挂p1，改为p2」），那类文字是给审校记录看的，混进 new 会原样写进报告正文。
 
-硬伤：
+硬伤、报告原句与锚点原文：
 {ISSUES}
 
 报告全文：
@@ -1092,11 +1166,12 @@ VERIFY_PROMPT = """你是审稿复核员。上一轮审校发现的问题列在�
 逐条判定每个问题在修改后报告里的现状，只看现状：
 - 已解决：错误表述已被修正、替换或整句删除
 - 误报：原判罚不成立，修改前的报告本无此错（审稿看错口径、锚点其实支持该表述等）
+  锚点原文直接支持原句，或两条表述在各自口径下可以同时成立，也判误报
 - 未解决：同样的错误仍在
 
 只输出 JSON：{{"verdicts": [{{"idx": 1, "verdict": "已解决", "note": "一句话依据"}}]}}
 
-问题清单（idx 对应）：
+问题清单（idx 对应，附报告原句与锚点原文）：
 {FINDINGS}
 
 修改后的报告全文：
@@ -1141,6 +1216,13 @@ def _parse_report_sections(md):
     return {k: "\n".join(v).strip() for k, v in out.items()}
 
 
+def _outline_for_write(text):
+    """大纲里的「图表位：图N」会把图题带进正文，成文前删掉这些行。"""
+    keep = [ln for ln in str(text or "").splitlines()
+            if not re.match(r"^\s*(?:[-*+]\s*)?图表位\s*[:：]", ln)]
+    return "\n".join(keep)
+
+
 def _phase_write(job_id, tid):
     job = load_job(job_id)
     sections = _parse_outline(job.get("outline") or "")
@@ -1167,13 +1249,14 @@ def _phase_write(job_id, tid):
         _tick(tid, 5 + int(85 * (i - 1) / len(sections)), f"写第 {i}/{len(sections)} 节：{heading}")
         extra = ""
         if job.get("kind") == "company":
-            extra = ("11. 公司研报纪律：财务数字只取自已摄入的年报、半年报、季报；券商研报里的公司数字只能做对照，"
-                     "不能替代公司自己的披露。币种与单位写清，预测数字标「预计」并交代假设")
+            extra = ("11. 公司研报纪律：财务数字按第 13 条来源优先级取自已摄入的年报、半年报、季报；"
+                     "券商研报里的公司数字只能做对照，不能替代公司自己的披露。币种与单位写清，"
+                     "预测数字标「预计」并交代假设")
         prompt = (WRITE_PROMPT
                   .replace("{TITLE}", job["title"])
                   .replace("{N}", str(i)).replace("{TOTAL}", str(len(sections)))
-                  .replace("{OUTLINE}", (job.get("outline") or "")[:6000])
-                  .replace("{SECTION}", f"## {heading}\n{sec['body']}")
+                  .replace("{OUTLINE}", _outline_for_write(job.get("outline") or "")[:6000])
+                  .replace("{SECTION}", f"## {heading}\n{_outline_for_write(sec['body'])}")
                   .replace("{PAGES}", pages_text)
                   .replace("{EXTRA}", extra))
         messages = [{"role": "user", "content": prompt}]
@@ -1185,34 +1268,249 @@ def _phase_write(job_id, tid):
                 "以下锚点违规，请修正后重新输出本节完整内容（只改锚点相关内容）：\n- " + "\n- ".join(bad))})
             text = ask_mod.strip_glitch(llm.chat(messages, task="report_write"))
             bad = ask_mod._violations(text, allowed)
-        wrong_page = [p for p in _anchor_checks(text) if "锚点疑似挂错" in p]
-        if wrong_page:
+        text = _fix_tables_figs(text)
+        text, fixes = _auto_fix_anchors(text)
+        if fixes:
+            _log(job, f"第 {i} 节成文自动回挂锚点 {len(fixes)} 处")
+        mech = _anchor_checks(text)
+        wrong_page = [p for p in mech if "锚点疑似挂错" in p]
+        unanchored = [p for p in mech if p.startswith("无锚点数字")]
+        other = [p for p in mech if p not in wrong_page and p not in unanchored]
+        if mech:
+            tips = []
+            if wrong_page:
+                tips.append("以下数字挂错了页码，请只改这些锚点，把每个数字挂到它实际出现的页；"
+                            "派生值按「数值（测算：公式）」写法保留：\n- " + "\n- ".join(wrong_page))
+            if unanchored:
+                tips.append("以下句子带数字却没有锚点，从页面里找到这些数字的真实锚点补上；"
+                            "页面里找不到出处的数字直接删掉，不写占位符：\n- " + "\n- ".join(unanchored))
+            if other:
+                tips.append("以下锚点问题也一并修正：\n- " + "\n- ".join(other))
+            messages.append({"role": "assistant", "content": text})
+            messages.append({"role": "user", "content": "\n\n".join(tips)})
+            text = ask_mod.strip_glitch(llm.chat(messages, task="report_write"))
+            text = _fix_tables_figs(text)
+            text, fixes = _auto_fix_anchors(text)
+            if fixes:
+                _log(job, f"第 {i} 节模型改写后自动回挂锚点 {len(fixes)} 处")
+            mech = _anchor_checks(text)
+        placeholders = [m for m in ("数据缺失", "待补", "页码待补", "暂无数据", "——") if m in text]
+        if placeholders:
             messages.append({"role": "assistant", "content": text})
             messages.append({"role": "user", "content": (
-                "以下数字挂错了页码，请只改这些锚点，把每个数字挂到它实际出现的页；"
-                "派生值按「数值（测算：公式）」写法保留：\n- " + "\n- ".join(wrong_page))})
+                "本节出现占位符（" + "、".join(placeholders) + "）。成文前缺口已经补完，禁止留占位符；"
+                "有数据的句子补锚点，没数据的句子直接删掉，重新输出本节完整内容。")})
             text = ask_mod.strip_glitch(llm.chat(messages, task="report_write"))
+            text = _fix_tables_figs(text)
+            text, fixes = _auto_fix_anchors(text)
+            if fixes:
+                _log(job, f"第 {i} 节去占位符后自动回挂锚点 {len(fixes)} 处")
+            mech = _anchor_checks(text)
+            placeholders = [m for m in ("数据缺失", "待补", "页码待补", "暂无数据", "——") if m in text]
+        text = _fix_tables_figs(text)
+        fig_refs = re.findall(r"(?<!附)图\s*\d+", wiki.ANCHOR_RE.sub("", text))
+        if fig_refs:
+            messages.append({"role": "assistant", "content": text})
+            messages.append({"role": "user", "content": (
+                "正文出现图N占位或图题（" + "、".join(dict.fromkeys(fig_refs)) + "）。"
+                "正文只写表格与文字，不写图题、图位说明；实际图表由系统在文末生成附图N。"
+                "删掉这些图题与图位说明，重新输出本节完整内容。")})
+            text = ask_mod.strip_glitch(llm.chat(messages, task="report_write"))
+            text = _fix_tables_figs(text)
+            text, fixes = _auto_fix_anchors(text)
+            if fixes:
+                _log(job, f"第 {i} 节去图位后自动回挂锚点 {len(fixes)} 处")
+            fig_refs = re.findall(r"(?<!附)图\s*\d+", wiki.ANCHOR_RE.sub("", text))
+            mech = _anchor_checks(text)
+            placeholders = [m for m in ("数据缺失", "待补", "页码待补", "暂无数据", "——") if m in text]
+        if mech or placeholders or fig_refs:
+            problems = mech + ([f"仍有占位符：{'、'.join(placeholders)}"] if placeholders else [])
+            if fig_refs:
+                problems.append(f"仍有图N占位：{'、'.join(dict.fromkeys(fig_refs))}")
+            for p in problems:
+                _log(job, f"第 {i} 节成文拦截：{p}")
+            raise RuntimeError(f"第 {i} 节《{heading}》锚点/占位符/图位未清干净，已停止成文："
+                               + "；".join(problems[:3]))
         if not text.lstrip().startswith("## "):
             text = f"## {heading}\n\n{text.lstrip()}"
         done[heading] = text.strip()
         if bad:
-            _log(job, f"第 {i} 节锚点仍有问题 {len(bad)} 处")
+            _log(job, f"第 {i} 节成文校验仍有 {len(bad)} 处锚点越界（已由回挂/改写处理）")
         _save_report(job, sections, done)
         save_job(job)
 
     _save_report(job, sections, done)
     # 各节独立起号导致拼接后表/图号重复，成文后全局重排一次（审校与出图都基于重排后的全文）
     path = config.ROOT / job["report_path"]
-    path.write_text(_renumber_tables_figs(path.read_text(encoding="utf-8")), encoding="utf-8")
+    path.write_text(_renumber_tables_figs(_fix_tables_figs(
+        path.read_text(encoding="utf-8"))), encoding="utf-8")
     job["status"] = "charting"
+    job["error"] = ""
     _log(job, f"成文完成，{len(sections)} 节")
     save_job(job)
     _start(job_id, _phase_charts, f"{kind_label(job)}图表《{job['title']}》")
 
 
 _TABLE_FIG_RE = re.compile(r"(表|图)(\d+)")
-_TABLE_FIG_HEAD_RE = re.compile(r"\*\*(表|图)(\d+)")
+_TABLE_FIG_HEAD_RE = re.compile(r"^\s*\*\*(表|图)(\d+)")
+_TABLE_START_RE = re.compile(r"^\s*\|")
+_TABLE_SEP_RE = re.compile(r"^\s*\|[\s:|-]+\|?\s*$")
+_CAPTION_LINE_RE = re.compile(r"^\s*\*\*(表|图)\s*(\d*)[.、．:：]?\s*(.*?)\*\*\s*(.*)$")
+_CAPTION_PLAIN_RE = re.compile(r"^\s*(表|图)\s*(\d+)\s*[.、．:：]?\s*(.+)$")
+_IMG_LINE_RE = re.compile(r"^\s*!\[[^\]]*\]\([^)]+\)\s*$")
+_MISSING_CELLS = ("—", "——", "-", "－", "--")
 
+
+def _table_title(header_line, number):
+    cells = [re.sub(r"\[\[[^\]]+\]\]", "", c).strip() for c in header_line.strip().strip("|").split("|")]
+    cells = [c for c in cells if c and c not in ("—", "-")]
+    title = "" if not cells else ("、".join(cells[:-1]) + "与" + cells[-1] if len(cells) > 1 else cells[0])
+    title = title[:36] or "数据表"
+    return f"**表{number} {title}**"
+
+
+def _fix_tables_figs(md):
+    """机械补齐表格题注，消掉「图标成图」的错位。
+
+    markdown 表格上方必须是「**表N 标题**」；图题下方若是表格就改题注为表，
+    图题下方既无表格也无图片的（正文图占位）直接删掉。表格没有题注时按表头生成。
+    """
+    lines = md.splitlines()
+    out = []
+    max_no = 0
+
+    def is_table_start(idx):
+        return (idx < len(lines) and _TABLE_START_RE.match(lines[idx])
+                and idx + 1 < len(lines) and _TABLE_SEP_RE.match(lines[idx + 1]))
+
+    def next_nonblank(idx):
+        return next((x for x in lines[idx + 1:] if x.strip()), "")
+
+    drop = set()
+    i = 0
+    while i < len(lines):
+        if is_table_start(i):
+            j = i
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                j += 1
+            for k in range(i + 2, j):
+                cells = _table_cells(lines[k])
+                if not any(c.strip() in _MISSING_CELLS for c in cells):
+                    continue
+                rest = [re.sub(r"(?:19|20)\d{2}\s*M\s*\d{1,2}", "", c)
+                        for c in cells if c.strip() not in _MISSING_CELLS]
+                if not rest or not any(re.search(r"\d", c) for c in rest):
+                    drop.add(k)  # 整行只有月份标签/文字，没有实际数据，且含缺数格
+            i = j
+        else:
+            i += 1
+
+    # 数据行全被删掉的表连题注一起去掉，不留只有表头的空表
+    empty = []
+    i = 0
+    while i < len(lines):
+        if is_table_start(i):
+            j = i
+            while j < len(lines) and lines[j].strip().startswith("|"):
+                j += 1
+            if all(k in drop for k in range(i + 2, j)):
+                empty.append((i, j))
+            i = j
+        else:
+            i += 1
+    for i, j in empty:
+        cap = next((k for k in range(i - 1, -1, -1) if lines[k].strip()), None)
+        if cap is not None:
+            m = _CAPTION_LINE_RE.match(lines[cap]) or _CAPTION_PLAIN_RE.match(lines[cap])
+            if m and m.group(1) == "表":
+                drop.add(cap)
+        drop.update(range(i, j))
+
+    for i, ln in enumerate(lines):
+        if i in drop:
+            continue
+        if is_table_start(i):
+            cap_j, text = next(
+                ((k, x) for k, x in reversed(list(enumerate(out))) if x.strip()), (None, ""))
+            m = _CAPTION_LINE_RE.match(text)
+            if not m and len(text) <= 100:
+                m = _CAPTION_PLAIN_RE.match(text)
+            if m:
+                no = int(m.group(2) or 0) or max_no + 1
+                title = m.group(3).strip()
+                out[cap_j] = f"**表{no} {title}**" if title else _table_title(ln, no)
+                max_no = max(max_no, no)
+            else:
+                max_no += 1
+                if out and out[-1].strip():
+                    out.append("")
+                out.append(_table_title(ln, max_no))
+                out.append("")
+            if cap_j is not None and any(k in drop for k in range(i + 2, j)):
+                labels = [c for k in range(i + 2, j) if k not in drop
+                          for c in _table_cells(lines[k])
+                          if re.fullmatch(r"(?:19|20)\d{2}M\d{1,2}", c)]
+                if labels:
+                    out[cap_j] = re.sub(
+                        r"（(?:19|20)\d{2}M\d{1,2}[^）]*?(?:19|20)\d{2}M\d{1,2}）",
+                        f"（{labels[0]}–{labels[-1]}）", out[cap_j], count=1)
+            out.append(ln)
+            continue
+        m = _CAPTION_LINE_RE.match(ln)
+        if m and m.group(1) == "图":
+            nxt = next_nonblank(i)
+            if not _IMG_LINE_RE.match(nxt) and not _TABLE_START_RE.match(nxt):
+                continue  # 图题下既不是表也不是图，是正文图占位，删掉
+        m = _CAPTION_PLAIN_RE.match(ln)
+        if m and m.group(1) == "图" and len(ln) <= 100:
+            nxt = next_nonblank(i)
+            if not _IMG_LINE_RE.match(nxt) and not _TABLE_START_RE.match(nxt):
+                continue  # 非加粗的短图题同样是图占位
+        out.append(ln)
+    return "\n".join(out)
+
+
+def _renumber_tables_figs(md):
+    """全文把 表N/图N 重排成全局连续编号，并同步节内引用。
+
+    分节成文时各节独立起号，拼接后每节都有表1/图1。按出现顺序给标题行
+    分配全局新号，再按节把引用换成同节标题的新号；文末附图是渲染产物，跳过。
+    """
+    lines = md.splitlines()
+    counters = {"表": 0, "图": 0}
+    mapping = {}
+    captions = {}
+    sec = 0
+    for i, ln in enumerate(lines):
+        if ln.startswith("## "):
+            sec += 1
+            continue
+        m = _TABLE_FIG_HEAD_RE.match(ln)
+        if not m:
+            continue
+        kind, old = m.group(1), m.group(2)
+        counters[kind] += 1
+        mapping.setdefault((sec, kind, old), counters[kind])
+        captions[i] = (kind, counters[kind], old)
+
+    sec = 0
+    out = []
+    for i, ln in enumerate(lines):
+        if ln.startswith("## "):
+            sec += 1
+            out.append(ln)
+            continue
+        if ln.startswith("![") or ln.startswith("### 附图"):
+            out.append(ln)
+            continue
+        if i in captions:
+            kind, new, old = captions[i]
+            out.append(ln.replace(f"{kind}{old}", f"{kind}{new}", 1))
+            continue
+        out.append(_TABLE_FIG_RE.sub(
+            lambda m: f"{m.group(1)}{mapping[(sec, m.group(1), m.group(2))]}"
+            if (sec, m.group(1), m.group(2)) in mapping else m.group(0), ln))
+    return "\n".join(out)
 
 def _renumber_tables_figs(md):
     """全文把 表N/图N 重排成全局连续编号。
@@ -1303,91 +1601,35 @@ def _phase_charts(job_id, tid):
     else:
         _log(job, "没有可画的合规数据，报告不含图表")
     job["status"] = "reviewing"
+    job["error"] = ""
     save_job(job)
     _start(job_id, _phase_review, f"{kind_label(job)}审校《{job['title']}》")
 
 
 # ---------- 审校 ----------
 
-_NUM_SCALES = (1, 1e3, 1e4, 1e5, 1e8, 1e-3, 1e-4, 1e-5, 1e-8)
-_CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
-              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-_CN_UNITS = {"十": 10, "百": 100, "千": 1000}
-_CN_BIG = {"万": 10000, "亿": 100000000}
-_CN_RUN_RE = re.compile(r"[零〇一二三四五六七八九十百千万亿两]+")
-
-
-def _cn_run_to_arabic(run):
-    """把一段中文数字转成阿拉伯数字串：二零二五→2025，二十三→23，一万二千→12000。"""
-    if not run:
-        return run
-    if not any(ch in _CN_UNITS or ch in _CN_BIG for ch in run):
-        return "".join(str(_CN_DIGITS[ch]) for ch in run)
-    total = section = num = 0
-    for ch in run:
-        if ch in _CN_DIGITS:
-            num = _CN_DIGITS[ch]
-        elif ch in _CN_UNITS:
-            section += (num or 1) * _CN_UNITS[ch]
-            num = 0
-        elif ch in _CN_BIG:
-            section = (section + num) * _CN_BIG[ch]
-            total += section
-            section = num = 0
-    return str(total + section + num)
-
-
 def _normalize_cn_numerals(text):
-    """年报常用「二零二五年四月十日」，比对前归一成阿拉伯数字；单字只在年月日前后才转。"""
-    def repl(m):
-        run = m.group(0)
-        if len(run) == 1 and m.string[m.end():m.end() + 1] not in "年月日季度":
-            return run
-        return _cn_run_to_arabic(run)
-    return _CN_RUN_RE.sub(repl, text)
+    return am.normalize_cn_numerals(text)
 
 
 def _num_variants(n):
-    """0175 与 00175 这类前导零差异，按去掉前导零的写法再试一次。"""
-    out = [n]
-    stripped = n.lstrip("0")
-    if stripped and stripped != n:
-        out.append(stripped)
-    return out
+    return am.num_variants(n)
 
 
 def _has_num(text, text_norm, n):
-    return any(v in text or v in text_norm for v in _num_variants(n))
+    return am.has_number(text, text_norm, n)
 
 
 def _page_nums(text):
-    out = []
-    for raw in re.findall(r"\d[\d,]*(?:\.\d+)?", text):
-        try:
-            out.append(float(raw.replace(",", "")))
-        except ValueError:
-            continue
-    return out
+    return am.page_numbers(text)
 
 
 def _num_on_page(value, page_nums):
-    """报告按亿元写、原文按千元列示时，换算量级后再比，相对差 2‰ 内算命中。"""
-    for scale in _NUM_SCALES:
-        target = value * scale
-        for p in page_nums:
-            if p and abs(p - target) <= abs(p) * 0.002:
-                return True
-    return False
+    return am.num_on_page(value, page_nums)
 
 
 def _unit_has_num(text, n):
-    text_norm = _normalize_cn_numerals(text)
-    if _has_num(text, text_norm, n):
-        return True
-    try:
-        return _num_on_page(float(n), _page_nums(text_norm))
-    except ValueError:
-        return False
+    return am.unit_has_number(text, n)
 
 
 def _other_unit_hint(cached, nums):
@@ -1396,58 +1638,353 @@ def _other_unit_hint(cached, nums):
     ordered = [n for n in set(nums)
                if not re.fullmatch(r"(?:19|20)\d{2}", n)
                and not re.fullmatch(r"0\d+", n)
-               and len(n.replace(".", "")) >= 4]
+               and len(n.replace(".", "")) >= 3]
     ordered.sort(key=lambda x: (len(x.replace(".", "")), x), reverse=True)
     for n in ordered:
         hits = [u for u in cached["units"] if _unit_has_num(u.get("text") or "", n)]
-        if 1 <= len(hits) <= 2:
+        if 1 <= len(hits) <= 3:
             kind = "段" if cached.get("unit") == "para" else "页"
-            return f"；数字 {n} 实际出现在同文件第 {hits[0]['n']} {kind}，锚点疑似挂错"
+            pages = "、".join(str(u["n"]) for u in hits)
+            return f"；数字 {n} 实际出现在同文件第 {pages} {kind}，锚点疑似挂错"
     return ""
 
 
+_SKIP_ANCHOR_PREFIX = ("#", "![", "|", ">")
+_DATE_RE = re.compile(r"(?:19|20)\d{2}\s*年(?:\s*\d{1,2}\s*月)?(?:\s*\d{1,2}\s*日)?")
+
+
+def _unanchored_nums(line):
+    """段首无锚点、带实质数字的正文句子返回数字列表；表格、标题、图题、来源行不算。"""
+    s = line.strip()
+    if not s or s.startswith(_SKIP_ANCHOR_PREFIX):
+        return []
+    if re.match(r"^\*\*(?:表|图)\d+", s):
+        return []
+    if re.match(r"^(?:数据来源|资料来源|注[:：])", s) or re.fullmatch(r"\*\*[^*]+\*\*", s):
+        return []
+    if re.search(r"[（(]\s*测算\s*[:：]", s):
+        return []
+    clean = re.sub(r"\*\*|`", "", s)
+    clean = _DATE_RE.sub("", clean)
+    nums = [n for n, _u in am.number_terms(clean)]
+    return nums if len(clean) >= 12 else []
+
+
+def _table_cells(line):
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def _table_checks(report_md):
+    """表格数字核锚点：逐行找本行/题注/前段/表后来源行的锚点，覆盖不了的报出来。
+
+    表头或单元格标了「测算」的列按派生值处理，不要求数字出现在原文。
+    """
+    paths = wiki_check.file_paths()
+    caches = {}
+    problems = []
+    lines = report_md.splitlines()
+
+    def unit_text(fname, loc):
+        path = paths.get(fname)
+        if not path:
+            return f"__missing__{fname}"
+        if fname not in caches:
+            caches[fname] = load_cached(path)
+        cached = caches[fname]
+        if not cached:
+            return ""
+        unit = next((u for u in cached["units"] if u["n"] == wiki.loc_num(loc)), None)
+        return (unit or {}).get("text") or ""
+
+    def covered(texts, terms):
+        got = set()
+        for text in texts:
+            for i, term in enumerate(terms):
+                if i not in got and am.unit_has_term(text, term):
+                    got.add(i)
+        return got
+
+    i = 0
+    while i < len(lines):
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if not (_TABLE_START_RE.match(lines[i]) and _TABLE_SEP_RE.match(nxt)):
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and lines[j].strip().startswith("|"):
+            j += 1
+        header = _table_cells(lines[i])
+        skip_cols = {k for k, h in enumerate(header) if "测算" in h}
+        cap_idx = next((k for k in range(i - 1, -1, -1) if lines[k].strip()), None)
+        caption = lines[cap_idx] if cap_idx is not None else ""
+        prev_idx = next((k for k in range((cap_idx if cap_idx is not None else 0) - 1, -1, -1)
+                         if lines[k].strip()), None)
+        prev = lines[prev_idx] if prev_idx is not None else ""
+        after = next((lines[k] for k in range(j, len(lines)) if lines[k].strip()), "")
+        base = wiki.ANCHOR_RE.findall(caption) + wiki.ANCHOR_RE.findall(prev)
+        if after.startswith(("数据来源", "资料来源")):
+            base += wiki.ANCHOR_RE.findall(after)
+        base_texts = [unit_text(f, loc) for f, loc in base]
+        for row in lines[i + 2:j]:
+            cells = _table_cells(row)
+            aligned = len(cells) == len(header)
+            row_anchors = wiki.ANCHOR_RE.findall(row)
+            for k, cell in enumerate(cells):
+                if (aligned and k in skip_cols) or "测算" in cell:
+                    continue
+                if cell.strip() in _MISSING_CELLS:
+                    problems.append(f"表格单元格缺失数据（{cell.strip()}）：{row.strip()[:50]}")
+                    continue
+                terms = am.line_terms(cell)
+                if not terms:
+                    continue
+                anchors = wiki.ANCHOR_RE.findall(cell) or row_anchors or base
+                texts = [unit_text(f, loc) for f, loc in anchors]
+                missing_file = [t[len("__missing__"):] for t in texts if str(t).startswith("__missing__")]
+                if missing_file:
+                    problems.append(f"表格锚点引用了 raw 中不存在的文件 {missing_file[0]}")
+                    continue
+                missing = [n for idx, (n, _u) in enumerate(terms) if idx not in covered(texts, terms)]
+                if missing:
+                    problems.append(
+                        f"表格数字无锚点（{'、'.join(missing[:3])}）：{row.strip()[:50]}")
+        i = j
+    return problems
+
+
 def _anchor_checks(report_md):
-    manifest = {f["file"]: f for f in ingest_mod.load_manifest()["files"]}
+    """逐个数字核锚点：本句每个数字至少要有一个所挂锚点的原文能覆盖。
+
+    只看有没有锚点不够，一句挂三页、每页各对一个数字会漏掉第三个数字无人支撑。
+    """
+    paths = wiki_check.file_paths()
+    caches = {}
     problems = []
     for ln in report_md.splitlines():
+        s = ln.strip()
+        if s.startswith("|") or re.fullmatch(r"\*\*[^*]+\*\*", s):
+            continue  # 表格行由题注/表源检查单独管，整行加粗的小标题不是数据句
         anchors = wiki.ANCHOR_RE.findall(ln)
         if not anchors:
+            nums = _unanchored_nums(ln)
+            if nums:
+                problems.append(
+                    f"无锚点数字（{'、'.join(nums[:3])}）：{ln.strip()[:40]}")
             continue
-        # 派生值已按「（测算：公式）」标注的，只核锚点真实性，不要求比值本身出现在原文
-        derived = bool(re.search(r"[（(]\s*测算\s*[:：]", ln))
-        clean = wiki.ANCHOR_RE.sub("", ln)
-        nums = [n.replace(",", "") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", clean)]
-        nums = [n for n in nums if len(n.replace(".", "")) >= 2]
-        values = []
-        for n in nums:
-            try:
-                values.append(float(n))
-            except ValueError:
-                continue
+        # 派生值标了「测算」的，只核锚点真实性，不要求比值本身出现在原文
+        derived = "测算" in ln
+        terms = am.line_terms(wiki.ANCHOR_RE.sub("", ln))
+        if derived or not terms:
+            continue
+        covered = set()
+        first_cached = None
         for fname, loc in anchors:
-            f = manifest.get(fname)
-            if not f:
-                problems.append(f"锚点引用了清单里没有的文件 {fname}#{loc}")
+            path = paths.get(fname)
+            if not path:
+                problems.append(f"锚点引用了 raw 中不存在的文件 {fname}#{loc}")
                 continue
-            cached = load_cached(config.ROOT / f["path"])
+            if fname not in caches:
+                caches[fname] = load_cached(path)
+            cached = caches[fname]
             if not cached:
                 problems.append(f"{fname} 没有提取缓存，锚点无法核验")
                 continue
+            first_cached = first_cached or cached
             unit = next((u for u in cached["units"] if u["n"] == wiki.loc_num(loc)), None)
             if unit is None:
                 problems.append(f"锚点 {fname}#{loc} 超出单元范围")
                 continue
-            if derived or not nums:
-                continue
             text = unit.get("text") or ""
-            text_norm = _normalize_cn_numerals(text)
-            if not any(_has_num(text, text_norm, n) for n in nums):
-                page_nums = _page_nums(text_norm)
-                if not any(_num_on_page(v, page_nums) for v in values):
-                    hint = _other_unit_hint(cached, nums)
-                    problems.append(
-                        f"{fname}#{loc} 的原文里找不到本句数字（{'、'.join(nums[:3])}）{hint}")
+            for i, t in enumerate(terms):
+                if i not in covered and am.unit_has_term(text, t):
+                    covered.add(i)
+        missing = [n for i, (n, _u) in enumerate(terms) if i not in covered]
+        if missing:
+            hint = _other_unit_hint(first_cached, missing) if first_cached else ""
+            problems.append(
+                f"锚点疑似挂错：本句数字（{'、'.join(missing[:3])}）不在所挂锚点的原文里{hint}"
+                f"：{ln.strip()[:60]}")
+    problems.extend(_table_checks(report_md))
     return problems
+
+
+def _delivery_problems(report_md):
+    """交付前硬闸门：锚点、占位符、正文图位三类问题清零才允许转 Word。"""
+    problems = list(_anchor_checks(report_md))
+    for word in ("数据缺失", "待补", "页码待补", "暂无数据", "——"):
+        if word in report_md:
+            problems.append(f"仍有占位符「{word}」")
+    refs = re.findall(r"(?<!附)图\s*\d+", wiki.ANCHOR_RE.sub("", report_md))
+    if refs:
+        problems.append("正文仍有图位：" + "、".join(dict.fromkeys(refs)))
+    return problems
+
+
+def _auto_fix_anchors(report_md):
+    """成文后的机械回挂：同文件里能按数字找到正确页的，直接换锚点，不等模型改写。
+
+    只在原句所有锚点都指向同一个文件、且回找能覆盖本句全部数字时动手，避免跨文件误改。
+    """
+    paths = wiki_check.file_paths()
+    caches = {}
+    out, fixes = [], []
+    for ln in report_md.splitlines():
+        s = ln.strip()
+        if s.startswith("|") or re.fullmatch(r"\*\*[^*]+\*\*", s) or "测算" in ln:
+            out.append(ln)
+            continue
+        anchors = wiki.ANCHOR_RE.findall(ln)
+        terms = am.line_terms(wiki.ANCHOR_RE.sub("", ln))
+        if not anchors or not terms:
+            out.append(ln)
+            continue
+        fnames = {f for f, _loc in anchors}
+        if len(fnames) != 1:
+            out.append(ln)
+            continue
+        fname = next(iter(fnames))
+        if fname not in caches:
+            path = paths.get(fname)
+            caches[fname] = load_cached(path) if path else None
+        cached = caches[fname]
+        if not cached:
+            out.append(ln)
+            continue
+        covered = set()
+        for _f, loc in anchors:
+            unit = next((u for u in cached["units"] if u["n"] == wiki.loc_num(loc)), None)
+            if unit is None:
+                continue
+            for i, t in enumerate(terms):
+                if i not in covered and am.unit_has_term(unit.get("text") or "", t):
+                    covered.add(i)
+        missing = [t for i, t in enumerate(terms) if i not in covered]
+        if not missing:
+            out.append(ln)
+            continue
+        # 只补「恰好缺一个数字、且这个数字在同文件里只出现一页」的情况；多缺或常见数字交给模型
+        if len(missing) != 1:
+            out.append(ln)
+            continue
+        hits = [u["n"] for u in cached["units"]
+                if am.unit_has_term(u.get("text") or "", missing[0])]
+        if len(hits) != 1:
+            out.append(ln)
+            continue
+        prefix = "para" if cached.get("unit") == "para" else "p"
+        anchor = f"[[{fname}#{prefix}{hits[0]}]]"
+        if anchor in ln:
+            out.append(ln)
+            continue
+        out.append(ln.rstrip() + anchor)
+        fixes.append((s[:50], hits))
+    return "\n".join(out), fixes
+
+
+_EVIDENCE_QUOTE_RE = re.compile(r"[「“\"]([^」”\"]{8,})[」”\"]")
+
+
+def _anchor_source_lines(anchors, caches=None, per=500, total=7000, focus=None):
+    """把锚点还原成原文片段，供审稿、修复、复核对照，避免只凭报告猜口径。
+
+    focus 是问题里出现的数字：页首通常只是标题，命中数字时截取数字附近的窗口。
+    """
+    paths = wiki_check.file_paths()
+    caches = caches if caches is not None else {}
+    out, seen, used = [], set(), 0
+    for fname, loc in anchors:
+        key = (fname, loc)
+        if key in seen:
+            continue
+        seen.add(key)
+        path = paths.get(fname)
+        if not path:
+            line = f"[[{fname}#{loc}]]：raw 中找不到该文件"
+        else:
+            if fname not in caches:
+                caches[fname] = load_cached(path)
+            cached = caches[fname] or {}
+            unit = next((u for u in cached.get("units") or [] if u["n"] == wiki.loc_num(loc)), None)
+            text = re.sub(r"\s+", " ", (unit or {}).get("text") or "").strip()
+            if not text:
+                line = f"[[{fname}#{loc}]]：该页无文本"
+            else:
+                found = [t for t in (focus or []) if t and t in text]
+                if found:
+                    # 取页内出现次数最少的数字，长数字优先：3.4 比到处都有的 94 更能定位到问题句
+                    tok = min(found, key=lambda t: (text.count(t), -len(t)))
+                    start = max(0, text.find(tok) - per // 3)
+                    text = ("…" if start else "") + text[start:start + per]
+                    text += "…" if start + per < len(text) else ""
+                else:
+                    text = text[:per] + ("…" if len(text) > per else "")
+                line = f"[[{fname}#{loc}]]：{text}"
+        if used + len(line) > total:
+            break
+        out.append(line)
+        used += len(line)
+    return out
+
+
+def _paragraph_at(lines, idx):
+    a = b = idx
+    while a > 0 and lines[a - 1].strip():
+        a -= 1
+    while b + 1 < len(lines) and lines[b + 1].strip():
+        b += 1
+    return "\n".join(lines[a:b + 1])
+
+
+def _finding_evidence(finding, report_md, caches=None):
+    """定位问题所指段落，附上该段锚点原文；定位不到返回空串。"""
+    problem = str(finding.get("problem") or "")
+    tokens = list(dict.fromkeys(
+        t for t in re.findall(r"\d[\d,]*(?:\.\d+)?", problem)
+        if len(t.replace(",", "").replace(".", "")) >= 2))
+    non_year = [t for t in tokens if not re.fullmatch(r"(?:19|20)\d{2}", t)]
+    tokens = non_year or tokens
+    lines = report_md.splitlines()
+    quotes = _EVIDENCE_QUOTE_RE.findall(problem)
+    candidates = []
+    for q in quotes:
+        candidates.append(q)
+        for part in re.split(r"…+|\.\.\.+", q):
+            candidates.append(part)
+            candidates.extend(p for p in re.split(r"[，。；：]", part) if len(p) >= 8)
+    hit = None
+    for q in candidates:
+        hit = next((i for i, ln in enumerate(lines) if q and q in ln), None)
+        if hit is not None:
+            break
+    if hit is None:
+        # 审稿常改写原句再引用，逐字找不到时按问题里出现的数字定位段落
+        scored = []
+        for i, ln in enumerate(lines):
+            if ln.strip().startswith(("数据来源", "资料来源", "注：", "### 附图")):
+                continue
+            score = sum(1 for t in tokens if t in ln)
+            if score:
+                scored.append((score, i))
+        if scored:
+            hit = max(scored)[1]
+    if hit is None:
+        where = str(finding.get("where") or "").strip()
+        if len(where) >= 8:
+            hit = next((i for i, ln in enumerate(lines) if where in ln), None)
+    if hit is None:
+        return ""
+    block = _paragraph_at(lines, hit)
+    anchors = wiki.ANCHOR_RE.findall(block)
+    head = "报告原句：" + re.sub(r"\s+", " ", block.strip())[:420]
+    if not anchors:
+        return head + "\n（该段没有锚点）"
+    return head + "\n锚点原文：\n" + "\n".join(
+        _anchor_source_lines(anchors, caches, focus=tokens))
+
+
+def _chunk_evidence(chunk, caches=None):
+    anchors = wiki.ANCHOR_RE.findall(chunk)
+    return "\n".join(_anchor_source_lines(anchors, caches))
 
 
 def _report_chunks(md, size):
@@ -1469,8 +2006,15 @@ def _verify_findings(job, report_md, findings, tid):
     open_model = [f for f in findings
                   if f["kind"] == "模型" and f.get("outcome") not in ("已修复", "误报")]
     if open_model:
-        listing = "\n".join(f"{i}. [{f['level']}] {f['where']}：{f['problem']}"
-                            for i, f in enumerate(open_model, 1))
+        caches = {}
+        parts = []
+        for i, f in enumerate(open_model, 1):
+            text = f"{i}. [{f['level']}] {f['where']}：{f['problem']}"
+            evidence = _finding_evidence(f, report_md, caches)
+            if evidence:
+                text += "\n   " + evidence.replace("\n", "\n   ")
+            parts.append(text)
+        listing = "\n".join(parts)
         try:
             _tick(tid, 80, f"复核 {len(open_model)} 条模型意见")
             out = llm.chat([{"role": "user", "content": VERIFY_PROMPT
@@ -1543,7 +2087,8 @@ def _repair_rejected(old, new):
 def _phase_review(job_id, tid):
     job = load_job(job_id)
     path = config.ROOT / job["report_path"]
-    report_md = path.read_text(encoding="utf-8")
+    report_md = _fix_tables_figs(path.read_text(encoding="utf-8"))
+    path.write_text(report_md.rstrip() + "\n", encoding="utf-8")
     _tick(tid, 10, "程序核对锚点")
     mech = _anchor_checks(report_md)
     _tick(tid, 30, "模型审稿")
@@ -1562,7 +2107,9 @@ def _phase_review(job_id, tid):
                              .replace("{SCOPE}", scope)
                              .replace("{REPORT}", chunk)
                              .replace("{HEADINGS}", headings)
-                             .replace("{MECH}", "\n".join(mech) or "无")}], task="review", response_json=True)
+                             .replace("{MECH}", "\n".join(mech) or "无")
+                             .replace("{EVIDENCE}", _chunk_evidence(chunk) or "无")}],
+                           task="review", response_json=True)
         except llm.LLMError as e:
             _log(job, f"模型审稿第 {i} 段失败（保留程序核查结果）：{e}")
             continue
@@ -1588,10 +2135,17 @@ def _phase_review(job_id, tid):
         if not pending:
             break
         _tick(tid, 40 + round_no * 10, f"按 {len(pending)} 条问题修第 {round_no} 轮")
+        caches = {}
+        parts = []
+        for f in pending:
+            text = f"- [{f['level']}] {f['where']}：{f['problem']}"
+            evidence = _finding_evidence(f, report_md, caches)
+            if evidence:
+                text += "\n  " + evidence.replace("\n", "\n  ")
+            parts.append(text)
         try:
             out = llm.chat([{"role": "user", "content": REPAIR_PROMPT
-                             .replace("{ISSUES}", "\n".join(
-                                 f"- [{f['level']}] {f['where']}：{f['problem']}" for f in pending))
+                             .replace("{ISSUES}", "\n".join(parts))
                              .replace("{REPORT}", report_md)}], task="review", response_json=True)
         except llm.LLMError as e:
             _log(job, f"第 {round_no} 轮修复调用失败：{e}")
@@ -1608,7 +2162,10 @@ def _phase_review(job_id, tid):
                 fixed = fixed.replace(old, new, 1)
                 changes += 1
         if changes and len(fixed) >= len(report_md) * 0.9:
-            fixed = ask_mod.strip_glitch(fixed)
+            fixed = _fix_tables_figs(ask_mod.strip_glitch(fixed))
+            fixed, auto = _auto_fix_anchors(fixed)
+            if auto:
+                _log(job, f"第 {round_no} 轮修完自动回挂锚点 {len(auto)} 处")
             path.write_text(fixed.rstrip() + "\n", encoding="utf-8")
             report_md = fixed
             repaired_rounds += 1
@@ -1620,6 +2177,21 @@ def _phase_review(job_id, tid):
             _log(job, f"第 {round_no} 轮模型未给出可用替换，直接复核")
         mech = _verify_findings(job, report_md, findings, tid)
 
+    report_md = _fix_tables_figs(report_md)
+    report_md, auto = _auto_fix_anchors(report_md)
+    if auto:
+        _log(job, f"审校收尾自动回挂锚点 {len(auto)} 处")
+    path.write_text(report_md.rstrip() + "\n", encoding="utf-8")
+    mech = _anchor_checks(report_md)
+    blocking = _delivery_problems(report_md)
+    for f in findings:
+        if f.get("level") == "硬伤" and f.get("outcome") not in ("已修复", "误报"):
+            blocking.append(f"硬伤未解决：{f['where']}：{f['problem']}")
+    known = {f["problem"] for f in findings}
+    for p in blocking:
+        if p not in known:
+            findings.append({"kind": "程序", "level": "硬伤", "where": "交付闸门",
+                             "problem": p, "outcome": "未解决", "note": "转 Word 前未清零"})
     findings = _order_findings(job, report_md, findings, tid)
     fixed_n = [f for f in findings if f.get("outcome") == "已修复"]
     fp_n = [f for f in findings if f.get("outcome") == "误报"]
@@ -1634,7 +2206,15 @@ def _phase_review(job_id, tid):
     if note:
         _log(job, "审校提示：" + note)
     _log(job, summary)
+    if blocking:
+        msg = "交付闸门拦截，未转 Word：" + "；".join(blocking[:3])
+        job["status"] = "error"
+        job["error"] = msg
+        _log(job, msg)
+        save_job(job)
+        raise RuntimeError(msg)
     job["status"] = "docxing"
+    job["error"] = ""
     save_job(job)
     _start(job_id, _phase_docx, f"{kind_label(job)}转 Word《{job['title']}》")
 
@@ -1643,6 +2223,7 @@ def _phase_review(job_id, tid):
 
 def _phase_docx(job_id, tid):
     job = load_job(job_id)
+    job["error"] = ""
     if not shutil.which("pandoc"):
         _log(job, "没找到 pandoc，跳过 Word，md 照常交付")
         job["status"] = "candidates_pending"
