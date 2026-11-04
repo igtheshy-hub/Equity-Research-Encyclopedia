@@ -43,6 +43,7 @@
 </div>
 
 <div id="toast-wrap"></div>
+<script>window.MODEL_IDS = {{ MODEL_IDS | tojson }};</script>
 <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 {% block scripts %}{% endblock %}
 </body>
