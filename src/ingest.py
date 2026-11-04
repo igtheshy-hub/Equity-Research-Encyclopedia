@@ -171,6 +171,8 @@ def compile_file(path, units, unit_kind, focus=None, task_id=None):
         if rd and not report_date:
             report_date = rd
         for t in out.get("topics") or []:
+            if not isinstance(t, dict):  # 嵌套层也可能混进清单/纯文字，跳过不崩
+                continue
             title = str(t.get("title") or "").strip()
             if not title:
                 continue
@@ -183,7 +185,10 @@ def compile_file(path, units, unit_kind, focus=None, task_id=None):
             if not ex["summary"] and t.get("summary"):
                 ex["summary"] = str(t["summary"])
             ex["focus_hits"].extend(str(x).strip() for x in (t.get("focus_hits") or []) if str(x).strip())
-            for s, lines in (t.get("sections") or {}).items():
+            sections = t.get("sections")
+            if not isinstance(sections, dict):
+                sections = {}
+            for s, lines in sections.items():
                 s = str(s).strip() or "其他"
                 keep, dropped = _valid_lines(lines, fname, unit_kind, len(units))
                 total_dropped += dropped
@@ -230,11 +235,14 @@ def plan_merge(topics, index_entries):
         [{"role": "user", "content": MERGE_PROMPT.replace("{INDEX}", index_text).replace("{TOPICS}", topics_text)}],
         task="merge",
         response_json=True,
+        json_any=True,  # 这里的约定本来就是 JSON 数组，放行任意本体
     )
     items = out if isinstance(out, list) else out.get("decisions") or []
     by_title = {t["title"]: t for t in pending}
     slug_index = {e["slug"]: e for e in index_entries}
     for d in items:
+        if not isinstance(d, dict):
+            continue
         t = by_title.get(str(d.get("title") or ""))
         if t is None:
             continue

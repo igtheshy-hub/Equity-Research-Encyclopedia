@@ -153,23 +153,45 @@ def _extract_json(text):
     return json.loads(text[start:end + 1])
 
 
-def chat(messages, *, task, response_json=False, model=None):
+def chat(messages, *, task, response_json=False, model=None, json_any=False):
+    """response_json=True 时统一做格式把关：默认要求 JSON 对象（dict）。
+
+    AI 偶尔把约定的「说明」（对象）交成「清单」（数组），调用方十几处拿到就 .get，
+    list 一流下去就是 AttributeError。在这里拦住：不合规算格式失败、带着明确要求重试
+    一次，两次都不合规抛 LLMParseError（LLMError 子类），调用方既有的
+    `except llm.LLMError` 就能优雅降级，而不是各自裸奔崩溃。
+    个别调用方（如归并规划）约定本来就是数组，传 json_any=True 放行任意 JSON 本体。
+    """
     prof = config.model_profile(model or _MODEL.get())
     if not prof["key"]:
         raise LLMError(f"缺少 {prof['key_env']}：请复制 .env.example 为 .env 并填入模型服务商的 API Key")
     content = _call(messages, task, prof)
     if not response_json:
         return content
+    want = "本体" if json_any else "对象"
+
+    def _acceptable(x):
+        return json_any or isinstance(x, dict)
+
     try:
-        return _extract_json(content)
-    except ValueError:
-        pass
+        result = _extract_json(content)
+        if _acceptable(result):
+            return result
+        err = ValueError(f"约定要 JSON {want}，拿到的是 {type(result).__name__}")
+    except ValueError as e:
+        err = e
     fix_messages = messages + [{
         "role": "user",
-        "content": "上一条输出无法解析为合法 JSON。重新输出：只给合法 JSON 本体，不要解释，不要 Markdown 围栏。",
+        "content": f"上一条输出不符合约定格式。重新输出：只给合法 JSON {want}"
+                   + ("" if json_any else "（{ } 花括号开头，字段名: 值；不要 JSON 数组）")
+                   + "，不要解释，不要 Markdown 围栏。",
     }]
     content2 = _call(fix_messages, task, prof)
     try:
-        return _extract_json(content2)
-    except ValueError as e:
-        raise LLMParseError(f"两次输出均无法解析为 JSON: {e}；原文前 500 字: {content2[:500]}") from e
+        result2 = _extract_json(content2)
+        if _acceptable(result2):
+            return result2
+        err = ValueError(f"约定要 JSON {want}，拿到的是 {type(result2).__name__}")
+    except ValueError as e2:
+        err = e2
+    raise LLMParseError(f"两次输出均不符合 JSON 格式约定（要求{want}）: {err}；第二次原文前 500 字: {content2[:500]}") from err

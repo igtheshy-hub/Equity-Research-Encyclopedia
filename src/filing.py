@@ -227,6 +227,8 @@ def _quotes(path, units, meta, task_id=None):
         except llm.LLMError:
             continue
         for q in out.get("quotes") or []:
+            if not isinstance(q, dict):  # 嵌套层混进清单时跳过，不崩整份抄录
+                continue
             text = str(q.get("text") or "").strip()
             if not text:
                 continue

@@ -256,7 +256,7 @@ def _select_pages(question, history):
         response_json=True,
     )
     valid_slugs = {e["slug"] for e in entries}
-    slugs = [s for s in (sel.get("selected") or []) if s in valid_slugs]
+    slugs = [s for s in (sel.get("selected") or []) if isinstance(s, str) and s in valid_slugs]
     return pages, slugs, str(sel.get("reason") or ""), bool(sel.get("use_index"))
 
 
@@ -287,6 +287,8 @@ def _suggest_raw_files(question):
         return []
     res = []
     for c in (out.get("candidates") or [])[:5]:
+        if not isinstance(c, dict):
+            continue
         f = str(c.get("file") or "").strip()
         if f in idx:
             res.append({"file": f, "reason": str(c.get("reason") or "")})
