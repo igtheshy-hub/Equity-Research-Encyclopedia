@@ -45,7 +45,11 @@ def _is_anthropic(url):
 
 
 def _parse_reply(data):
-    """按响应结构认服务商格式：Anthropic 给 content 块数组，OpenAI 兼容给 choices。"""
+    """按响应结构认服务商格式：Anthropic 给 content 块数组，OpenAI 兼容给 choices。
+
+    返回 (正文, usage)。被截断（finish_reason=length / stop_reason=max_tokens）时
+    抛 _Retryable —— 半句话直接入库比没有更危险（问题 20）。
+    """
     blocks = data.get("content")
     if isinstance(blocks, list):
         # 关思考后正常只有 text 块；thinking 块不取，避免把思维过程当正文
@@ -63,7 +67,23 @@ def _parse_reply(data):
         stop = (data.get("choices") or [{}])[0].get("finish_reason")
     if not text.strip():
         raise _Retryable(f"响应无正文（stop_reason={stop}）: {json.dumps(data, ensure_ascii=False)[:200]}")
+    if _is_truncated(stop):
+        raise _Retryable(
+            f"回复被长度上限截断（stop_reason={stop}），内容不完整："
+            f"{json.dumps(data, ensure_ascii=False)[:200]}"
+        )
     return text, usage
+
+
+# 各服务商的"截断"标记：OpenAI 兼容用 finish_reason=length，Anthropic 用 stop_reason=max_tokens
+_TRUNCATED_REASONS = {"length", "max_tokens", "max_output_tokens", "MAX_TOKENS"}
+
+
+def _is_truncated(stop) -> bool:
+    """判断这次回复是不是被输出长度上限截断了。"""
+    if not stop:
+        return False
+    return str(stop).strip().lower() in {s.lower() for s in _TRUNCATED_REASONS}
 
 
 def _request(payload, prof):
@@ -164,9 +184,14 @@ def chat(messages, *, task, response_json=False, model=None):
         return _extract_json(content)
     except ValueError:
         pass
+    # 重写时把上一轮输出给模型看（问题 20）：让它**改格式**而不是凭空重写一份
     fix_messages = messages + [{
         "role": "user",
-        "content": "上一条输出无法解析为合法 JSON。重新输出：只给合法 JSON 本体，不要解释，不要 Markdown 围栏。",
+        "content": (
+            "上一条输出无法解析为合法 JSON。请**在上一条输出的基础上**改成合法 JSON：\n"
+            "只给 JSON 本体，不要解释，不要 Markdown 围栏，不要前后缀。\n"
+            f"上一条输出：\n{content[:2000]}"
+        ),
     }]
     content2 = _call(fix_messages, task, prof)
     try:

@@ -1,7 +1,7 @@
 import re
 from datetime import date, datetime
 
-from . import config, llm, wiki
+from . import anchor_verify, config, llm, wiki
 from .ingest import iter_pdfs, load_manifest
 
 CONFLICT_PROMPT = """你是知识库审校员。下面是 wiki 页面「{TITLE}」的全部条目。找出页内互相冲突的陈述对。
@@ -157,8 +157,26 @@ def run(task_id=None):
                     "note": f"观点依据期早于最新数据期，待复核：{ln[:60]}",
                 })
 
-    known = {f["file"] for f in manifest["files"]}
-    missing_files = [p for p in iter_pdfs() if p.name not in known]
+    # 「漏摄入」检查：按**内容**（sha256）比对，不按文件名（问题 21）。
+    # 原来只比文件名：手工删过文件、或取名改过（rename）之后，
+    # 明明已经不在库里（或已经换名）却查不出来，账实不符发现不了。
+    known_names = {f["file"] for f in manifest["files"]}
+    known_shas = {f.get("sha256") for f in manifest["files"] if f.get("sha256")}
+    missing_files = []
+    for p in iter_pdfs():
+        if p.name in known_names:
+            continue
+        # 名字对不上，但内容一样 → 是改名，不是漏摄入
+        try:
+            from .classify import sha256_of
+            if sha256_of(p) in known_shas:
+                continue
+        except Exception:
+            pass
+        missing_files.append(p)
+
+    # 出处锚点存疑：问答时抽查出来的「数字在锚点页原文里找不到」，交人工复核（问题 6）
+    anchor_doubts = anchor_verify.load_doubts()
 
     non_source = [p for p in pages if p["type"] != "source"]
 
@@ -255,6 +273,15 @@ def run(task_id=None):
             out_lines += [f"- {m['title']} {m['note']}"]
     out_lines.append("")
 
+    out_lines += [f"## 锚点存疑（{len(anchor_doubts)}，待人工复核）"]
+    if anchor_doubts:
+        for d in anchor_doubts[-80:]:
+            out_lines.append(f"- [{d.get('file')}#{d.get('loc')}] {d.get('reason', '')}")
+            out_lines.append(f"  - 原句：{d.get('sentence', '')}")
+    else:
+        out_lines += ["（无）"]
+    out_lines.append("")
+
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_path = config.OUTPUTS_DIR / f"audit-{ts}.md"
     config.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -270,6 +297,7 @@ def run(task_id=None):
             "矛盾": len(conflicts), "时点差异": len(time_diffs), "过期": len(stale),
             "未摄入文件": len(missing_files), "内容缺口页": len(gaps_by_page), "孤立": len(orphans),
             "格式损坏": len(bad_pages), "需复核": len(needs_review_pages),
+            "锚点存疑": len(anchor_doubts),
         },
         "conflicts": conflicts,
         "stale": stale,
@@ -279,12 +307,15 @@ def run(task_id=None):
         "orphans": orphans,
         "bad_pages": [{"path": p.relative_to(config.ROOT).as_posix(), "error": e} for p, e in bad_pages],
         "merge_suggestions": merge_suggestions,
+        # 锚点存疑（问题 6）：问答时抽查出来「数字在锚点页原文里找不到」的条目，
+        # 写进 JSON 才能被网页端看到（原来只在 markdown 报告里有）。
+        "anchor_doubts": anchor_doubts[-200:],
     }, ensure_ascii=False, indent=1), encoding="utf-8")
     wiki.append_log(
         "audit",
         f"审校报告 {out_path.name}：矛盾 {len(conflicts)}、过期 {len(stale)}、"
         f"未摄入 {len(missing_files)} 文件/{len(gaps_by_page)} 页、孤立 {len(orphans)}、"
-        f"需复核 {len(needs_review_pages)}",
+        f"需复核 {len(needs_review_pages)}、锚点存疑 {len(anchor_doubts)}",
     )
     return {
         "path": out_path,
@@ -297,5 +328,7 @@ def run(task_id=None):
             "孤立": len(orphans),
             "格式损坏": len(bad_pages),
             "需复核": len(needs_review_pages),
+            "锚点存疑": len(anchor_doubts),
         },
+        "anchor_doubts": anchor_doubts,
     }

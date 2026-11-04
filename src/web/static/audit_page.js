@@ -2,6 +2,11 @@
 
 let lastAuditTid = null;
 
+document.addEventListener("DOMContentLoaded", () => {
+  // 模型选择与首页/问答页共用同一个本地记忆
+  App.bindModelSelect();
+});
+
 function setLastTime(text) {
   const el = document.getElementById("last-audit-time");
   if (el) el.textContent = "上次审校时间：" + text;
@@ -19,11 +24,18 @@ function loadLatest() {
 function renderSummary(d) {
   const box = document.getElementById("audit-summary");
   const c = d.counts || {};
+  const doubts = d.anchor_doubts || [];
+  const nDoubt = c["锚点存疑"] || doubts.length || 0;
   box.hidden = false;
   box.innerHTML = `
     <div class="meta-card">
       <div>最新报告：<a href="/outputs/${encodeURIComponent(d.report)}" target="_blank" rel="noopener">${App.escapeHtml(d.report)}</a></div>
       <div>矛盾 ${c["矛盾"] || 0} · 时点差异 ${c["时点差异"] || 0} · 过期 ${c["过期"] || 0} · 未摄入 ${c["未摄入文件"] || 0} 文件 / ${c["内容缺口页"] || 0} 页缺口 · 孤立 ${c["孤立"] || 0} · 需复核 ${c["需复核"] || 0} · 格式损坏 ${c["格式损坏"] || 0}</div>
+      <div>锚点存疑 <b>${nDoubt}</b> 条 — 答案里的数字在它标注的原文页里找不到，需人工核对${doubts.length ? `（下面列出最近 ${Math.min(doubts.length, 20)} 条）` : ""}</div>
+      ${doubts.length ? `<details><summary class="muted tiny" style="cursor:pointer;">展开存疑条目</summary>
+        <ul class="muted tiny" style="padding-left:20px;">
+          ${doubts.slice(-20).map((x) => `<li>${App.escapeHtml(x.file || "")}（${App.escapeHtml(String(x.loc || ""))}）：${App.escapeHtml(x.reason || String(x.number || ""))}<br><span class="muted">${App.escapeHtml((x.sentence || "").slice(0, 120))}</span></li>`).join("")}
+        </ul></details>` : ""}
       <p><button class="ghost" id="fix-open">按最新报告修改 wiki</button></p>
     </div>`;
   document.getElementById("fix-open").addEventListener("click", () => openWizard(window.__latestAudit));
@@ -52,7 +64,7 @@ document.getElementById("audit-btn").addEventListener("click", () => {
   btn.disabled = true;
   fetch("/api/audit/run", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: localStorage.getItem("askModel") || "" }),
+    body: JSON.stringify({ model: App.model() }),
   })
     .then((r) => r.json())
     .then((d) => {
@@ -177,7 +189,7 @@ function openWizard(d) {
     if (!actions.length) { App.toast("没有勾选任何修复动作", "warn"); return; }
     fetch("/api/audit/fix", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actions, model: localStorage.getItem("askModel") || "" }),
+      body: JSON.stringify({ actions, model: App.model() }),
     })
       .then((r) => r.json())
       .then((d2) => {

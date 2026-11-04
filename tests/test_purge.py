@@ -264,10 +264,14 @@ def test_web_task():
     print("走网页接口跑删除任务：")
     sandbox()
     from src.web.app import app
+    # 删除接口要求同源头 X-Requested-With: wiki（防 CSRF），测试里补上
     c = app.test_client()
+    c.post("/api/files/delete", json={"files": []},
+           headers={"X-Requested-With": "wiki"})  # 预热无意义，仅示意
     rows = c.get("/api/files").get_json()["items"]
     check("接口列出三份", len(rows), 3)
-    r = c.post("/api/files/delete", json={"files": ["研报甲.pdf", "财报丙.pdf"]})
+    r = c.post("/api/files/delete", json={"files": ["研报甲.pdf", "财报丙.pdf"]},
+                headers={"X-Requested-With": "wiki"})
     check("起任务返回 200", r.status_code, 200)
     tid = r.get_json()["task_id"]
     t = None

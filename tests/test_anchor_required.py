@@ -69,9 +69,15 @@ class FakeLLM:
 
 
 def run(answers):
+    # 真实知识页每条结论都带锚点（schema/CLAUDE.md §1）。原来这个夹具的正文没写锚点，
+    # 与真实数据不符——_allowed_from_pages 只认正文里出现过的锚点，
+    # 夹具没锚点 → 答案里的锚点全被判违规 → 一直重试到假 LLM 答不上来。
+    # 改夹具（补上锚点），不放宽校验。
     page = {"path": None, "type": "company", "slug": "比亚迪",
             "meta": {"title": "比亚迪", "aliases": [], "summary": "整车厂", "sources": [FILE]},
-            "body": "【数据】2025FY 营业收入 = 803,964,958,000 元", "anchors": set(), "statements": 1}
+            "body": (f"【数据】2025FY 营业收入 = 803,964,958,000 元 [[{FILE}#p11]]\n"
+                      f"- 归母净利润 326.19 亿元 [[{FILE}#p16]]"),
+            "anchors": {(FILE, "p11"), (FILE, "p16")}, "statements": 2}
     ask_mod._index_pages = lambda: ([page], [ask_mod.wiki.build_index_entry(page)])
     ask_mod.load_manifest = lambda: {"files": [{"file": FILE, "unit": "page", "count": 200}]}
     fake = FakeLLM(answers)

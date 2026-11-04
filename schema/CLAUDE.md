@@ -28,6 +28,8 @@ updated: 2026-04-20
 
 frontmatter 除必填的 title / type / sources / updated 外，可加 aliases（别名，匹配用）、summary（一句话摘要，进总索引）、history（更新历史，每次摄入追加一行）、focus（用户关注点）、focus_hits（命中关注点的原文片段，最多 50 条）、needs_review（删除原文件后有内容失去锚点时置 true）、review_reason（需复核原因）。`needs_review: true` 的页面允许 sources 暂时为空、允许【数据】/【指标】行暂时无锚点（这两类豁免只在页面标记期间生效），页面顶部会显示「需复核」提示，审校报告单列「需复核」并在修复向导里提供确认动作；人工确认后清除这两个字段，逐行锚点检查恢复。type 决定页面所在子目录：company → wiki/companies/，industry → wiki/industries/，concept → wiki/concepts/，source → wiki/sources/。
 
+导入时若填了**关注点**（首页「导入设置」），命中关注点的条目另记两个页级字段：focus（本次用的关注点列表）、focus_hits（命中的条目原文片段，最多 50 条）。这两个字段只写在 frontmatter，不进正文，不影响锚点格式。
+
 页面间互引用用 `[[页面标题]]`，只能指向已存在的页面；跨类型引用也算有效入链。
 
 ## 收件台规则
@@ -116,8 +118,12 @@ frontmatter 除必填的 title / type / sources / updated 外，可加 aliases�
 - 所有耗时操作（问答、取名入库、摄入、审校、修复、报告、删除）跑在服务端后台线程，状态存进程内任务注册表（src/tasks.py），前端轮询 /api/tasks 取进度；完成卡片点掉后移除，注册表最多保留 200 条，超出自动清理最老的已结束任务
 - 取名入库 / 摄入 / 审校 / 修复 / 报告按类型互斥排队；问答不限并发。等待中的任务也会显示；运行中与排队中的任务可点「取消」，后台循环在下一个可中断点停止；摄入链另设总超时
 - 模型选择：网页下拉选中的模型随请求传给后台任务，取名、摄入、审校、修复、问答全部生效；config.json 的 llm.default 可写 "auto"，按 .env 里配了 key 的模型顺序自动选，协作者不必改配置文件
-- 网页路由：/ 首页（提问框 + 上传区 + 进度）、/kb 知识库、/ask 问答（支持双栏会话分屏）、/files 原文件（列表、重复名警告、批量删除）、/audit 审校、/outputs 产出、/export Excel 导出（科目 / 指标 / 条目 / 来源四张表，需 openpyxl）、/log 日志（按 wiki 条目展示元数据）、/viewer 原文对照（PDF.js 渲染 PDF：定位页 + 文本层高亮 + 缩放；docx 转 HTML：定位段落 + 高亮）
+- 网页路由：/ 首页（提问框 + 上传区 + 导入设置 + 进度）、/kb 知识库、/ask 问答（支持双栏会话分屏）、/files 原文件（列表、重复名警告、批量删除）、/audit 审校、/outputs 产出、/export Excel 导出（科目 / 指标 / 条目 / 来源四张表，需 openpyxl）、/log 日志（按 wiki 条目展示元数据）、/viewer 原文对照（PDF.js 渲染 PDF：定位页 + 文本层高亮 + 缩放；docx 转 HTML：定位段落 + 高亮）
 - 数据隔离：wiki/、data/、outputs/、raw/ 都进 .gitignore，克隆后首次启动自动创建空目录与 index/log。每人的知识库、会话、LLM 日志、材料清单都只在自己机器上；data/conversations.json 损坏时先备份成 conversations.corrupt-<时间>.json 再以空会话启动，网页启动自检会提示
+- 会改状态的接口（上传 / 删除 / 审校 / 修复 / 问答 / 深查 / 沉淀）都要带 `X-Requested-With: wiki` 头，否则 403。这是防跨站请求（CSRF）：浏览器发跨站请求时带不上自定义头，挡住「别的网页偷偷调我的删除接口」
+- 渲染顺序固定：先 HTML 转义、再过 Markdown、最后放回程序自己生成的锚点/双链标签。用户与研报提供的内容永远只是文字，不能变成可执行 HTML
+- 知识页的读-改-写整段持 wiki.WIKI_LOCK（摄入线与删除线可能同时改同一页）；写盘用「临时文件 → 原子替换」，临时文件名带 pid+随机后缀
+- 清单（data/manifest.json）是全库总账本：写入用「临时文件 → 原子替换」，旧版备份 .bak，读坏自动从备份恢复（坏文件另存 .corrupt）；摄入/修复只「追加本轮新增的条目」，绝不整体写回，否则并发删除的痕迹会被冲掉
 
 ## 命令用法
 
@@ -130,4 +136,5 @@ python manage.py ask "问题"            # 检出新知识时 y/N 确认沉淀�
 python manage.py audit
 python manage.py validate
 python manage.py serve                 # 本地网页 http://127.0.0.1:5000
+pytest tests/ -q                       # 跑测试（全程隔离真实数据）
 ```

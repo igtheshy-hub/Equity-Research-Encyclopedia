@@ -11,13 +11,22 @@ from src import config
 def cmd_selftest(args):
     ok = True
     print("== 依赖检查 ==")
-    for mod in ("httpx", "pdfplumber", "flask", "dotenv", "yaml", "markdown", "docx", "openpyxl"):
+    for mod in ("httpx", "pdfplumber", "flask", "dotenv", "yaml", "markdown", "docx",
+                "openpyxl", "jinja2", "requests"):
         try:
             importlib.import_module(mod)
             print(f"  [好] {mod}")
         except ImportError as e:
             ok = False
             print(f"  [缺] {mod}: {e}")
+    print("== 配置完整性 ==")
+    cfg_problems = config.validate_config()
+    if cfg_problems:
+        ok = False
+        for x in cfg_problems:
+            print(f"  [缺] {x}")
+    else:
+        print("  [好] config.json 必填项齐全")
     print("== 配置检查 ==")
     if config.LLM_API_KEY:
         prof = config.model_profile()
@@ -42,6 +51,10 @@ def cmd_selftest(args):
             print(f"  [缺] {p['label']}（{pid}）：.env 里没读到 {p['key_env']}")
             bad_models.append(pid)
             continue
+        if args.offline:
+            # 只查配置不联网（问题 20）：体检不该每次都烧 API 的钱
+            print(f"  [略] {p['label']}（{pid}）：key 已配置（--offline 模式不联网验证）")
+            continue
         t0 = time.monotonic()
         try:
             reply = llm.chat([{"role": "user", "content": "请只回复两个字：正常"}], task="select", model=pid)
@@ -54,14 +67,17 @@ def cmd_selftest(args):
     if config.DEFAULT_MODEL in bad_models:
         print(f"\n默认模型 {config.DEFAULT_MODEL} 不通，selftest 未通过。改 config.json 的 llm.default 或修好上面的 key。")
         return 1
-    print("== 库外问答检查 ==")
-    from src import ask as ask_mod
-    r = ask_mod.ask("马斯克的火星殖民计划最新进展如何？", propose=False)
-    if r["kind"] == "referral":
-        print("  [好] 知识库外问题正确走了 raw 文件名回退路径")
+    if args.offline:
+        print("== 库外问答检查（--offline 跳过：它要真调模型）==")
     else:
-        print(f"  [败] 库外问题未走回退：{str(r['answer_md'])[:60]}")
-        return 1
+        print("== 库外问答检查 ==")
+        from src import ask as ask_mod
+        r = ask_mod.ask("马斯克的火星殖民计划最新进展如何？", propose=False)
+        if r["kind"] == "referral":
+            print("  [好] 知识库外问题正确走了 raw 文件名回退路径")
+        else:
+            print(f"  [败] 库外问题未走回退：{str(r['answer_md'])[:60]}")
+            return 1
     print("== 全库校验 ==")
     from src import validate
     problems = validate.validate_all()
@@ -170,6 +186,14 @@ def cmd_validate(args):
 
 
 def cmd_serve(args):
+    # 启动先查 config.json 完整性（问题 21）：少配一项要等到跑一半才崩，不如启动就报清
+    cfg_problems = config.validate_config()
+    if cfg_problems:
+        print("config.json 不完整：")
+        for x in cfg_problems:
+            print(f"  - {x}")
+        print("请补齐后重启（可参考 README 的配置说明）。")
+        return 1
     from src.web.app import app
     print("启动本地网页：http://127.0.0.1:5000 （Ctrl+C 停止）")
     app.run(host="127.0.0.1", port=5000, debug=False)
@@ -182,6 +206,8 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("selftest", help="体检：依赖、配置、模型连通")
+    p.add_argument("--offline", action="store_true",
+                   help="只查配置不联网（不调模型、不花 API 钱）")
     p.set_defaults(func=cmd_selftest)
 
     p = sub.add_parser("sort", help="收件台：归类 raw/inbox/ 中的新文件")
@@ -189,7 +215,8 @@ def main():
 
     p = sub.add_parser("ingest", help="摄入 raw/ 中的材料")
     p.add_argument("--file", help="指定单个文件路径")
-    p.add_argument("--all", action="store_true", help="扫描 raw/ 全部材料（默认行为）")
+    p.add_argument("--all", action="store_true",
+                   help="（兼容保留，无实际作用：不带 --file 就是扫描 raw/ 全部）")
     p.add_argument("--dry-run", action="store_true", help="只做提取预览，不调用 LLM 编译")
     p.set_defaults(func=cmd_ingest)
 

@@ -1,9 +1,11 @@
+import hashlib
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, make_response, request
 
 from .. import ask as ask_mod
 from .. import audit as audit_mod
@@ -20,6 +22,88 @@ from .render import anchor_pretty, render_md
 api = Blueprint("api", __name__)
 
 
+def _require_same_origin():
+    """拦截跨站请求（CSRF）。问题 1 的第二道防线。
+
+    删除文件、上传、审校、修复、沉淀都是"别的网页可以偷偷调"的接口：
+    浏览器发跨站请求时，同源策略禁止 JS 读响应，但**请求照样会发出去**。
+    两道校验：
+      1. 必须带自定义头 X-Requested-With: wiki —— 跨站表单发不出自定义头
+      2. Origin / Referer 必须是本站
+    返回 None 表示放行；返回 (响应, 状态码) 表示拒绝。
+    """
+    if request.headers.get("X-Requested-With") != "wiki":
+        return jsonify({"error": "缺少 X-Requested-With 头，拒绝跨站请求"}), 403
+    host = request.host
+    for h in (request.headers.get("Origin") or "", request.headers.get("Referer") or ""):
+        if not h:
+            continue
+        try:
+            from urllib.parse import urlparse
+            netloc = urlparse(h).netloc
+        except Exception:
+            continue
+        if netloc and netloc != host:
+            return jsonify({"error": "跨站请求被拒绝"}), 403
+    return None
+
+
+# 错误脱敏（问题 21）：网页报错不该露出 API 服务商的原始响应、或电脑上文件的完整路径。
+# 完整信息只进服务端日志，客户端只拿到一句人话。
+def _looks_like_path(tok: str) -> bool:
+    """像不像一个绝对路径（盘符开头、或是 / 开头）。"""
+    return bool(tok) and (tok[0] in "/\\" or (len(tok) > 1 and tok[1] == ":"))
+
+
+def _looks_like_http_body(tok: str) -> bool:
+    """像不像 API 服务商返回的原始错误体。"""
+    t = tok.strip()
+    return t.startswith("HTTP ") and (":" in t) and ("{" in t or "[" in t)
+
+
+
+
+def _safe_error(e, prefix: str = "处理失败") -> str:
+    """把异常原文洗成一句不含敏感信息的说明。
+
+    脱敏两样（问题 21）：
+      1. API 服务商返回的原始错误体（可能含 key 片段、内部结构）
+      2. 电脑上文件的完整路径
+    完整信息只留在服务端日志里。
+    """
+    raw = str(e)
+    detail = raw
+    if _looks_like_http_body(detail):
+        detail = "HTTP 错误响应（详见服务端日志）"
+    else:
+        # 按空白切词，逐词判断是不是路径
+        cleaned = []
+        for w in detail.split():
+            cleaned.append("<路径已隐藏>" if _looks_like_path(w) else w)
+        detail = " ".join(cleaned)
+    detail = detail.strip()
+    if len(detail) > 120:
+        detail = detail[:120] + "…"
+    return f"{prefix}：{detail}" if detail else prefix
+
+
+def _conditional_json(payload, req):
+    """带 ETag 的 JSON 响应：内容没变就回 304 空响应（问题 21：全量轮询浪费带宽）。
+
+    Flask 的 make_conditional() 对 jsonify 不生效，这里显式算摘要做 ETag。
+    """
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    etag = '"' + hashlib.md5(body.encode("utf-8")).hexdigest() + '"'
+    if req.headers.get("If-None-Match") == etag:
+        resp = make_response("", 304)
+        resp.headers["ETag"] = etag
+        return resp
+    resp = make_response(body)
+    resp.headers["Content-Type"] = "application/json; charset=utf-8"
+    resp.headers["ETag"] = etag
+    return resp
+
+
 def _msg_out(m):
     """消息出站加工：助手答案附渲染 HTML，提案行附可读文本。"""
     m = dict(m)
@@ -33,13 +117,24 @@ def _msg_out(m):
 
 # ---------- 问答 ----------
 
-def _model_arg(data):
-    """请求里带的模型 id，返回 (模型 id 或 None, 错误响应)。空 = 用 config.json 的默认模型。"""
-    name = str(data.get("model") or "").strip()
+def _resolve_model(raw):
+    """请求里带的模型 id → (模型 id 或 None, 错误文案 或 None)。
+
+    空 / 等于默认模型 = 用 config.json 的默认模型。
+    """
+    name = str(raw or "").strip()
     if not name or name == config.DEFAULT_MODEL:
         return None, None
     if name not in config.MODEL_PROFILES:
-        return None, (jsonify({"error": f"未知模型：{name}"}), 400)
+        return None, f"未知模型：{name}"
+    return name, None
+
+
+def _model_arg(data):
+    """请求里带的模型 id，返回 (模型 id 或 None, 错误响应)。"""
+    name, err = _resolve_model((data or {}).get("model"))
+    if err:
+        return None, (jsonify({"error": err}), 400)
     return name, None
 
 
@@ -52,7 +147,7 @@ def _ask_body(cid, mid, question, history, model):
     try:
         result = ask_mod.ask(question, history=history, propose=True)
     except Exception as e:
-        sessions.update_message(cid, mid, status="error", kind="error", content=f"问答失败：{e}")
+        sessions.update_message(cid, mid, status="error", kind="error", content=_safe_error(e, "问答失败"))
         raise
     if result["kind"] == "report":
         title = result["title"]
@@ -94,6 +189,8 @@ def _run_deep(cid, mid, question, files, history, model):
 
 @api.post("/api/ask")
 def api_ask():
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     question = str(data.get("question") or "").strip()
     if not question:
@@ -112,6 +209,8 @@ def api_ask():
 
 @api.post("/api/deep")
 def api_deep():
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     model, err = _model_arg(data)
     if err:
@@ -134,13 +233,37 @@ def api_deep():
 
 @api.get("/api/conversations")
 def api_conversations():
-    return jsonify({"items": sessions.list_conversations()})
+    return _conditional_json({"items": sessions.list_conversations()}, request)
 
 
 @api.post("/api/conversations")
 def api_conversations_new():
+    if err := _require_same_origin():
+        return err
     conv = sessions.create()
     return jsonify({"conv": conv})
+
+
+@api.delete("/api/conversations/<cid>")
+def api_conversation_delete(cid):
+    """删掉一个会话（问题 21：以前只能新建不能删，历史永久堆积）。"""
+    if err := _require_same_origin():
+        return err
+    if not sessions.delete(cid):
+        return jsonify({"error": "会话不存在"}), 404
+    return jsonify({"ok": True})
+
+
+@api.patch("/api/conversations/<cid>")
+def api_conversation_rename(cid):
+    """给会话改名（问题 21）。"""
+    if err := _require_same_origin():
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    title = sessions.rename(cid, data.get("title") or "")
+    if title is None:
+        return jsonify({"error": "会话不存在或标题为空"}), 400
+    return jsonify({"ok": True, "title": title})
 
 
 @api.get("/api/conversations/<cid>")
@@ -166,6 +289,9 @@ def api_conversation(cid):
 
 @api.post("/api/distill/propose")
 def api_distill_propose():
+    # 这个接口会调 LLM（要花钱），也要挡跨站请求
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     conv = sessions.get(data.get("conv_id") or "")
     if conv is None:
@@ -246,6 +372,8 @@ def api_proposals_dismiss():
 
 @api.post("/api/distill/apply")
 def api_distill_apply():
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     results = []
     for a in data.get("applies") or []:
@@ -257,7 +385,7 @@ def api_distill_apply():
         try:
             ret = ask_mod.apply_distill(msg["proposal"], chosen_lines=a.get("lines"))
         except Exception as e:
-            results.append({"ok": False, "msg_id": msg["id"], "error": str(e)})
+            results.append({"ok": False, "msg_id": msg["id"], "error": _safe_error(e)})
             continue
         if not ret:
             results.append({"ok": False, "msg_id": msg["id"], "error": "没有可写入的行"})
@@ -293,7 +421,7 @@ def _pipeline(names, focus=None):
                 try:
                     r = classify_one(p)
                 except Exception as e:
-                    r = {"ok": False, "file": name, "error": str(e)}
+                    r = {"ok": False, "file": name, "error": _safe_error(e)}
                 results.append(r)
                 if r.get("ok"):
                     queue.put(config.ROOT / r["target"])
@@ -323,7 +451,7 @@ def _pipeline(names, focus=None):
                     r = ingest_mod.ingest_one(target, manifest, focus=focus, task_id=tid)
                 except Exception as e:
                     print(f"  摄入失败: {e}")
-                    r = {"file": target.name, "error": str(e)}
+                    r = {"file": target.name, "error": _safe_error(e)}
                 if r:
                     results.append(r)
                 # 逐份落盘，且只追加本轮新增的条目：删除线并发删掉的条目不会被这份旧清单冲回来
@@ -340,6 +468,8 @@ def _pipeline(names, focus=None):
 
 @api.post("/api/upload")
 def api_upload():
+    if err := _require_same_origin():
+        return err
     files = request.files.getlist("files")
     if not files:
         return jsonify({"error": "没有收到文件"}), 400
@@ -378,7 +508,7 @@ def api_upload():
                       label=f"取名入库 {len(saved)} 份", model=model, timeout_s=timeout_s)
     tasks.start("ingest", ingest_line, total=len(saved),
                 label=f"摄入 {len(saved)} 份", model=model, timeout_s=timeout_s)
-    return jsonify({"task_id": tid, "saved": saved, "rejected": rejected, "focus": focus})
+    return jsonify({"task_id": tid, "saved": saved, "rejected": rejected, "focus": focus, "model": model})
 
 
 # ---------- 原文件 ----------
@@ -390,6 +520,9 @@ def api_files():
 
 @api.post("/api/files/delete")
 def api_files_delete():
+    # 问题 1（CSRF）：删除是不可撤销的破坏性操作，必须挡住"别的网页偷偷调我"。
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     names = [str(n).strip() for n in (data.get("files") or []) if str(n).strip()]
     if not names:
@@ -403,6 +536,8 @@ def api_files_delete():
 
 @api.post("/api/audit/run")
 def api_audit_run():
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     model, err = _model_arg(data)
     if err:
@@ -410,9 +545,9 @@ def api_audit_run():
 
     def run(tid):
         r = audit_mod.run(task_id=tid)
-        return {"file": r["path"].name, "counts": r["counts"]}
+        return {"file": r["path"].name, "counts": r["counts"], "model": model}
     tid = tasks.start("audit", run, label="四类健康检查", model=model)
-    return jsonify({"task_id": tid})
+    return jsonify({"task_id": tid, "model": model})
 
 
 def _ts_pretty(ts):
@@ -439,6 +574,8 @@ def api_audit_latest():
 
 @api.post("/api/audit/fix")
 def api_audit_fix():
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     actions = [a for a in (data.get("actions") or []) if isinstance(a, dict)]
     if not actions:
@@ -446,10 +583,11 @@ def api_audit_fix():
     model, err = _model_arg(data)
     if err:
         return err
-    tid = tasks.start("fix", lambda t: {"notes": fix_mod.apply_fixes(actions, task_id=t)},
+    tid = tasks.start("fix", lambda t: {"notes": fix_mod.apply_fixes(actions, task_id=t),
+                                        "model": model},
                       total=len(actions), label=f"按审校报告修复 {len(actions)} 项",
                       model=model)
-    return jsonify({"task_id": tid})
+    return jsonify({"task_id": tid, "model": model})
 
 
 # ---------- 任务 ----------
@@ -458,7 +596,8 @@ def api_audit_fix():
 def api_tasks():
     kinds = request.args.get("kinds")
     kinds = set(kinds.split(",")) if kinds else None
-    return jsonify({"tasks": tasks.snapshot(kinds), "active": tasks.active_counts()})
+    return _conditional_json(
+        {"tasks": tasks.snapshot(kinds), "active": tasks.active_counts()}, request)
 
 
 @api.post("/api/tasks/<tid>/ack")
