@@ -18,6 +18,7 @@
 """
 import csv
 import html
+import inspect
 import io
 import json
 import os
@@ -66,19 +67,18 @@ INDUSTRY_ALIASES = {
 }
 
 AKSHARE_SERIES = {
+    # 2026-11-05 移除 4 个报告卡序列：macro_china_gdp_yearly / macro_china_cpi_yearly /
+    # macro_china_cx_pmi_yearly / macro_china_cx_services_pmi_yearly 返回的是单期报告卡
+    # （公布值/预测值/影响），不是时间序列，选了取不到历史值
     "macro_china_gdp": "GDP 累计值（季度）",
-    "macro_china_gdp_yearly": "GDP 同比（季度）",
     "macro_china_industrial_production_yoy": "规模以上工业增加值同比",
     "macro_china_pmi": "制造业 PMI（月度）",
     "macro_china_pmi_yearly": "制造业 PMI 同比",
     "macro_china_non_man_pmi": "非制造业 PMI",
-    "macro_china_cx_pmi_yearly": "财新制造业 PMI",
-    "macro_china_cx_services_pmi_yearly": "财新服务业 PMI",
     "macro_china_enterprise_boom_index": "企业景气指数",
     "macro_china_qyspjg": "企业商品价格指数",
     "macro_china_cpi": "CPI（月度）",
     "macro_china_cpi_monthly": "CPI 环比",
-    "macro_china_cpi_yearly": "CPI 同比",
     "macro_china_ppi": "PPI（月度）",
     "macro_china_ppi_yearly": "PPI 同比",
     "macro_china_retail_price_index": "零售价格指数",
@@ -164,14 +164,17 @@ CNINFO_CATEGORIES = {
     "category_tbclts_szsh": "特别处理和退市", "category_tszlq_szsh": "退市整理期",
 }
 
+# 第 5 位是该分类的客户端过滤词（标题或长标题须包含；空为不过滤）。
+# 業績公告在 titleSearchServlet 里没有独立子码（2026-11-05 实测 t2Gcode/t2code
+# 组合均被当不过滤处理），用宽查加「業績」客户端筛实现，与公告及通告区分开。
 HKEX_CATEGORIES = {
-    "all": ("-2", "-2", "-2", "全部"),
-    "annual": ("40000", "-1", "40100", "年報"),
-    "interim": ("40000", "-1", "40200", "中期/半年度報告"),
-    "quarterly": ("40000", "-1", "40300", "季度報告"),
-    "esg": ("40000", "-1", "40400", "ESG 資料/報告"),
-    "results": ("10000", "-2", "-2", "業績公告"),
-    "notice": ("10000", "-2", "-2", "公告及通告"),
+    "all": ("-2", "-2", "-2", "全部", ""),
+    "annual": ("40000", "-1", "40100", "年報", ""),
+    "interim": ("40000", "-1", "40200", "中期/半年度報告", ""),
+    "quarterly": ("40000", "-1", "40300", "季度報告", ""),
+    "esg": ("40000", "-1", "40400", "ESG 資料/報告", ""),
+    "results": ("10000", "-2", "-2", "業績公告", "業績"),
+    "notice": ("10000", "-2", "-2", "公告及通告", ""),
 }
 
 PBC_PAGES = {
@@ -271,7 +274,7 @@ def _get_json(url, params=None, attempts=3):
     raise FetchError(f"接口请求失败：{url}（{_conn_hint(last)}）")
 
 
-def _post_json(url, payload, attempts=2):
+def _post_json(url, payload, attempts=3):
     last = None
     for i in range(attempts):
         try:
@@ -459,6 +462,28 @@ def match_champion(items, industry, use_llm=True):
 # ---------- 东方财富研报 ----------
 
 EASTMONEY_QTYPE = {"0": "个股研报", "1": "行业研报", "2": "策略报告"}
+EASTMONEY_SUGGEST_URL = "https://searchapi.eastmoney.com/api/suggest/get"
+
+
+def eastmoney_stock_code(name):
+    """A 股名称→6 位代码（suggest 接口免登录）。只认 Classify=AStock，精确名优先，
+    解析不到时报错提示直接填代码。返回 (代码, 名称)。"""
+    name = str(name or "").strip()
+    if re.fullmatch(r"\d{6}", name):
+        return name, ""
+    try:
+        data = _get_json(EASTMONEY_SUGGEST_URL,
+                         params={"input": name, "type": "14", "count": "8"})
+    except FetchError as e:
+        raise FetchError(f"东财代码检索失败，请直接填 6 位股票代码（{e}）")
+    rows = ((data.get("QuotationCodeTable") or {}).get("Data")) or []
+    a_stocks = [it for it in rows if str(it.get("Classify") or "") == "AStock"
+                and re.fullmatch(r"\d{6}", str(it.get("Code") or ""))]
+    exact = [it for it in a_stocks if str(it.get("Name") or "") == name]
+    hits = exact or a_stocks
+    if not hits:
+        raise FetchError(f"东财没有解析到 A 股「{name}」，请直接填 6 位股票代码，如 002594")
+    return str(hits[0]["Code"]), str(hits[0].get("Name") or "")
 
 
 def fetch_eastmoney_reports(industry=None, broker=None, limit=3, months=24, brokers_only=False,
@@ -467,6 +492,13 @@ def fetch_eastmoney_reports(industry=None, broker=None, limit=3, months=24, brok
     limit = max(1, min(int(limit or 3), int(_cfg().get("eastmoney_max") or 3)))
     qtype = _enum_or_raise(qtype if qtype is not None else 1, EASTMONEY_QTYPE,
                            "东财研报 qtype（0=个股，1=行业，2=策略）")
+    resolved = ""
+    if str(qtype) == "0":
+        stock_code = str(stock_code or "").strip()
+        if stock_code and not re.fullmatch(r"\d{6}", stock_code):
+            code, cname = eastmoney_stock_code(stock_code)
+            resolved = f"{stock_code} → {code}" + (f"（{cname}）" if cname else "")
+            stock_code = code
     end = datetime.now()
     begin = end - timedelta(days=int(months or 24) * 31)
     params = {
@@ -533,7 +565,8 @@ def fetch_eastmoney_reports(industry=None, broker=None, limit=3, months=24, brok
             time.sleep(_delay())
     if not downloaded:
         raise FetchError("研报都下载失败了：" + "；".join(f"{s['title']}（{s['error']}）" for s in skipped))
-    return {"items": downloaded, "skipped": skipped, "url": EASTMONEY_LIST_URL}
+    return {"items": downloaded, "skipped": skipped, "url": EASTMONEY_LIST_URL,
+            "resolved": resolved}
 
 
 def _download_pdf(url, stem):
@@ -576,6 +609,38 @@ def _download_pdf(url, stem):
 # ---------- 国家统计局 ----------
 
 FREQ_CODE = {"月": "1", "季": "2", "年": "3"}
+STATS_FREQ_LABEL = {"MM": "月", "SS": "季", "YY": "年"}
+
+PROVINCES = ["北京", "天津", "河北", "山西", "内蒙古", "辽宁", "吉林", "黑龙江",
+             "上海", "江苏", "浙江", "安徽", "福建", "江西", "山东", "河南",
+             "湖北", "湖南", "广东", "广西", "海南", "重庆", "四川", "贵州",
+             "云南", "西藏", "陕西", "甘肃", "青海", "宁夏", "新疆"]
+
+# 预置指标（2026-11-05 实测 data.stats.gov.cn external 接口的口径矩阵）：
+# CPI/PPI/社零 全国与 31 省均只有年频；GDP 全国有季频（累计/当季/环比三支）与年频、
+# 省级仅年频；PMI 仅全国，月频为主。prefer 是同名多序列时的优先口径
+# （CPI/PPI 取上年=100 而非 1978=100 定基，GDP 季频取累计值）。
+STATS_PRESETS = {
+    "居民消费价格指数（CPI）": {
+        "search": "居民消费价格", "main": "居民消费价格指数",
+        "regions": ["全国"] + PROVINCES, "freqs": {"*": ["年"]},
+        "prefer": {"年": "上年=100"}},
+    "工业生产者出厂价格指数（PPI）": {
+        "search": "工业生产者出厂价格", "main": "工业生产者出厂价格指数",
+        "regions": ["全国"] + PROVINCES, "freqs": {"*": ["年"]},
+        "prefer": {"年": "上年=100"}},
+    "国内生产总值（GDP）": {
+        "search": "国内生产总值", "main": "国内生产总值",
+        "regions": ["全国"] + PROVINCES,
+        "freqs": {"全国": ["季", "年"], "*": ["年"]},
+        "prefer": {"季": "累计值"}},
+    "社会消费品零售总额": {
+        "search": "社会消费品零售总额", "main": "社会消费品零售总额",
+        "regions": ["全国"] + PROVINCES, "freqs": {"*": ["年"]}},
+    "制造业采购经理指数（PMI）": {
+        "search": "制造业采购经理指数", "main": "制造业采购经理指数",
+        "regions": ["全国"], "freqs": {"*": ["月", "年"]}},
+}
 
 
 def _dts_range(dt, dt_type, periods):
@@ -608,13 +673,21 @@ def _nbs_search(keyword, page_size=5):
     return data or []
 
 
-def _nbs_one(keyword, freq, periods, region):
+def _nbs_one(keyword, freq, periods, region, strict_main="", prefer=None):
     search = keyword if region in ("", "全国") else f"{region} {keyword}"
     items = _nbs_search(search, page_size=10)
     if not items:
         raise FetchError(f"统计局接口没有搜到「{search}」，换个更短的中文关键词再试")
     want = FREQ_CODE.get(freq)
-    pool = [x for x in items if want and str(x.get("type_value")) == want] or items
+    freq_hits = [x for x in items if want and str(x.get("type_value")) == want]
+    pool = freq_hits or items
+    # 预置路径：频率命中时再按主序列名前缀收紧（如只认「居民消费价格指数」开头的），
+    # 规避搜索相关性把同名分项排前的坑；收紧落空回退宽松池，实际序列名与频率在结果里如实标注
+    if strict_main and want and freq_hits:
+        strict = [x for x in freq_hits
+                  if str(x.get("show_name") or "").split("(")[0].strip().startswith(strict_main)]
+        if strict:
+            pool = strict
     if region not in ("", "全国"):
         region_hits = [x for x in pool if region in str(x.get("da_name") or "")]
         if region_hits:
@@ -622,6 +695,10 @@ def _nbs_one(keyword, freq, periods, region):
         else:
             raise FetchError(f"统计局搜到「{keyword}」，但没有「{region}」口径；"
                              "该指标可能只发布全国数")
+    if prefer:
+        hits = [x for x in pool if prefer in str(x.get("show_name") or "")]
+        if hits:
+            pool = hits
 
     def _name_score(x):
         name = str(x.get("show_name") or "").strip()
@@ -664,16 +741,37 @@ def fetch_stats_series(keyword, freq="auto", periods=24, region="全国"):
     keyword = str(keyword or "").strip()
     if not keyword:
         raise FetchError("统计局取数需要中文指标关键词，如 居民消费价格")
+    freq = _enum_or_raise(freq or "auto", ("auto", "月", "季", "年"), "统计局频率")
+    region = str(region or "全国").strip() or "全国"
     keywords = [k.strip() for k in re.split(r"[;；,，]", keyword) if k.strip()]
-    all_rows, names, dts_list = [], [], []
+    preset = STATS_PRESETS.get(keywords[0]) if len(keywords) == 1 else None
+    strict_main, prefer = "", None
+    if preset:
+        if region not in preset["regions"]:
+            raise FetchError(f"「{keywords[0]}」没有「{region}」口径，可选地区："
+                             f"{'、'.join(preset['regions'])}")
+        allowed = preset["freqs"].get(region) or preset["freqs"].get("*") or []
+        if freq == "auto":
+            freq = allowed[0] if allowed else "auto"
+        elif freq not in allowed:
+            raise FetchError(f"「{keywords[0]}」的{region}口径只有 {'、'.join(allowed)} 频，"
+                             f"收到的是 {freq}")
+        strict_main = preset["main"]
+        prefer = (preset.get("prefer") or {}).get(freq)
+    all_rows, names, dts_list, freqs_seen = [], [], [], []
     for kw in keywords:
-        one = _nbs_one(kw, freq, periods, str(region or "全国").strip() or "全国")
+        search_kw = preset["search"] if preset else kw
+        one = _nbs_one(search_kw, freq, periods, region,
+                       strict_main=strict_main, prefer=prefer)
         all_rows.extend(one["rows"])
         names.append(str(one["indicator"] or kw))
         if one["dts"] not in dts_list:
             dts_list.append(one["dts"])
+        lbl = STATS_FREQ_LABEL.get(str(one.get("dt_type") or ""), "")
+        if lbl and lbl not in freqs_seen:
+            freqs_seen.append(lbl)
     return {"keyword": "、".join(keywords), "indicator": "、".join(names),
-            "region": str(region or "全国"), "dt_type": "auto",
+            "region": region, "dt_type": "auto", "freq": "、".join(freqs_seen),
             "dts": "；".join(dts_list), "rows": all_rows,
             "url": f"{NBS_BASE}/stream/esData"}
 
@@ -730,7 +828,7 @@ def _cninfo_search(query, page_size=10, category="", stock="", column="szse", se
     return data.get("announcements") or []
 
 
-def fetch_cninfo_announce(query, limit=5, code="", category="", days=0, column="szse"):
+def fetch_cninfo_announce(query, limit=5, code="", category="", months=0, column="szse"):
     query = str(query or "").strip()
     code = str(code or "").strip()
     if category:
@@ -751,9 +849,9 @@ def fetch_cninfo_announce(query, limit=5, code="", category="", days=0, column="
         raise FetchError("巨潮公告检索需要关键词或股票代码，如 比亚迪 / 002594")
     limit = max(1, min(int(limit or 5), 10))
     se_date = ""
-    if int(days or 0) > 0:
+    if int(months or 0) > 0:
         end = datetime.now()
-        begin = end - timedelta(days=int(days))
+        begin = end - timedelta(days=int(months) * 31)  # 月按 31 天折算，与东财口径一致
         se_date = f"{begin:%Y-%m-%d}~{end:%Y-%m-%d}"
     items = _cninfo_search(query, page_size=max(limit * 3, 30), category=category,
                            stock=stock, column=column, se_date=se_date)
@@ -1044,22 +1142,41 @@ def fetch_hkex_annual(company, code="", year=None, limit=1):
     return {"items": downloaded, "skipped": skipped, "url": HKEX_SEARCH_URL, "stock": stock}
 
 
-def fetch_hkex_announce(company, code="", category="annual", year=None, title="", limit=5, days=0, title_any=None):
+def _hkex_pick(rows, kw_filter="", title="", title_any=None):
+    """服务端宽查后的本地筛选：分类关键词、用户标题词、定期报告模式与无文件行的剔除。"""
+    picked = []
+    for it in rows:
+        long_text = html.unescape(str(it.get("LONG_TEXT") or ""))
+        item_title = html.unescape(str(it.get("TITLE") or ""))
+        if kw_filter and kw_filter not in long_text and kw_filter not in item_title:
+            continue
+        if title and title not in long_text and title not in item_title:
+            continue
+        if title_any and not any(t in long_text or t in item_title for t in title_any):
+            continue
+        if title_any and any(x in long_text or x in item_title for x in ("摘要", "英文")):
+            continue
+        if not it.get("FILE_LINK"):
+            continue
+        picked.append(it)
+    return picked
+
+
+def fetch_hkex_announce(company, code="", category="annual", months=0, title="", limit=5,
+                        title_any=None):
     category = _enum_or_raise(category or "annual", HKEX_CATEGORIES,
                               "港交所公告分类", hint=f"未知港交所公告分类：{category}")
-    t1code, t2gcode, t2code, label = HKEX_CATEGORIES[category]
+    t1code, t2gcode, t2code, label, kw_filter = HKEX_CATEGORIES[category]
     stock = _hkex_stock(company, code)
     now = datetime.now()
-    if int(days or 0) > 0:
-        begin, end = now - timedelta(days=int(days)), now
-    elif year:
-        begin, end = datetime(int(year), 1, 1), datetime(int(year), 12, 31)
+    if int(months or 0) > 0:
+        begin = now - timedelta(days=int(months) * 31)  # 月按 31 天折算，与东财口径一致
     else:
-        begin, end = datetime(now.year - 4, 1, 1), datetime(now.year, 12, 31)
+        begin = datetime(1993, 4, 1)  # 0 为不限，从披露易上线起查
     params = {
         "sortDir": 0, "sortByOptions": "DateTime", "category": 0, "market": "SEHK",
         "stockId": stock["stockId"], "documentType": -1,
-        "fromDate": f"{begin:%Y%m%d}", "toDate": f"{end:%Y%m%d}",
+        "fromDate": f"{begin:%Y%m%d}", "toDate": f"{now:%Y%m%d}",
         "title": str(title or ""), "searchType": 1,
         "t1code": t1code, "t2Gcode": t2gcode, "t2code": t2code,
         "rowRange": 100, "lang": "zh",
@@ -1071,19 +1188,7 @@ def fetch_hkex_announce(company, code="", category="annual", year=None, title=""
             rows = _parse_hkex_reports(r.json())
     except (httpx.HTTPError, ValueError) as e:
         raise FetchError(f"HKEXnews 公告检索失败：{_conn_hint(e)}")
-    picked = []
-    for it in rows:
-        long_text = html.unescape(str(it.get("LONG_TEXT") or ""))
-        item_title = html.unescape(str(it.get("TITLE") or ""))
-        if title and title not in long_text and title not in item_title:
-            continue
-        if title_any and not any(t in long_text or t in item_title for t in title_any):
-            continue
-        if title_any and any(x in long_text or x in item_title for x in ("摘要", "英文")):
-            continue
-        if not it.get("FILE_LINK"):
-            continue
-        picked.append(it)
+    picked = _hkex_pick(rows, kw_filter=kw_filter, title=str(title or ""), title_any=title_any)
     if not picked:
         raise FetchError(f"HKEXnews 没有搜到「{company or code}」的{label}")
     picked.sort(key=lambda x: str(x.get("DATE_TIME") or ""), reverse=True)
@@ -1123,7 +1228,9 @@ def fetch_hkex_periodic(company, code="", kind="interim", days=400, limit=1):
     kind = _enum_or_raise(str(kind or "interim").lower(), HKEX_PERIODIC,
                           "港股定期报告类型", hint=f"未知港股定期报告类型：{kind}")
     category, patterns = HKEX_PERIODIC[kind]
-    return fetch_hkex_announce(company, code, category=category, days=days,
+    # days 向上折成整月（400 天 → 14 个月），窗口只放大不缩小
+    months = (int(days or 400) + 30) // 31
+    return fetch_hkex_announce(company, code, category=category, months=months,
                                title_any=patterns, limit=limit)
 
 
@@ -1167,7 +1274,48 @@ def fetch_annual_report(company, code="", market="", year=None, limit=1):
 
 # ---------- AKShare（conda macro-data 子进程） ----------
 
-AKSHARE_SCRIPT = """
+
+def _stamp_norm(value):
+    """AKShare 时点归一：返回 (显示, 排序键)。解析不出键时显示保留原样、键为 None。
+
+    帧首列有 年月（2026年09月份）、季度（2026年第1-3季度）、epoch 毫秒/秒、
+    日期（2026-09-01 / 202609）四类写法；东财系序列还是降序排列，归一并算出
+    排序键后才能安全取最近 N 期（tail 取旧行的教训见待修清单第 49 条）。
+    本函数经 inspect.getsource 注入子进程脚本，改动只写这一处。"""
+    import datetime as _dt
+    import re as _re
+
+    def _ym(y, m):
+        y, m = int(y), int(m)
+        return "%04d-%02d" % (y, m), y * 12 + m
+
+    s = str(value).strip()
+    m = _re.fullmatch(r"(20\d\d)年\s*(\d{1,2})月(份)?", s)
+    if m:
+        return _ym(m.group(1), m.group(2))
+    m = _re.fullmatch(r"(20\d\d)[-\./年](\d{1,2})(?:[-\./月](\d{1,2})日?)?", s)
+    if m:
+        y, mo = int(m.group(1)), int(m.group(2))
+        if m.group(3):
+            return "%04d-%02d-%02d" % (y, mo, int(m.group(3))), y * 12 + mo
+        return _ym(y, mo)
+    m = _re.fullmatch(r"(20\d\d)(\d\d)\b", s)
+    if m:
+        return _ym(m.group(1), m.group(2))
+    m = _re.fullmatch(r"(20\d\d)年第(\d)(?:-(\d))?季度", s)
+    if m:
+        y, q = int(m.group(1)), int(m.group(3) or m.group(2))
+        return s, y * 4 + q
+    if _re.fullmatch(r"\d{13}", s):
+        t = _dt.datetime.fromtimestamp(int(s) / 1000, _dt.timezone.utc)
+        return t.strftime("%Y-%m-%d"), t.year * 12 + t.month
+    if _re.fullmatch(r"\d{10}", s):
+        t = _dt.datetime.fromtimestamp(int(s), _dt.timezone.utc)
+        return t.strftime("%Y-%m-%d"), t.year * 12 + t.month
+    return s, None
+
+
+_AKSHARE_TMPL = """
 import contextlib, io, json, sys
 import akshare as ak
 try:
@@ -1181,13 +1329,25 @@ try:
 except ImportError:
     pass
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-    df = getattr(ak, {series!r})()
-df = df.tail({rows})
-cols = [str(c) for c in df.columns]
+    df = getattr(ak, __SERIES__)()
+__STAMP_FN__
+col0 = str(df.columns[0])
+norm = [_stamp_norm(v) for v in df[col0]]
+df = df.copy()
+df[col0] = [n[0] for n in norm]
+keys = [n[1] for n in norm]
+ordered = bool(keys) and all(k is not None for k in keys)
+if ordered:
+    order = sorted(range(len(keys)), key=lambda i: keys[i])
+    df = df.iloc[order].reset_index(drop=True)
+df = df.tail(__ROWS__)
 recs = json.loads(df.to_json(orient="records", force_ascii=False))
+cols = [str(c) for c in df.columns]
 print("<<<JSON>>>")
-print(json.dumps({{"columns": cols, "records": recs}}, ensure_ascii=False))
+print(json.dumps({"columns": cols, "records": recs, "ordered": ordered}, ensure_ascii=False))
 """
+
+AKSHARE_SCRIPT = _AKSHARE_TMPL.replace("__STAMP_FN__", inspect.getsource(_stamp_norm))
 
 
 def macro_via_akshare(series, periods=24):
@@ -1198,7 +1358,9 @@ def macro_via_akshare(series, periods=24):
     if not py or not Path(py).exists():
         raise FetchError(f"找不到 macro-data 环境的 python（config.json 的 fetcher.macro_python: {py or '未配置'}）")
     periods = max(1, min(int(periods or 24), 120))
-    code = AKSHARE_SCRIPT.format(series=series, rows=periods)
+    code = (AKSHARE_SCRIPT
+            .replace("__SERIES__", repr(series))
+            .replace("__ROWS__", str(periods)))
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     try:
         proc = subprocess.run([py, "-c", code], capture_output=True, text=True,
@@ -1215,7 +1377,8 @@ def macro_via_akshare(series, periods=24):
         raise FetchError("AKShare 没有返回数据：" + proc.stdout.strip()[-200:])
     payload = json.loads(proc.stdout.split(marker, 1)[1].strip().splitlines()[0])
     return {"series": series, "columns": payload.get("columns") or [],
-            "records": payload.get("records") or []}
+            "records": payload.get("records") or [],
+            "ordered": bool(payload.get("ordered"))}
 
 
 def _akshare_rows(payload):
@@ -1235,6 +1398,26 @@ def _akshare_rows(payload):
     if not rows:
         raise FetchError("AKShare 表里没有可用的数值列")
     return rows
+
+
+def _akshare_stale_note(rows, months_limit=6):
+    """最新期距今超过阈值时返回停更警示（无警示返回空串）。时点经 _stamp_norm 归一成
+    YYYY-MM 或 YYYY-MM-DD 后才能比；归不出来的序列跳过警示。"""
+    best_key, best_label = None, ""
+    now = datetime.now()
+    for r in rows:
+        m = re.fullmatch(r"(20\d\d)-(\d{1,2})(?:-\d{1,2})?", str(r.get("时点") or "").strip())
+        if not m:
+            continue
+        key = int(m.group(1)) * 12 + int(m.group(2))
+        if best_key is None or key > best_key:
+            best_key, best_label = key, str(r["时点"])
+    if best_key is None:
+        return ""
+    lag = (now.year * 12 + now.month) - best_key
+    if lag >= months_limit:
+        return f"源最新期停在 {best_label}（滞后 {lag} 个月），疑似停更"
+    return ""
 
 
 # ---------- 乘联会 ----------
@@ -2458,7 +2641,7 @@ def top_brokers(industry, limit=3):
     return {"year": ranking["year"], "group": group, "brokers": brokers}
 
 
-def sample_download_chain(industry, limit=3, tid=None, subject=None, skip_orgs=None):
+def sample_download_chain(industry, limit=3, tid=None, subject=None, skip_orgs=None, ingest=True):
     """样板链：慧博免登录取新财富榜单，按名次到东财下载综合最优研报，取满 limit 份。
 
     前 3 券商合计不足 limit 份时按榜单名次顺延（第 4、第 5…）补；
@@ -2515,8 +2698,10 @@ def sample_download_chain(industry, limit=3, tid=None, subject=None, skip_orgs=N
         items = res["items"]
         if res.get("skipped"):
             notes.append("跳过：" + "；".join(f"{s['title']}（{s['error']}）" for s in res["skipped"]))
-    tasks.update(tid, detail=f"下载 {len(items)} 份样板，开始取名入库")
-    ingested = ingest_inbox([it["file"] for it in items], tid)
+    ingested = {"classify": [], "ingest": []}
+    if ingest:
+        tasks.update(tid, detail=f"下载 {len(items)} 份样板，开始取名入库")
+        ingested = ingest_inbox([it["file"] for it in items], tid)
     return {"champion": pool[0] if pool else None, "brokers": pool[:limit],
             "items": items, "notes": notes, "ingest": ingested}
 
@@ -2592,7 +2777,8 @@ def run_fetch(source, params, tid=None, targets=None):
     if source == "sample_chain":
         industry = params.get("industry")
         res = sample_download_chain(industry, limit=params.get("limit") or 3, tid=tid,
-                                    skip_orgs=params.get("skip_orgs"))
+                                    skip_orgs=params.get("skip_orgs"),
+                                    ingest=params.get("ingest", True))
         summary = "；".join(res["notes"])
         done = _ingest_summary(res["ingest"])
         if done:
@@ -2615,6 +2801,8 @@ def run_fetch(source, params, tid=None, targets=None):
                                       page=params.get("page") or 1)
         files = [it["file"] for it in res["items"]]
         summary = "下载 " + "、".join(files)
+        if res.get("resolved"):
+            summary = f"股票 {res['resolved']}；" + summary
         if res.get("skipped"):
             summary += "；跳过 " + "、".join(s["title"] for s in res["skipped"])
         ingested, entries, known = {"classify": [], "ingest": []}, 0, []
@@ -2634,7 +2822,7 @@ def run_fetch(source, params, tid=None, targets=None):
         res = fetch_cninfo_announce(params.get("query"), limit=params.get("limit") or 5,
                                     code=params.get("code"),
                                     category=params.get("category") or "",
-                                    days=params.get("days") or 0,
+                                    months=params.get("months") or 0,
                                     column=params.get("column") or "szse")
         files = [it["file"] for it in res["items"]]
         summary = "下载 " + "、".join(files)
@@ -2656,9 +2844,9 @@ def run_fetch(source, params, tid=None, targets=None):
     if source == "hkex_announce":
         res = fetch_hkex_announce(params.get("company"), params.get("code"),
                                   category=params.get("category") or "annual",
-                                  year=params.get("year"), title=params.get("title"),
-                                  limit=params.get("limit") or 5,
-                                  days=params.get("days") or 0)
+                                  months=params.get("months") or 0,
+                                  title=params.get("title"),
+                                  limit=params.get("limit") or 5)
         files = [it["file"] for it in res["items"]]
         summary = "下载 " + "、".join(files)
         if res.get("skipped"):
@@ -2713,18 +2901,27 @@ def run_fetch(source, params, tid=None, targets=None):
                                  region=params.get("region") or "全国")
         return _snapshot_result(
             "国家统计局", str(res["indicator"] or res["keyword"]), res["url"], res["rows"],
-            note=f"统计口径：{res['indicator']}；地区：{res['region']}；时间区间 {res['dts']}。",
+            note=f"统计口径：{res['indicator']}；地区：{res['region']}；"
+                 f"实际频率：{res.get('freq') or '—'}；时间区间 {res['dts']}。",
             tid=tid, targets=targets)
 
     if source == "akshare_series":
         payload = macro_via_akshare(params.get("series"), periods=params.get("periods") or 24)
         rows = _akshare_rows(payload)
         topic = AKSHARE_SERIES.get(payload["series"], payload["series"])
+        warns = []
+        if not payload.get("ordered"):
+            warns.append("该序列时点未能解析排序，按原序截取，取到的可能不是最新期")
+        stale = _akshare_stale_note(rows)
+        if stale:
+            warns.append(stale)
+        note = (f"序列：{payload['series']}；按时间排序后取最近 {len(rows)} 个数值列行；"
+                "数据经 AKShare 聚合，引用级数字建议再用原始接口核验。")
+        if warns:
+            note += "注意：" + "；".join(warns) + "。"
         return _snapshot_result(
             "AKShare", topic, f"AKShare 接口 {payload['series']}（聚合公开源）", rows,
-            note=f"序列：{payload['series']}；取最近 {len(rows)} 个数值列行；"
-                 "数据经 AKShare 聚合，引用级数字建议再用原始接口核验。",
-            tid=tid, targets=targets)
+            note=note, tid=tid, targets=targets)
 
     if source == "cpca_sales":
         res = fetch_cpca_sales(params.get("charttype") or 1, months=params.get("months") or 12,
@@ -2797,12 +2994,23 @@ def run_fetch(source, params, tid=None, targets=None):
 
 # ---------- 网页表单用源清单 ----------
 
-# 网页「主动取数」只暴露这 8 个源；其余（年报/定期报告/榜单/中证/人行/FRED/IMF/
-# DBnomics/世界银行/网络检索）保留给研报管线内部补缺口，不再出现在取数页。
+# 网页「主动取数」只暴露这 5 个源；其余（AKShare/乘联会/中汽协/年报/定期报告/榜单/
+# 中证/人行/FRED/IMF/DBnomics/世界银行/网络检索）保留给研报管线内部补缺口，
+# 不出现在取数页（AKShare 的排序与停更修复仍要维护，管线缺口还在用它）。
 MANUAL_SOURCE_IDS = (
-    "stats_series", "akshare_series", "eastmoney_reports", "cninfo_announce",
-    "hkex_announce", "sample_chain", "cpca_sales", "caam_article",
+    "stats_series", "eastmoney_reports", "cninfo_announce", "hkex_announce", "sample_chain",
 )
+
+
+def _stats_freq_map():
+    """预置指标的频率联动表：{指标: {地区: [频率...]}}，供前端级联下拉。
+    自定义指标不挑地区，用 * 通配回原有 auto/月/季/年 全集。"""
+    out = {}
+    for label, p in STATS_PRESETS.items():
+        out[label] = {r: (p["freqs"].get(r) or p["freqs"].get("*") or [])
+                      for r in p["regions"]}
+    out["自定义"] = {"*": ["auto", "月", "季", "年"]}
+    return out
 
 
 def source_specs(only=None):
@@ -2818,12 +3026,21 @@ def source_specs(only=None):
         },
         {
             "id": "stats_series", "label": "国家统计局·宏观序列",
-            "desc": "按中文指标名搜序列，可取地区口径；多个指标用分号分隔。取最近若干期落快照。",
+            "desc": "5 个预置指标按实测口径联动地区与频率；选自定义仍按关键词搜，多个指标分号分隔。"
+                    "本接口没有月度 CPI/PPI/社零序列；月度宏观由研报管线补缺口时自动经内部 "
+                    "AKShare 源取，或到会话派资料员。",
             "params": [
-                {"name": "keyword", "label": "指标关键词（可多选，分号分隔）", "type": "text",
-                 "default": "居民消费价格", "required": True},
-                {"name": "region", "label": "地区（默认全国）", "type": "text", "default": "全国"},
-                {"name": "freq", "label": "频率", "type": "select", "options": ["auto", "月", "季", "年"], "default": "auto"},
+                {"name": "keyword", "label": "指标", "type": "select",
+                 "options": list(STATS_PRESETS.keys()) + ["自定义"],
+                 "default": next(iter(STATS_PRESETS)), "required": True},
+                {"name": "region", "label": "地区", "type": "select", "default": "全国",
+                 "options_depends": {"fields": ["keyword"],
+                                     "map": {label: p["regions"]
+                                             for label, p in STATS_PRESETS.items()}
+                                     | {"自定义": None}}},
+                {"name": "freq", "label": "频率", "type": "select", "default": "",
+                 "options_depends": {"fields": ["keyword", "region"],
+                                     "map": _stats_freq_map()}},
                 {"name": "periods", "label": "期数", "type": "number", "default": 24},
             ],
         },
@@ -2839,18 +3056,20 @@ def source_specs(only=None):
         },
         {
             "id": "eastmoney_reports", "label": "东财研报中心·下载研报",
-            "desc": "qType 0 个股、1 行业、2 策略；可按行业名、股票代码、行业代码、机构代码、评级变动筛，"
-                    "按深度与热度优先下载，默认自动取名入库。",
+            "desc": "选个股研报填股票名称或 6 位代码（名称自动解析成代码并在结果回显），"
+                    "选行业研报填行业或主题；按深度与热度优先下载，默认自动取名入库。",
             "params": [
                 {"name": "qtype", "label": "研报类型", "type": "select",
-                 "options": ["1", "0", "2"],
-                 "labels": {"1": "行业研报", "0": "个股研报", "2": "策略报告"}, "default": "1"},
-                {"name": "industry", "label": "行业或主题（行业研报用）", "type": "text", "default": ""},
-                {"name": "stock_code", "label": "股票代码（个股研报用）", "type": "text", "default": ""},
-                {"name": "industry_code", "label": "东财行业代码（可空）", "type": "text", "default": ""},
+                 "options": ["1", "0"],
+                 "labels": {"1": "行业研报", "0": "个股研报"}, "default": "1"},
+                {"name": "industry", "label": "行业或主题", "type": "text", "default": "",
+                 "when": {"field": "qtype", "in": ["1"]}},
+                {"name": "stock_code", "label": "股票名称或股票代码", "type": "text", "default": "",
+                 "when": {"field": "qtype", "in": ["0"]}, "required": True},
+                {"name": "industry_code", "label": "东财行业代码（可空）", "type": "text", "default": "",
+                 "when": {"field": "qtype", "in": ["1"]}},
                 {"name": "org_code", "label": "机构代码（可空）", "type": "text", "default": ""},
                 {"name": "broker", "label": "券商名（可空）", "type": "text", "default": ""},
-                {"name": "rating_change", "label": "评级变动代码（可空）", "type": "text", "default": ""},
                 {"name": "months", "label": "回溯月数", "type": "number", "default": 24},
                 {"name": "page", "label": "页码", "type": "number", "default": 1},
                 {"name": "limit", "label": "份数", "type": "number", "default": 3},
@@ -2859,7 +3078,7 @@ def source_specs(only=None):
         },
         {
             "id": "cninfo_announce", "label": "巨潮资讯·公告财报",
-            "desc": "按关键词或股票代码检索 A 股（沪深北）公告，可按 26 类公告分类与最近天数筛；"
+            "desc": "按关键词或股票代码检索 A 股（沪深北）公告，可按 26 类公告分类与最近月数筛；"
                     "港股公告不在巨潮，请用「港交所披露易·公告」或「公司年报」。",
             "params": [
                 {"name": "query", "label": "检索词", "type": "text", "default": ""},
@@ -2867,7 +3086,7 @@ def source_specs(only=None):
                 {"name": "category", "label": "公告分类", "type": "select",
                  "options": list(CNINFO_CATEGORIES.keys()),
                  "labels": CNINFO_CATEGORIES, "default": ""},
-                {"name": "days", "label": "最近天数（0 为不限）", "type": "number", "default": 0},
+                {"name": "months", "label": "最近月数（0 为不限）", "type": "number", "default": 0},
                 {"name": "column", "label": "市场", "type": "select",
                  "options": ["szse", "sse", "bse"], "default": "szse"},
                 {"name": "limit", "label": "份数", "type": "number", "default": 5},
@@ -2876,15 +3095,14 @@ def source_specs(only=None):
         },
         {
             "id": "hkex_announce", "label": "港交所披露易·公告",
-            "desc": "按港股代码取公告；分类含年报、中期、季度、ESG、业绩公告，可按年份、最近天数、标题关键词筛。",
+            "desc": "按港股代码取公告；分类含年报、中期、季度、ESG、业绩公告，可按最近月数、标题关键词筛。",
             "params": [
                 {"name": "company", "label": "公司名或代码", "type": "text", "default": "", "required": True},
                 {"name": "code", "label": "港股代码（可空，如 00700）", "type": "text", "default": ""},
                 {"name": "category", "label": "公告分类", "type": "select",
                  "options": list(HKEX_CATEGORIES.keys()),
                  "labels": {k: v[3] for k, v in HKEX_CATEGORIES.items()}, "default": "annual"},
-                {"name": "year", "label": "年份（0 为最近四年）", "type": "number", "default": 0},
-                {"name": "days", "label": "最近天数（0 为不限）", "type": "number", "default": 0},
+                {"name": "months", "label": "最近月数（0 为不限）", "type": "number", "default": 0},
                 {"name": "title", "label": "标题关键词（可空）", "type": "text", "default": ""},
                 {"name": "limit", "label": "份数", "type": "number", "default": 5},
                 {"name": "ingest", "label": "下载后自动取名入库", "type": "checkbox", "default": True},
@@ -2931,11 +3149,12 @@ def source_specs(only=None):
         },
         {
             "id": "sample_chain", "label": "行业样板下载链",
-            "desc": "慧博免登录取新财富榜单定行业组前 3 → 东财逐家下载综合最优 1 篇并入库；"
+            "desc": "慧博免登录取新财富榜单定行业组前 3 → 东财逐家下载综合最优 1 篇，可选下载后自动取名入库；"
                     "某家在东财没有时按榜单名次顺延补足。",
             "params": [
                 {"name": "industry", "label": "行业", "type": "text", "default": "", "required": True},
                 {"name": "limit", "label": "份数", "type": "number", "default": 3},
+                {"name": "ingest", "label": "下载后自动取名入库", "type": "checkbox", "default": True},
             ],
         },
         {
