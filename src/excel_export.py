@@ -16,11 +16,22 @@ import io
 import json
 from typing import List, Optional
 
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    _OPENPYXL_OK = True
+except ImportError:  # 缺依赖时网页给出中文提示，而不是整站导入失败
+    Workbook = None
+    Alignment = Font = PatternFill = None
+    get_column_letter = None
+    _OPENPYXL_OK = False
 
-from . import config, wiki
+from . import config, fin_calc, wiki
+
+
+def available():
+    return _OPENPYXL_OK
 
 TYPE_LABELS = {"company": "公司", "industry": "行业", "concept": "概念", "source": "来源摘要"}
 
@@ -44,7 +55,8 @@ INDICATOR_COLUMNS = [
     ("code", "代码", False),
     ("period", "报告期", True),
     ("indicator", "指标", True),
-    ("value_pct", "数值(%)", True),
+    ("value", "数值", True),
+    ("unit", "单位", True),
     ("anchor", "锚点", True),
 ]
 
@@ -143,17 +155,23 @@ def _iter_indicators(store):
         code = str(al[0])
     for pk, pd_ in (store.get("periods") or {}).items():
         inds = pd_.get("indicators") or {}
-        for name, v in inds.items():
+        for name, spec in inds.items():
+            v = spec.get("v") if isinstance(spec, dict) else spec
             if not isinstance(v, (int, float)):
                 continue
-            # fin_calc 存的是小数（0.1234），导出成百分比
+            unit = fin_calc.indicator_unit(name)
+            # 只有比率类乘 100；DSO/CCC 是天、FCF 是元、EPS 是元/股，不能一律当百分比
+            value = round(v * 100, 4) if unit == "%" else round(v, 4)
             yield {
                 "company": company,
                 "code": code,
                 "period": pk,
                 "indicator": name,
-                "value_pct": round(v * 100, 4),
-                "anchor": "",
+                "value": value,
+                "unit": unit,
+                # 一个指标可能由多个科目推出，锚点也有多个；
+                # 原来直接 "" 拼接看不出边界，用全角空格分隔
+                "anchor": "　".join((spec.get("a") if isinstance(spec, dict) else []) or []),
             }
 
 
@@ -229,6 +247,21 @@ def _filter_fin(rows, keyword="", companies=None, periods=None):
 
 
 # ── 写 Excel ────────────────────────────────────────────────────────────────
+# Excel 公式注入（问题 21）：研报原文以 = + - @ 开头时，Excel 会当成公式执行。
+# 转发的表格在同事电脑上就可能运行恶意代码。
+# 统一加一个前导单引号（Excel 里显示时看不到，但不再是公式）。
+_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _excel_safe(v):
+    """把可能变成 Excel 公式的值转成安全文本。"""
+    if v is None:
+        return ""
+    if isinstance(v, str) and v[:1] in _FORMULA_PREFIXES:
+        return "'" + v
+    return v
+
+
 def _write_sheet(ws, rows: List[dict], columns):
     keys = [k for k, _h, _d in columns]
     hdrs = [h for _k, h, _d in columns]
@@ -239,7 +272,7 @@ def _write_sheet(ws, rows: List[dict], columns):
         cell.alignment = Alignment(horizontal="center", vertical="center")
     ws.freeze_panes = "A2"
     for r in rows:
-        ws.append([("" if r.get(k) is None else r.get(k, "")) for k in keys])
+        ws.append([_excel_safe(r.get(k)) for k in keys])
     # 列宽（只看前 200 行，避免大表变慢）
     for i, (k, h) in enumerate(zip(keys, hdrs), start=1):
         w = len(str(h))

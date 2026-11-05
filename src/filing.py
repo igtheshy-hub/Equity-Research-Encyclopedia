@@ -8,7 +8,7 @@ import json
 import re
 import unicodedata
 
-from . import anchor_match, config, fin_calc, llm, wiki
+from . import anchor_match, config, fin_calc, llm, tasks, wiki
 from .classify import sanitize
 from .ingest import (_apply_create, _apply_merge, _dir_type, _write_source_page,
                      normalize_targets)
@@ -95,7 +95,6 @@ QUOTES_PROMPT = """你是财报摘录员。下面是财报管理层讨论与分�
 
 STATEMENT_ORDER = {"资产负债表": 0, "利润表": 1, "现金流量表": 2, "所有者权益变动表": 3, "主要会计数据": 4}
 BATCH_PAGES = 6
-ABS_INDICATOR = ("FCF", "(元)")  # 按元格式化的指标名特征
 
 
 def _norm_key(s):
@@ -374,7 +373,7 @@ def _ensure_header_pages(units, meta):
     return added
 
 
-def _transcribe(path, units, meta):
+def _transcribe(path, units, meta, task_id=None):
     _ensure_header_pages(units, meta)
     # 权益变动表单独成批：pdfplumber 对该表只能抽出无行标的碎列，表格区是噪声
     eq_pages = _pages_from(meta["sections"], "eq", "parent_eq")
@@ -385,6 +384,7 @@ def _transcribe(path, units, meta):
     batches += [(eq_pages[i:i + BATCH_PAGES], False) for i in range(0, len(eq_pages), BATCH_PAGES)]
     rows = []
     for batch, with_tables in batches:
+        tasks.check_cancel(task_id)
         rows.extend(_transcribe_pages(path, units, batch, with_tables))
     # scope 按页内表头位置机械覆盖：LLM 常把母公司表判成合并（表头相似），
     # 而定位阶段又可能漏掉母公司页，页码归属不如标题位置可靠
@@ -393,10 +393,11 @@ def _transcribe(path, units, meta):
     return rows
 
 
-def _quotes(path, units, meta):
+def _quotes(path, units, meta, task_id=None):
     mda = meta["sections"].get("mda") or []
     quotes = []
     for i in range(0, min(len(mda), 20), 10):
+        tasks.check_cancel(task_id)
         batch = mda[i:i + 10]
         blocks = _page_blocks(path, units, batch, with_tables=False)
         try:
@@ -408,6 +409,8 @@ def _quotes(path, units, meta):
         except llm.LLMError:
             continue
         for q in out.get("quotes") or []:
+            if not isinstance(q, dict):  # 嵌套层混进清单时跳过，不崩整份抄录
+                continue
             text = str(q.get("text") or "").strip()
             if not text:
                 continue
@@ -690,18 +693,24 @@ def _value_on_page(text, item, value, unit):
 
 
 def _normalize_rows(path, rows, global_unit=None, page_texts=None):
-    """归一科目名与单位，返回 (合并 items, 母公司 items, 丢弃数)。items: {名: {v, a, unit}}
-    global_unit 为报表声明单位（机械解析），四表行一律以它为准——LLM 逐页填单位易整体看错。
+    """归一科目名与单位，返回 (合并 items, 母公司 items, 丢弃数)。
+
+    items 每项存 {v, a, unit, statement, listed}：
+      - 金额统一换算成「元」，unit 记 "元"；
+      - 百分数保留披露的百分点原值（15.31 就是 15.31%），unit 记 "%"；
+      - 每股收益保留原值，unit 记 "元/股"；
+      - 其他单位（股、件等）也保留原值与单位，不再静默丢弃。
+    global_unit 为报表声明单位（机械解析），纯金额行以它为准——LLM 逐页填单位易整体看错。
     page_texts 给出页码→原文时，抄录值不在该页原文里的行直接丢弃，不把看错的数字写进库。"""
     cons, parent, dropped = {}, {}, 0
     items_dict = fin_calc.load_items()
     for r in rows:
-        unit = r["unit"]
+        unit = fin_calc.normalize_unit(r.get("unit"))
         if global_unit and r.get("statement") in _STATEMENTS \
-                and "%" not in unit and "％" not in unit and "股" not in unit:
-            unit = global_unit  # 纯金额行按报表声明单位；每股（元/股）与百分率不受报表单位影响
+                and not fin_calc.is_percent_unit(unit) and not fin_calc.is_per_share_unit(unit):
+            unit = fin_calc.normalize_unit(global_unit)  # 纯金额行按报表声明单位
         elif r.get("_fallback"):
-            unit = global_unit or "元"
+            unit = fin_calc.normalize_unit(global_unit) or "元"
         raw_v = fin_calc.parse_value(r["value"])
         if raw_v is None or not r["item"]:
             dropped += 1
@@ -712,19 +721,22 @@ def _normalize_rows(path, rows, global_unit=None, page_texts=None):
             print(f"  [核对] 丢弃第{r['page']}页 {r['item']} = {raw_v:g} {unit}：该页原文找不到这个数")
             continue
         name, listed = fin_calc.normalize_item(r["item"])
-        v = fin_calc.to_yuan(raw_v, unit)
-        if v is None:  # 百分数等非金额（主要会计数据披露值）保留原值
-            if "%" in unit or "％" in unit:
-                v = raw_v
+        if fin_calc.is_percent_unit(unit):
+            v, stored_unit = raw_v, "%"
+        elif fin_calc.is_per_share_unit(unit):
+            v, stored_unit = raw_v, "元/股"
+        else:
+            v = fin_calc.to_yuan(raw_v, unit)
+            if v is None:
+                # 非金额单位（股、件、天等）保留原值，展示时带上单位
+                v, stored_unit = raw_v, unit or ""
             else:
-                dropped += 1
-                continue
-        display_unit = "%" if "%" in unit or "％" in unit else ("元/股" if "股" in unit else "元")
+                stored_unit = "元"
         bucket = parent if r["scope"] == "母公司" else cons
         cls = (items_dict.get(name) or {}).get("s")
         cls_ok = not cls or _STMT_CLASS.get(r["statement"]) == cls
         entry = {"v": v, "a": anchor_of(path, r["page"]), "statement": r["statement"], "listed": listed,
-                 "unit": display_unit, "_cls_ok": cls_ok}
+                 "unit": stored_unit, "_cls_ok": cls_ok}
         if name in bucket:
             old = bucket[name]
             if old.get("_cls_ok") is False and cls_ok:
@@ -800,18 +812,12 @@ def _fmt_value(v):
 def _render_lines(path, pk, cons, ind, anc, quotes):
     data_lines = []
     for name, spec in sorted(cons.items(), key=lambda kv: STATEMENT_ORDER.get(kv[1].get("statement"), 9)):
-        unit = spec.get("unit") or "元"
-        if unit == "%":
-            body = f"{_fmt_value(spec['v'])}%"
-        else:
-            body = f"{_fmt_value(spec['v'])} {unit}"
+        body = fin_calc.format_item_value(spec["v"], spec.get("unit"))
         data_lines.append(f"【数据】{pk} 合并 {name} = {body} {spec['a']}")
     ind_lines = []
     for name, v in ind.items():
-        if any(mark in name for mark in ABS_INDICATOR):
-            body = f"{v:,.0f} 元"
-        else:
-            body = f"{v:.4f}"
+        # 按指标自身单位显示：ROE 是百分比、EPS 保留小数、DSO/CCC 是天，避免一律「元」
+        body = fin_calc.format_indicator_value(name, v)
         anchors = "".join(anc.get(name) or [])
         ind_lines.append(f"【指标】{pk} {name} = {body} {anchors}".rstrip())
     quote_lines = [f"【管理层】「{q['text']}」——{q['context']} {anchor_of(path, q['page'])}" for q in quotes]
@@ -870,14 +876,16 @@ def _save_store(store):
     tmp.replace(f)
 
 
-def ingest_filing(path, units, unit_kind, manifest, sha, targets=None):
+def ingest_filing(path, units, unit_kind, manifest, sha, targets=None, task_id=None):
     """财报摄入主流程。返回 ingest_one 形状的结果 dict；勾稽失败返回 None（挂起）。"""
     targets = normalize_targets(targets)
+    tasks.check_cancel(task_id)
     meta = _locate(path, units, targets)
     print(f"  [财报] {meta['company']} {meta['pk']}（{meta['period_end']}）审计意见：{meta['audit_opinion']}")
     if _detect_currency(units, meta["sections"]) == "HKD":
         raise UnsupportedFiling("报表以港元列示，不套 A 股四表流程，改按文本材料编译")
-    rows = _transcribe(path, units, meta)
+    tasks.check_cancel(task_id)
+    rows = _transcribe(path, units, meta, task_id=task_id)
     global_unit = _detect_unit(units, meta["sections"])
     if global_unit:
         print(f"  [单位] 报表声明单位：{global_unit}")
@@ -932,7 +940,8 @@ def ingest_filing(path, units, unit_kind, manifest, sha, targets=None):
         print("  [挂起] 整份财报数值不入库，请人工核对后重试")
         return None
 
-    quotes = _quotes(path, units, meta)
+    tasks.check_cancel(task_id)
+    quotes = _quotes(path, units, meta, task_id=task_id)
     trows = _target_rows(path, units, meta, targets)
     trows, tdup = _drop_target_dupes(trows, cons)
     if tdup:

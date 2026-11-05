@@ -1,8 +1,11 @@
+import hashlib
 import json
+import re
 from datetime import datetime
 from pathlib import Path
+from queue import Empty, Queue
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, make_response, request
 
 from .. import ask as ask_mod
 from .. import audit as audit_mod
@@ -14,12 +17,93 @@ from .. import report as report_mod
 from .. import industry_report, report_distill
 from .. import sessions, tasks
 from .. import agent_rescue, fetcher
-from ..classify import sanitize, unique_target
+from ..classify import classify_one, sanitize, unique_target
 from ..pdf_extract import SUPPORTED_SUFFIXES, raw_file_index
-from ..pipeline import build_lines
 from .render import anchor_pretty, render_md
 
 api = Blueprint("api", __name__)
+
+
+def _require_same_origin():
+    """拦截跨站请求（CSRF）。问题 1 的第二道防线。
+
+    删除文件、上传、审校、修复、沉淀都是"别的网页可以偷偷调"的接口：
+    浏览器发跨站请求时，同源策略禁止 JS 读响应，但**请求照样会发出去**。
+    两道校验：
+      1. 必须带自定义头 X-Requested-With: wiki —— 跨站表单发不出自定义头
+      2. Origin / Referer 必须是本站
+    返回 None 表示放行；返回 (响应, 状态码) 表示拒绝。
+    """
+    if request.headers.get("X-Requested-With") != "wiki":
+        return jsonify({"error": "缺少 X-Requested-With 头，拒绝跨站请求"}), 403
+    host = request.host
+    for h in (request.headers.get("Origin") or "", request.headers.get("Referer") or ""):
+        if not h:
+            continue
+        try:
+            from urllib.parse import urlparse
+            netloc = urlparse(h).netloc
+        except Exception:
+            continue
+        if netloc and netloc != host:
+            return jsonify({"error": "跨站请求被拒绝"}), 403
+    return None
+
+
+# 错误脱敏（问题 21）：网页报错不该露出 API 服务商的原始响应、或电脑上文件的完整路径。
+# 完整信息只进服务端日志，客户端只拿到一句人话。
+def _looks_like_path(tok: str) -> bool:
+    """像不像一个绝对路径（盘符开头、或是 / 开头）。"""
+    return bool(tok) and (tok[0] in "/\\" or (len(tok) > 1 and tok[1] == ":"))
+
+
+def _looks_like_http_body(tok: str) -> bool:
+    """像不像 API 服务商返回的原始错误体。"""
+    t = tok.strip()
+    return t.startswith("HTTP ") and (":" in t) and ("{" in t or "[" in t)
+
+
+
+
+def _safe_error(e, prefix: str = "处理失败") -> str:
+    """把异常原文洗成一句不含敏感信息的说明。
+
+    脱敏两样（问题 21）：
+      1. API 服务商返回的原始错误体（可能含 key 片段、内部结构）
+      2. 电脑上文件的完整路径
+    完整信息只留在服务端日志里。
+    """
+    raw = str(e)
+    detail = raw
+    if _looks_like_http_body(detail):
+        detail = "HTTP 错误响应（详见服务端日志）"
+    else:
+        # 按空白切词，逐词判断是不是路径
+        cleaned = []
+        for w in detail.split():
+            cleaned.append("<路径已隐藏>" if _looks_like_path(w) else w)
+        detail = " ".join(cleaned)
+    detail = detail.strip()
+    if len(detail) > 120:
+        detail = detail[:120] + "…"
+    return f"{prefix}：{detail}" if detail else prefix
+
+
+def _conditional_json(payload, req):
+    """带 ETag 的 JSON 响应：内容没变就回 304 空响应（问题 21：全量轮询浪费带宽）。
+
+    Flask 的 make_conditional() 对 jsonify 不生效，这里显式算摘要做 ETag。
+    """
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    etag = '"' + hashlib.md5(body.encode("utf-8")).hexdigest() + '"'
+    if req.headers.get("If-None-Match") == etag:
+        resp = make_response("", 304)
+        resp.headers["ETag"] = etag
+        return resp
+    resp = make_response(body)
+    resp.headers["Content-Type"] = "application/json; charset=utf-8"
+    resp.headers["ETag"] = etag
+    return resp
 
 
 def _msg_out(m):
@@ -35,13 +119,24 @@ def _msg_out(m):
 
 # ---------- 问答 ----------
 
-def _model_arg(data):
-    """请求里带的模型 id，返回 (模型 id 或 None, 错误响应)。空 = 用 config.json 的默认模型。"""
-    name = str(data.get("model") or "").strip()
+def _resolve_model(raw):
+    """请求里带的模型 id → (模型 id 或 None, 错误文案 或 None)。
+
+    空 / 等于默认模型 = 用 config.json 的默认模型。
+    """
+    name = str(raw or "").strip()
     if not name or name == config.DEFAULT_MODEL:
         return None, None
     if name not in config.MODEL_PROFILES:
-        return None, (jsonify({"error": f"未知模型：{name}"}), 400)
+        return None, f"未知模型：{name}"
+    return name, None
+
+
+def _model_arg(data):
+    """请求里带的模型 id，返回 (模型 id 或 None, 错误响应)。"""
+    name, err = _resolve_model((data or {}).get("model"))
+    if err:
+        return None, (jsonify({"error": err}), 400)
     return name, None
 
 
@@ -54,7 +149,7 @@ def _ask_body(cid, mid, question, history, model):
     try:
         result = ask_mod.ask(question, history=history, propose=True)
     except Exception as e:
-        sessions.update_message(cid, mid, status="error", kind="error", content=f"问答失败：{e}")
+        sessions.update_message(cid, mid, status="error", kind="error", content=_safe_error(e, "问答失败"))
         raise
     if result["kind"] == "report":
         title = result["title"]
@@ -108,6 +203,8 @@ def _run_deep(cid, mid, question, files, history, model):
 
 @api.post("/api/ask")
 def api_ask():
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     question = str(data.get("question") or "").strip()
     if not question:
@@ -119,12 +216,15 @@ def api_ask():
     sessions.append_message(conv["id"], {"role": "user", "content": question})
     history = sessions.history_for_ask(conv["id"], config.CFG["ask"].get("history_turns", 4))
     ph = sessions.append_message(conv["id"], {"role": "assistant", "content": "", "status": "running", "kind": "pending"})
-    tid = tasks.start("ask", lambda t: _run_ask(conv["id"], ph["id"], question, history, model))
+    tid = tasks.start("ask", lambda t: _run_ask(conv["id"], ph["id"], question, history, model),
+                      model=model)
     return jsonify({"conv_id": conv["id"], "msg_id": ph["id"], "task_id": tid})
 
 
 @api.post("/api/deep")
 def api_deep():
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     model, err = _model_arg(data)
     if err:
@@ -138,7 +238,8 @@ def api_deep():
     files = data.get("files") or None
     history = sessions.history_for_ask(conv["id"], config.CFG["ask"].get("history_turns", 4))
     ph = sessions.append_message(conv["id"], {"role": "assistant", "content": "", "status": "running", "kind": "pending"})
-    tid = tasks.start("ask", lambda t: _run_deep(conv["id"], ph["id"], question, files, history, model))
+    tid = tasks.start("ask", lambda t: _run_deep(conv["id"], ph["id"], question, files, history, model),
+                      model=model)
     return jsonify({"conv_id": conv["id"], "msg_id": ph["id"], "task_id": tid})
 
 
@@ -146,20 +247,37 @@ def api_deep():
 
 @api.get("/api/conversations")
 def api_conversations():
-    return jsonify({"items": sessions.list_conversations()})
+    return _conditional_json({"items": sessions.list_conversations()}, request)
 
 
 @api.post("/api/conversations")
 def api_conversations_new():
+    if err := _require_same_origin():
+        return err
     conv = sessions.create()
     return jsonify({"conv": conv})
 
 
 @api.delete("/api/conversations/<cid>")
 def api_conversation_delete(cid):
+    """删掉一个会话（问题 21：以前只能新建不能删，历史永久堆积）。"""
+    if err := _require_same_origin():
+        return err
     if not sessions.delete(cid):
         return jsonify({"error": "会话不存在"}), 404
     return jsonify({"ok": True})
+
+
+@api.patch("/api/conversations/<cid>")
+def api_conversation_rename(cid):
+    """给会话改名（问题 21）。"""
+    if err := _require_same_origin():
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    title = sessions.rename(cid, data.get("title") or "")
+    if title is None:
+        return jsonify({"error": "会话不存在或标题为空"}), 400
+    return jsonify({"ok": True, "title": title})
 
 
 @api.get("/api/conversations/<cid>")
@@ -185,6 +303,9 @@ def api_conversation(cid):
 
 @api.post("/api/distill/propose")
 def api_distill_propose():
+    # 这个接口会调 LLM（要花钱），也要挡跨站请求
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     conv = sessions.get(data.get("conv_id") or "")
     if conv is None:
@@ -205,18 +326,27 @@ def api_distill_propose():
 
 @api.get("/api/proposals/pending")
 def api_proposals_pending():
+    """只读查询，不把提案标记为已提醒。
+
+    以前页面一加载就写 presented=True，用户还没看见弹窗（刷新、切页、直接关掉）
+    提案就永久消失。现在只有用户点「不再提醒」才 dismiss；点「稍后处理」只推迟到
+    snoozed_until 之后，提案始终还在会话里。
+    """
+    now = config.now_iso()
     items = []
     for c in sessions.list_conversations():
         conv = sessions.get(c["id"])
         for m in conv["messages"]:
             prop = m.get("proposal")
-            if not prop or m.get("presented"):
+            if not prop or m.get("proposal_dismissed"):
+                continue
+            snooze = m.get("proposal_snoozed_until")
+            if snooze and str(snooze) > now:
                 continue
             applied = set(m.get("applied_lines") or [])
             remaining = [ln for ln in prop.get("lines", []) if ln not in applied]
             if not remaining:
                 continue
-            sessions.update_message(conv["id"], m["id"], presented=True)
             items.append({"conv_id": conv["id"], "msg_id": m["id"],
                           "conv_title": conv["title"],
                           "proposal": {**prop, "lines": remaining,
@@ -224,8 +354,40 @@ def api_proposals_pending():
     return jsonify({"items": items})
 
 
+@api.post("/api/proposals/defer")
+def api_proposals_defer():
+    """稍后处理：只把提醒推迟一段时间，不丢提案。"""
+    data = request.get_json(force=True, silent=True) or {}
+    conv = sessions.get(data.get("conv_id") or "")
+    mid = data.get("msg_id")
+    if conv is None or not any(m["id"] == mid for m in conv["messages"]):
+        return jsonify({"error": "提案不存在"}), 404
+    try:
+        hours = max(1, min(24 * 30, int(data.get("hours") or 24)))
+    except (TypeError, ValueError):
+        hours = 24
+    until = (datetime.fromisoformat(config.now_iso()).timestamp() + hours * 3600)
+    until_iso = datetime.fromtimestamp(until).isoformat(timespec="seconds")
+    sessions.update_message(conv["id"], mid, proposal_snoozed_until=until_iso)
+    return jsonify({"ok": True, "until": until_iso})
+
+
+@api.post("/api/proposals/dismiss")
+def api_proposals_dismiss():
+    """不再提醒：只有用户明确点这个按钮才把提案标为已处理。"""
+    data = request.get_json(force=True, silent=True) or {}
+    conv = sessions.get(data.get("conv_id") or "")
+    mid = data.get("msg_id")
+    if conv is None or not any(m["id"] == mid for m in conv["messages"]):
+        return jsonify({"error": "提案不存在"}), 404
+    sessions.update_message(conv["id"], mid, proposal_dismissed=True)
+    return jsonify({"ok": True})
+
+
 @api.post("/api/distill/apply")
 def api_distill_apply():
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     results = []
     for a in data.get("applies") or []:
@@ -237,7 +399,7 @@ def api_distill_apply():
         try:
             ret = ask_mod.apply_distill(msg["proposal"], chosen_lines=a.get("lines"))
         except Exception as e:
-            results.append({"ok": False, "msg_id": msg["id"], "error": str(e)})
+            results.append({"ok": False, "msg_id": msg["id"], "error": _safe_error(e)})
             continue
         if not ret:
             results.append({"ok": False, "msg_id": msg["id"], "error": "没有可写入的行"})
@@ -251,11 +413,84 @@ def api_distill_apply():
 
 # ---------- 上传与摄入链 ----------
 
+def _pipeline(names, focus=None):
+    """取名线与摄入线并行：取名线每入库一份就把路径塞进队列，摄入线同时取走摄入，两条线互不等待。
+
+    两条线每个循环都检查取消/超时；摄入线取队列用 1 秒超时轮询，不会因为取名线异常
+    退出而永远等下去。
+    """
+    queue = Queue()
+    focus = focus or []
+
+    def classify_line(tid):
+        results = []
+        try:
+            for i, name in enumerate(names, 1):
+                tasks.check_cancel(tid)
+                tasks.update(tid, current=i - 1, detail=f"第 {i}/{len(names)} 份：{name} 正在取名并进入资料库")
+                p = config.INBOX_DIR / name
+                if not p.exists():
+                    results.append({"ok": False, "file": name, "error": "文件不在收件台"})
+                    continue
+                try:
+                    r = classify_one(p)
+                except Exception as e:
+                    r = {"ok": False, "file": name, "error": _safe_error(e)}
+                results.append(r)
+                if r.get("ok"):
+                    queue.put(config.ROOT / r["target"])
+                tasks.update(tid, current=i)
+        finally:
+            queue.put(None)  # 收工信号：摄入线做完队列里剩下的就退出
+        tasks.update(tid, current=len(names), detail="")
+        return results
+
+    def ingest_line(tid):
+        results = []
+        done = 0
+        try:
+            while True:
+                tasks.check_cancel(tid)
+                try:
+                    target = queue.get(timeout=1.0)
+                except Empty:
+                    continue
+                if target is None:
+                    break
+                done += 1
+                tasks.update(tid, current=done - 1, detail=f"第 {done} 份：{target.name} 正在摄入知识点")
+                manifest = ingest_mod.load_manifest()
+                before = {f["sha256"] for f in manifest["files"]}
+                try:
+                    r = ingest_mod.ingest_one(target, manifest, focus=focus, task_id=tid)
+                except Exception as e:
+                    print(f"  摄入失败: {e}")
+                    r = {"file": target.name, "error": _safe_error(e)}
+                if r:
+                    results.append(r)
+                # 逐份落盘，且只追加本轮新增的条目：删除线并发删掉的条目不会被这份旧清单冲回来
+                ingest_mod.append_manifest([f for f in manifest["files"] if f["sha256"] not in before])
+                tasks.update(tid, current=done)
+        finally:
+            # 无论正常结束、取消还是超时，都把已摄入的部分写进索引，避免半截状态
+            tasks.update(tid, current=len(names), detail="")
+            ingest_mod.finish(ingest_mod.load_manifest(), [r for r in results if "error" not in r])
+        return results
+
+    return classify_line, ingest_line
+
+
 @api.post("/api/upload")
 def api_upload():
+    if err := _require_same_origin():
+        return err
     files = request.files.getlist("files")
     if not files:
         return jsonify({"error": "没有收到文件"}), 400
+    # 网页上选的模型对取名、摄入同样生效，不用再改 config.json
+    model, err = _model_arg(request.form)
+    if err:
+        return err
 
     # 关注点（可选）：前端勾选「按关注点优先提炼」才带
     focus = []
@@ -281,10 +516,13 @@ def api_upload():
         saved.append(dest.name)
     if not saved:
         return jsonify({"error": "只接受 PDF 与 Word(.docx) 文件", "rejected": rejected}), 400
-    classify_line, ingest_line = build_lines(saved, focus)
-    tid = tasks.start("classify", classify_line, total=len(saved), label=f"取名入库 {len(saved)} 份")
-    tasks.start("ingest", ingest_line, total=len(saved), label=f"摄入 {len(saved)} 份")
-    return jsonify({"task_id": tid, "saved": saved, "rejected": rejected, "focus": focus})
+    classify_line, ingest_line = _pipeline(saved, focus)
+    timeout_s = config.CFG.get("ingest", {}).get("task_timeout_s") or 7200
+    tid = tasks.start("classify", classify_line, total=len(saved),
+                      label=f"取名入库 {len(saved)} 份", model=model, timeout_s=timeout_s)
+    tasks.start("ingest", ingest_line, total=len(saved),
+                label=f"摄入 {len(saved)} 份", model=model, timeout_s=timeout_s)
+    return jsonify({"task_id": tid, "saved": saved, "rejected": rejected, "focus": focus, "model": model})
 
 
 # ---------- 原文件 ----------
@@ -296,6 +534,9 @@ def api_files():
 
 @api.post("/api/files/delete")
 def api_files_delete():
+    # 问题 1（CSRF）：删除是不可撤销的破坏性操作，必须挡住"别的网页偷偷调我"。
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     names = [str(n).strip() for n in (data.get("files") or []) if str(n).strip()]
     if not names:
@@ -338,6 +579,8 @@ def _ingest_pick(names):
 
 @api.post("/api/files/ingest")
 def api_files_ingest():
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     names = [str(n).strip() for n in (data.get("files") or []) if str(n).strip()]
     if not names:
@@ -361,11 +604,18 @@ def api_files_ingest():
 
 @api.post("/api/audit/run")
 def api_audit_run():
+    if err := _require_same_origin():
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    model, err = _model_arg(data)
+    if err:
+        return err
+
     def run(tid):
         r = audit_mod.run(task_id=tid)
-        return {"file": r["path"].name, "counts": r["counts"]}
-    tid = tasks.start("audit", run, label="四类健康检查")
-    return jsonify({"task_id": tid})
+        return {"file": r["path"].name, "counts": r["counts"], "model": model}
+    tid = tasks.start("audit", run, label="四类健康检查", model=model)
+    return jsonify({"task_id": tid, "model": model})
 
 
 def _ts_pretty(ts):
@@ -392,13 +642,20 @@ def api_audit_latest():
 
 @api.post("/api/audit/fix")
 def api_audit_fix():
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     actions = [a for a in (data.get("actions") or []) if isinstance(a, dict)]
     if not actions:
         return jsonify({"error": "没有勾选任何修复动作"}), 400
-    tid = tasks.start("fix", lambda t: {"notes": fix_mod.apply_fixes(actions, task_id=t)},
-                      total=len(actions), label=f"按审校报告修复 {len(actions)} 项")
-    return jsonify({"task_id": tid})
+    model, err = _model_arg(data)
+    if err:
+        return err
+    tid = tasks.start("fix", lambda t: {"notes": fix_mod.apply_fixes(actions, task_id=t),
+                                        "model": model},
+                      total=len(actions), label=f"按审校报告修复 {len(actions)} 项",
+                      model=model)
+    return jsonify({"task_id": tid, "model": model})
 
 
 # ---------- 主动取数 ----------
@@ -414,6 +671,8 @@ def api_fetch_sources():
 
 @api.post("/api/fetch")
 def api_fetch_run():
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     source = str(data.get("source") or "").strip()
     specs = {s["id"]: s for s in fetcher.source_specs(only=fetcher.MANUAL_SOURCE_IDS)}
@@ -471,6 +730,8 @@ def api_report_job(jid):
 
 @api.post("/api/report/<jid>/outline")
 def api_report_outline(jid):
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     outline_md = data.get("outline_md")
     try:
@@ -484,6 +745,8 @@ def api_report_outline(jid):
 
 @api.post("/api/report/<jid>/gaps")
 def api_report_gaps(jid):
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     ids = [str(x) for x in (data.get("gap_ids") or [])]
     try:
@@ -497,6 +760,8 @@ def api_report_gaps(jid):
 
 @api.post("/api/report/<jid>/continue")
 def api_report_continue(jid):
+    if err := _require_same_origin():
+        return err
     try:
         job = industry_report.continue_job(jid)
     except KeyError as e:
@@ -506,6 +771,8 @@ def api_report_continue(jid):
 
 @api.post("/api/report/<jid>/candidates/apply")
 def api_report_candidates_apply(jid):
+    if err := _require_same_origin():
+        return err
     data = request.get_json(force=True, silent=True) or {}
     ids = [str(x) for x in (data.get("candidate_ids") or [])]
     try:
@@ -517,6 +784,8 @@ def api_report_candidates_apply(jid):
 
 @api.post("/api/report/<jid>/delete")
 def api_report_delete(jid):
+    if err := _require_same_origin():
+        return err
     try:
         ret = industry_report.delete_job(jid)
     except KeyError as e:
@@ -528,6 +797,8 @@ def api_report_delete(jid):
 
 @api.post("/api/report/<jid>/fallback")
 def api_report_fallback(jid):
+    if err := _require_same_origin():
+        return err
     job = industry_report.load_job(jid)
     if not job:
         return jsonify({"error": "报告任务不存在"}), 404
@@ -556,10 +827,38 @@ def api_report_fallback(jid):
 def api_tasks():
     kinds = request.args.get("kinds")
     kinds = set(kinds.split(",")) if kinds else None
-    return jsonify({"tasks": tasks.snapshot(kinds), "active": tasks.active_counts()})
+    return _conditional_json(
+        {"tasks": tasks.snapshot(kinds), "active": tasks.active_counts()}, request)
 
 
 @api.post("/api/tasks/<tid>/ack")
 def api_task_ack(tid):
     tasks.acknowledge(tid)
     return jsonify({"ok": True})
+
+
+@api.post("/api/tasks/<tid>/cancel")
+def api_task_cancel(tid):
+    ok = tasks.cancel(tid)
+    if not ok:
+        return jsonify({"error": "任务已结束或不存在，无法取消"}), 400
+    return jsonify({"ok": True})
+
+
+@api.get("/api/health")
+def api_health():
+    """页面启动自检：模型、依赖、损坏文件等集中在这里给前端提示。"""
+    from .. import excel_export
+    warnings = list(sessions.startup_warnings())
+    for p, e in wiki.check_pages():
+        warnings.append(f"知识库页面 {p.name} 格式损坏，已跳过：{e}")
+    if not config.LLM_API_KEY:
+        warnings.append(f"未配置 {config.LLM_API_KEY_ENV}，问答/取名/摄入会失败；"
+                        "请复制 .env.example 为 .env 并填入 API Key。")
+    return jsonify({
+        "ok": not warnings,
+        "warnings": warnings,
+        "model": config.DEFAULT_MODEL,
+        "models": config.model_choices(),
+        "features": {"openpyxl": excel_export.available()},
+    })

@@ -6,7 +6,8 @@
 raw/
 wiki/
 
-# 运行状态层：问答会话历史、摄入清单、结构化财报、取数来源缓存、模型日志，全部本地生成
+# 每个人的知识库与运行数据都是本地私有的：新克隆后应为空，
+# 不把别人的 wiki、会话、日志、材料清单带进来
 data/
 
 # 报告产出：成品密集引用库内研报数据，且含 Word/图表二进制，不入库
@@ -16,9 +17,26 @@ outputs/
 .playwright-mcp/
 report-after-reload.yml
 
+# 运行期产物：审校输出、报告生成物、锚点复核清单、模型调用流水
+outputs/
+data/anchor_review.json
+data/llm_log.jsonl
+
+# 日志（网页服务与摄入流水线的运行日志）
+*.log
+logs/
+
 # Python
 __pycache__/
 *.pyc
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# pytest（跑一次就生成一堆缓存文件）
+.pytest_cache/
 
 # 系统杂项
 .DS_Store

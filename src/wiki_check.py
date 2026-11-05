@@ -139,6 +139,8 @@ def content_problems(name, meta, body, expected_type=None, info=None, titles=Non
     if expected_type and meta.get("type") != expected_type:
         problems.append(f"{name}: front matter type={meta.get('type')!r} 与所在目录应为 {expected_type!r} 不一致")
     for field in ("title", "type", "sources", "updated"):
+        if field == "sources" and meta.get("needs_review"):
+            continue  # 需复核页（删除原文件后保留的无锚点内容）允许暂无可归属来源
         if not meta.get(field):
             problems.append(f"{name}: 缺少必填 front matter 字段 {field}")
     problems.extend(_line_format_problems(name, body))

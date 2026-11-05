@@ -23,12 +23,49 @@ _PROVIDER_KEY_ENV = {
 
 _LLM = CFG["llm"]
 MODEL_PROFILES = _LLM["models"]
-DEFAULT_MODEL = _LLM.get("default") or next(iter(MODEL_PROFILES))
 # 各模型可省略、从 llm 段继承的公共参数。注意：模型级写 "extra_body": {} 空对象
 # 也算已设置、会阻断继承（setdefault 语义），不想继承就在模型级显式写全内容。
 # DeepSeek 官方端点关闭思考用的是 thinking: {"type": "disabled"}，各模型在
 # config.json 里按自家 API 文档显式配置，不依赖继承。
 _SHARED_LLM_KEYS = ("max_tokens", "read_timeout_s", "max_retries", "extra_body")
+
+# config.json 必填项（问题 21：以前少了某项要跑到一半才崩，这里启动就查出来）
+# 路径：顶层段 → 段内必填键
+REQUIRED_CONFIG = {
+    "llm": ("models",),
+    "temperature": (),
+    "ask": ("max_pages", "history_turns"),
+    "audit": ("stale_days", "orphan_min_statements"),
+    "ingest": ("compile_chunk_pages", "min_chars_per_page"),
+}
+
+
+def validate_config():
+    """检查 config.json 的必填项。返回问题列表（空 = 没问题）。
+
+    少配一个键，以前要等到摄入跑到一半才 KeyError 崩掉，用户一脸茫然。
+    现在启动时就报清楚"缺哪一段哪个键"。
+    """
+    problems = []
+    for section, keys in REQUIRED_CONFIG.items():
+        if section not in CFG:
+            problems.append(f"config.json 缺整段「{section}」")
+            continue
+        if not isinstance(CFG[section], dict):
+            problems.append(f"config.json 的「{section}」必须是对象")
+            continue
+        for k in keys:
+            if k not in CFG[section]:
+                problems.append(f"config.json 缺「{section}.{k}」")
+    # llm 段的几项（models 之外）也要有，否则 model_profile 拿不到
+    for k in ("max_tokens", "read_timeout_s", "max_retries"):
+        if k not in _LLM:
+            problems.append(f"config.json 缺「llm.{k}」")
+    if not MODEL_PROFILES:
+        problems.append("config.json 的「llm.models」是空的")
+    if DEFAULT_MODEL not in MODEL_PROFILES:
+        problems.append(f"config.json 的「llm.default」={DEFAULT_MODEL} 不在 llm.models 里")
+    return problems
 
 
 def _resolve_api_key(base_url):
@@ -37,6 +74,28 @@ def _resolve_api_key(base_url):
         name = _PROVIDER_KEY_ENV[host]
         return name, os.getenv(name) or ""
     return "LLM_API_KEY", os.getenv("LLM_API_KEY") or ""
+
+
+def _profile_has_key(pid):
+    return bool(_resolve_api_key(MODEL_PROFILES[pid]["base_url"])[1])
+
+
+def _resolve_default_model():
+    """llm.default 支持填 "auto"：按 models 顺序取第一个 .env 里配了 key 的模型。
+
+    auto 的意义是配置文件不再随人改动——每个人只在自己 .env 填 key，网页下拉再按需
+    临时切模型；不会出现协作者把默认模型改掉又忘了改回来、其他人全环节 401 的情况。
+    """
+    raw = str(_LLM.get("default") or "auto").strip()
+    if raw != "auto":
+        return raw
+    for pid in MODEL_PROFILES:
+        if _profile_has_key(pid):
+            return pid
+    return next(iter(MODEL_PROFILES))
+
+
+DEFAULT_MODEL = _resolve_default_model()
 
 
 def model_profile(name=None):
@@ -118,8 +177,9 @@ SECTION_ENUMS = {
 
 
 def ensure_dirs():
+    """新克隆的仓库里 wiki/、data/、outputs/ 都是空的（运行数据不入库），启动时补齐目录。"""
     for d in (INBOX_DIR, REPORTS_DIR, SNAPSHOT_DIR, FILINGS_DIR, POLICIES_DIR, *TYPE_DIRS.values(),
-              OUTPUTS_DIR, OUTPUTS_DIR / "charts", EXTRACTS_DIR, FIN_DIR, REPORT_JOBS_DIR):
+              OUTPUTS_DIR, OUTPUTS_DIR / "charts", DATA_DIR, EXTRACTS_DIR, FIN_DIR, REPORT_JOBS_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

@@ -5,8 +5,56 @@
 const $ = (sel, root) => (root || document).querySelector(sel);
 const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
 
+/* ---------- 同源头（问题 1 的 CSRF 防线） ----------
+   后端所有"会改状态"的接口都要求 X-Requested-With: wiki。
+   浏览器发跨站请求时带不上自定义头，所以这个头能挡住"别的网页偷偷调我的删除/上传接口"。
+   跨站表单也发不出这个头，所以删除接口的确认弹窗也绕不过去。 */
+(function () {
+  const origFetch = window.fetch;
+  window.fetch = function (input, init) {
+    try {
+      const url = typeof input === "string" ? input : (input && input.url) || "";
+      if (url.indexOf("/api/") === 0) {
+        init = init || {};
+        const headers = new Headers(init.headers || (input && input.headers) || {});
+        headers.set("X-Requested-With", "wiki");
+        init.headers = headers;
+      }
+    } catch (_) { /* 包装失败就按原样发 */ }
+    return origFetch.call(this, input, init);
+  };
+})();
+
 window.App = {
   onTasks: [],      // 页面脚本注册的轮询回调 (tasks, active) => void
+  /* 合法模型 id 清单（服务端注入）。用来挡住 URL 里带的非法模型名：
+     非法值存进 localStorage 会让问答/上传/审校全部 400，网页端直接瘫。 */
+  validModel(id) {
+    const list = window.MODEL_IDS || [];
+    if (!list.length) return true;         // 没注入就不拦（保守）
+    return list.indexOf(id) >= 0;
+  },
+  /* 当前选中的大模型：页面上有 #model-select 就用它，否则读本地记的那个。
+     问答、取名、摄入、审校、修复共用同一个选择，全站不用改 config.json。 */
+  model() {
+    const sel = document.getElementById("model-select");
+    if (sel && sel.value) return sel.value;
+    const saved = localStorage.getItem("askModel") || "";
+    if (saved && !App.validModel(saved)) {
+      localStorage.removeItem("askModel");   // 非法值清掉，别把网页打死
+      return "";
+    }
+    return saved;
+  },
+  /* 把模型选择挂到页面上，并让它与本地记忆同步 */
+  bindModelSelect() {
+    const sel = document.getElementById("model-select");
+    if (!sel) return null;
+    const saved = localStorage.getItem("askModel");
+    if (saved && Array.from(sel.options).some((o) => o.value === saved)) sel.value = saved;
+    sel.addEventListener("change", () => localStorage.setItem("askModel", sel.value));
+    return sel;
+  },
   escapeHtml(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => (
       { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
@@ -27,9 +75,9 @@ window.App = {
 /* ---------- 任务轮询 ---------- */
 
 function tickTasks() {
-  fetch("/api/tasks")
-    .then((r) => r.json())
-    .then((d) => {
+  fetch("/api/tasks", {cache: "no-cache"})
+    .then((r) => (r.status === 304 ? null : r.json()))
+    .then((d) => { if (!d) return;
       const tasks = d.tasks || [];
       const active = d.active || {};
       const running = Object.values(active).reduce((a, b) => a + b, 0);
@@ -59,14 +107,18 @@ App.taskCardHTML = function (t) {
     mid = `<div class="bar waiting"><i style="width:${pct}%"></i></div><div class="tc-detail">排队等待中（同类任务进行中）</div>`;
   } else if (t.status === "error") {
     mid = `<div class="tc-err">失败：${App.escapeHtml(t.error || "未知错误")}</div>`;
+  } else if (t.status === "cancelled") {
+    mid = `<div class="tc-err">已取消${t.detail ? "：" + App.escapeHtml(t.detail) : ""}</div>`;
   } else if (t.status === "done") {
     mid = `<div class="tc-ok">${App.doneText(t)}</div>`;
   }
-  const ack = (t.status === "done" || t.status === "error")
+  const ack = (t.status === "done" || t.status === "error" || t.status === "cancelled")
     ? `<button class="icon-btn tc-ack" data-tid="${t.id}" title="知道了，移除">✕</button>` : "";
+  const cancel = (t.status === "running" || t.status === "waiting")
+    ? `<button class="icon-btn tc-cancel" data-tid="${t.id}" title="取消任务">取消</button>` : "";
   return `<div class="task-card ${t.status}" data-tid="${t.id}">
     <div class="tc-top"><span class="tc-kind">${App.escapeHtml(t.kind_label || t.kind)}</span>
-      <span class="tc-label">${App.escapeHtml(t.label || "")}</span>${ack}</div>${mid}</div>`;
+      <span class="tc-label">${App.escapeHtml(t.label || "")}</span>${cancel}${ack}</div>${mid}</div>`;
 };
 
 App.doneText = function (t) {
@@ -74,30 +126,33 @@ App.doneText = function (t) {
   try {
     if (t.kind === "classify" && Array.isArray(r)) {
       const bad = r.filter((x) => !x.ok);
-      if (bad.length) return `完成，${bad.length} 份未归类：` + bad.map((x) => x.file).join("、");
+      if (bad.length) return `完成，${bad.length} 份未归类：` + bad.map((x) => App.escapeHtml(x.file)).join("、");
       return "全部文件都已取名并进入资料库";
     }
     if (t.kind === "ingest" && Array.isArray(r)) {
       const ok = r.filter((x) => !x.error);
       const bad = r.filter((x) => x.error);
       const parts = [];
-      if (ok.length) parts.push("已摄入：" + ok.map((x) => `${x.file}（${x.entries_count} 条）`).join("、"));
+      if (ok.length) parts.push("已摄入：" + ok.map((x) => `${App.escapeHtml(x.file)}（${x.entries_count} 条）`).join("、"));
       else parts.push("没有文件产出条目（可能取名未通过、已摄入过或是扫描版）");
-      if (bad.length) parts.push("摄入失败：" + bad.map((x) => `${x.file}（${x.error}）`).join("、"));
+      if (bad.length) parts.push("摄入失败：" + bad.map((x) => `${App.escapeHtml(x.file)}（${App.escapeHtml(x.error)}）`).join("、"));
       return parts.join("；");
     }
     if (t.kind === "delete" && Array.isArray(r)) {
-      const ok = r.filter((x) => !x.error);
-      const bad = r.filter((x) => x.error);
+      const aborted = r.filter((x) => x.batch_aborted);
+      const ok = r.filter((x) => !x.error && !x.batch_aborted);
+      const bad = r.filter((x) => x.error && !x.batch_aborted);
       const parts = [];
       if (ok.length) {
         parts.push("已删除：" + ok.map((x) => {
-          const pages = (x.pages_deleted || []).length ? `，移除页面 ${x.pages_deleted.join("、")}` : "";
-          return `${x.file}（-${x.statements} 条${pages}）`;
+          const pages = (x.pages_deleted || []).length ? `，移除页面 ${x.pages_deleted.map((t) => App.escapeHtml(t)).join("、")}` : "";
+          const review = x.needs_review ? `，${x.needs_review} 条转为需复核` : "";
+          return `${App.escapeHtml(x.file)}（-${x.statements} 条${pages}${review}）`;
         }).join("、"));
       }
-      if (bad.length) parts.push("失败：" + bad.map((x) => `${x.file}（${x.error}）`).join("、"));
-      return parts.join("；");
+      if (bad.length) parts.push("失败：" + bad.map((x) => `${App.escapeHtml(x.file)}（${App.escapeHtml(x.error)}）`).join("、"));
+      if (aborted.length) parts.push("整批已中止，未继续删除后面的文件");
+      return parts.join("；") || "没有删除任何文件";
     }
     if (t.kind === "fetch" && r && r.summary) {
       return App.escapeHtml(r.summary);
@@ -121,10 +176,23 @@ App.doneText = function (t) {
 
 document.addEventListener("click", (e) => {
   const ack = e.target.closest(".tc-ack");
-  if (!ack) return;
-  fetch("/api/tasks/" + ack.dataset.tid + "/ack", { method: "POST" })
-    .then(() => tickTasks())
-    .catch(() => {});
+  if (ack) {
+    fetch("/api/tasks/" + ack.dataset.tid + "/ack", { method: "POST" })
+      .then(() => tickTasks())
+      .catch(() => {});
+    return;
+  }
+  const cancel = e.target.closest(".tc-cancel");
+  if (cancel) {
+    fetch("/api/tasks/" + cancel.dataset.tid + "/cancel", { method: "POST" })
+      .then((r) => r.json().then((d) => ({ status: r.status, body: d })))
+      .then(({ status, body }) => {
+        App.toast(status === 200 ? "已请求取消，当前步骤结束后停止" : (body.error || "取消失败"),
+                  status === 200 ? "info" : "bad");
+        tickTasks();
+      })
+      .catch(() => {});
+  }
 });
 
 /* ---------- 提取（沉淀）弹窗 ---------- */
@@ -143,10 +211,13 @@ function extractItemHTML(item, gi) {
   </div>`;
 }
 
+let pendingProposalItems = [];
+
 App.openExtractModal = function (items, note) {
   const modal = $("#extract-modal");
   const body = $("#extract-body");
   if (!modal || !body || !items.length) return;
+  pendingProposalItems = items;
   $("#extract-note").textContent = note || "";
   body.innerHTML = items.map(extractItemHTML).join("");
   modal.hidden = false;
@@ -168,6 +239,7 @@ App.openExtractModal = function (items, note) {
       .then((d) => {
         const ok = (d.results || []).filter((x) => x.ok).length;
         const bad = (d.results || []).filter((x) => !x.ok);
+        pendingProposalItems = [];
         closeModal("extract-modal");
         if (bad.length) App.toast(`提取完成 ${ok} 项，失败 ${bad.length} 项`, "warn");
         else App.toast(`已提取 ${ok} 个提案进知识库，详情见日志页`, "ok");
@@ -189,10 +261,29 @@ document.addEventListener("click", (e) => {
     closeModal(e.target.id);
   }
 });
-const extractLater = $("#extract-later");
-if (extractLater) extractLater.addEventListener("click", () => closeModal("extract-modal"));
+/* 稍后处理只推迟提醒；不再提醒才真正把提案标为已处理。两者都不会丢提案本身。 */
+function proposalAction(path, okMsg) {
+  const items = pendingProposalItems;
+  if (!items.length) { closeModal("extract-modal"); return; }
+  Promise.all(items.map((it) => fetch(path, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conv_id: it.conv_id, msg_id: it.msg_id }),
+  }))).then(() => {
+    pendingProposalItems = [];
+    closeModal("extract-modal");
+    App.toast(okMsg, "info");
+  }).catch((err) => App.toast("操作失败：" + err, "bad"));
+}
 
-/* 任一页面加载时检查未处理的沉淀提案（服务端记 presented，只弹一次） */
+const extractLater = $("#extract-later");
+if (extractLater) extractLater.addEventListener("click", () =>
+  proposalAction("/api/proposals/defer", "已稍后处理，24 小时后再提醒"));
+
+const extractDismiss = $("#extract-dismiss");
+if (extractDismiss) extractDismiss.addEventListener("click", () =>
+  proposalAction("/api/proposals/dismiss", "已不再提醒；提案仍保留在会话里"));
+
+/* 任一页面加载时检查未处理的沉淀提案（只读查询，不会因为刷新页面就被标记为已提醒） */
 fetch("/api/proposals/pending")
   .then((r) => r.json())
   .then((d) => {

@@ -8,7 +8,7 @@
 </head>
 <body data-page="{% block page %}{% endblock %}">
 <header class="topbar">
-  <div class="brand"><a href="/">行业知识库</a><span class="sub">研报、财报、政策进来，拆成带出处的知识</span></div>
+  <div class="brand"><span class="logo" aria-hidden="true">知</span><a href="/">行业知识库</a><span class="sub">研报、财报、政策进来，拆成带出处的知识</span></div>
   <nav id="main-nav">
     <a href="/" data-nav="home">首页</a>
     <a href="/ask" data-nav="ask">问答</a>
@@ -36,13 +36,15 @@
     <p class="modal-note muted" id="extract-note"></p>
     <div class="modal-body" id="extract-body"></div>
     <div class="modal-foot">
-      <button class="ghost" id="extract-later">稍后处理</button>
+      <button class="ghost" id="extract-dismiss" title="以后都不再提醒这个提案">不再提醒</button>
+      <button class="ghost" id="extract-later" title="24 小时后再提醒，提案不会丢">稍后处理</button>
       <button class="primary" id="extract-confirm">确认提取</button>
     </div>
   </div>
 </div>
 
 <div id="toast-wrap"></div>
+<script>window.MODEL_IDS = {{ MODEL_IDS | tojson }};</script>
 <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 {% block scripts %}{% endblock %}
 </body>

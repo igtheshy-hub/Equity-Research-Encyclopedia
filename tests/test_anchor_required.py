@@ -33,7 +33,12 @@ def test_no_false_positive():
     print("不误伤的场景：")
     check("无锚点可用时放过", ask_mod._violations(NO_ANCHOR_ANSWER, {}), [])
     check("无数字的说明答复", ask_mod._violations("页面介绍了比亚迪的主营业务与治理结构。", ALLOWED), [])
-    check("短答不足三个数字", ask_mod._violations("2025年营收增长3.46%。", ALLOWED), [])
+    # 收紧后（问题 21，PR#6）：判据从「数字个数 ≥ 3」改成「有没有带单位的数据陈述」，
+    # 「3.46%」这种一句话一个数也要查出处；不带单位的计数（次、年、个）仍不误伤
+    check("无单位的短答不误伤", ask_mod._violations("2026 年开了 3 次发布会。", ALLOWED), [])
+    check("短答带单位数据要查出处",
+          ask_mod._violations("2025年营收增长3.46%。", ALLOWED),
+          ["全文没有任何锚点，含数据的陈述句句尾必须带锚点"])
 
 
 def test_existing_checks_kept():
@@ -69,9 +74,15 @@ class FakeLLM:
 
 
 def run(answers):
+    # 真实知识页每条结论都带锚点（schema/CLAUDE.md §1）。原来这个夹具的正文没写锚点，
+    # 与真实数据不符——_allowed_from_pages 只认正文里出现过的锚点，
+    # 夹具没锚点 → 答案里的锚点全被判违规 → 一直重试到假 LLM 答不上来。
+    # 改夹具（补上锚点），不放宽校验。
     page = {"path": None, "type": "company", "slug": "比亚迪",
             "meta": {"title": "比亚迪", "aliases": [], "summary": "整车厂", "sources": [FILE]},
-            "body": "【数据】2025FY 营业收入 = 803,964,958,000 元", "anchors": set(), "statements": 1}
+            "body": (f"【数据】2025FY 营业收入 = 803,964,958,000 元 [[{FILE}#p11]]\n"
+                      f"- 归母净利润 326.19 亿元 [[{FILE}#p16]]"),
+            "anchors": {(FILE, "p11"), (FILE, "p16")}, "statements": 2}
     ask_mod._index_pages = lambda: ([page], [ask_mod.wiki.build_index_entry(page)])
     ask_mod.load_manifest = lambda: {"files": [{"file": FILE, "unit": "page", "count": 200}]}
     fake = FakeLLM(answers)

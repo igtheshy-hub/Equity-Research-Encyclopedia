@@ -1,6 +1,6 @@
 import re
 
-from . import config, llm, source_priority, wiki
+from . import anchor_verify, config, llm, source_priority, wiki
 from .ingest import _apply_create, _apply_merge, load_manifest
 from .pdf_extract import extract_to_store, load_cached, raw_file_index
 
@@ -245,28 +245,82 @@ def _detect_intent(question):
     return "chat", "", domain, "builtin", _merge_method(method, question)
 
 
+# 带单位的数据陈述（「营收 50 亿元」「净息差 1.42%」这类）——用来判断答案里有没有需要出处的数据
+_DATA_STATEMENT_RE = re.compile(
+    r"\d[\d,]*(?:\.\d+)?\s*(?:%|％|个百分点|百分点|亿元|万元|亿美元|万美元|亿|万|元|倍|天|元/股|万股|辆|台)"
+)
+
+
 def _violations(answer, allowed):
-    # allowed: {文件名: (unit_kind, count)}
+    """锚点合规校验。allowed: {文件名: (unit_kind, count[, shown_locs])}。
+
+    shown_locs 是「本次真的给模型看过的那些单元」（深查是喂进去的原文页，
+    问答是选中知识页里出现过的锚点）。带了它才能挡住
+    「页码在文件范围内、但那一页模型压根没见过」这种编造（问题 6）。
+    """
     bad = []
     for f, loc in wiki.ANCHOR_RE.findall(answer):
         info = allowed.get(f)
         if info is None:
             bad.append(f"锚点引用了未提供的文件 {f}")
             continue
-        unit_kind, count = info
+        unit_kind, count = info[0], info[1]
+        shown = info[2] if len(info) > 2 else None
         if wiki.loc_kind(loc) != unit_kind:
             bad.append(f"锚点 {f}#{loc} 单元类型不对（应为{'段落' if unit_kind == 'para' else '页'}）")
+        elif shown is not None and loc not in shown:
+            ok = "、".join(sorted(shown)[:10]) or "（本次没有可用的锚点）"
+            bad.append(f"锚点 {f}#{loc} 指向的单元没有出现在本次提供给模型的原文里，只允许用这些：{ok}")
         elif not 1 <= wiki.loc_num(loc) <= count:
             bad.append(f"锚点 {f}#{loc} 序号超出范围")
     # 长提示词下模型偶发整篇漏挂锚点（实测同一提示词时而 0 个时而 41 个），此处补一道存在性检查触发既有重试。
-    # 只在有锚点可用、且答案确实含数据陈述时判违规，纯说明类与「知识库中没有」类短答不误伤。
-    if allowed and not wiki.ANCHOR_RE.search(answer) and len(re.findall(r"\d+(?:\.\d+)?", answer)) >= 3:
+    # 判据从「数字个数 ≥ 3」改成「有没有带单位的数据陈述」（问题 21）：
+    # 原来只要 1~2 个数字就整条不检查，编造的小数据照样放行；
+    # 现在「营收 50 亿元」这种一句话一个数也会被拦，
+    # 而「3 个问题」「2026 年」这类不带单位的计数不会被误伤。
+    if allowed and not wiki.ANCHOR_RE.search(answer) and _DATA_STATEMENT_RE.search(answer):
         bad.append("全文没有任何锚点，含数据的陈述句句尾必须带锚点")
     return bad
 
 
+def _is_refusal(answer) -> bool:
+    """判断这是不是"拒答"。
+
+    原来用 `"UNANSWERABLE" in answer` 判断——正常回答里只要提到这个词
+    （比如讨论模型输出规范）就被当成拒答，整条答案被扔掉（问题 21）。
+    现在只在**整条回答就是这一个词**（或只有它加少量标点/空白）时才算拒答。
+    """
+    a = str(answer or "").strip()
+    if not a:
+        return False
+    # 去掉 markdown 强调、代码围栏、空白与常见标点
+    t = a.strip().strip("`*_ ").strip()
+    t = t.strip("。．.!！?？:：,，、;； ")
+    t = "".join(t.split())   # 去掉所有空白（含制表符与换行）
+    return t.upper() == "UNANSWERABLE"
+
+
 def _index_violations(answer):
     return [f"出现了索引回答不允许的锚点 {f}#{loc}" for f, loc in wiki.ANCHOR_RE.findall(answer)]
+
+
+def _attach_doubts(result, question, answer):
+    """出处文本抽查：答案里的关键数字在锚点页原文里找不到的，记进审校清单待人工复核。
+
+    这是「抽查」不是「判错」——页码定位、表格抽取、单位换算都可能让原文与答案
+    字面不一致，所以只记存疑、不拦答案（问题 6）。
+    """
+    try:
+        doubts = anchor_verify.check(answer)
+    except Exception:
+        doubts = []
+    if doubts:
+        try:
+            anchor_verify.append_doubts(doubts, question=question, answer=answer)
+        except Exception:
+            pass
+    result.setdefault("validation", {})["doubts"] = doubts
+    return doubts
 
 
 def _answer_from_index(question, history):
@@ -286,7 +340,7 @@ def _answer_from_index(question, history):
                  .replace("{INDEX}", idx_text)
                  .replace("{Q}", question)}]
     answer = strip_glitch(llm.chat(messages, task="answer"))
-    if "UNANSWERABLE" in answer:
+    if _is_refusal(answer):
         return None
     bad = _index_violations(answer)
     if bad:
@@ -295,7 +349,7 @@ def _answer_from_index(question, history):
             "以下内容违规，索引回答不允许出现任何锚点，请修正后重新输出完整答案：\n- " + "\n- ".join(bad)
         )})
         answer = strip_glitch(llm.chat(messages, task="answer"))
-        if "UNANSWERABLE" in answer:
+        if _is_refusal(answer):
             return None
         bad = _index_violations(answer)
     return answer, bad
@@ -308,15 +362,23 @@ def _index_pages():
 
 
 def _allowed_from_pages(sel_pages):
+    """选中知识页 → 允许引用的锚点。
+
+    只认「这些页正文里真的出现过的锚点」：模型看得见的就这么多，
+    页面里没露过面的页码不许引（问题 6：只查页码在不在文件范围内太松）。
+    """
     manifest = load_manifest()
     files_info = {f["file"]: (f.get("unit", "page"), f.get("count") or f.get("page_count") or 0)
                   for f in manifest["files"]}
     allowed = {}
     for p in sel_pages:
-        for s in (p["meta"].get("sources") or []):
-            name = s.rsplit("/", 1)[-1]
-            if name in files_info:
-                allowed[name] = files_info[name]
+        for f, loc in wiki.ANCHOR_RE.findall(p.get("body") or ""):
+            if f not in files_info:
+                continue
+            kind, count = files_info[f]
+            prev = allowed.get(f)
+            locs = (prev[2] if prev else set()) | {loc}
+            allowed[f] = (kind, count, locs)
     return allowed
 
 
@@ -349,7 +411,7 @@ def _select_pages(question, history, max_pages=None, soft_pages=None):
         response_json=True,
     )
     valid_slugs = {e["slug"] for e in entries}
-    slugs = [s for s in (sel.get("selected") or []) if s in valid_slugs]
+    slugs = [s for s in (sel.get("selected") or []) if isinstance(s, str) and s in valid_slugs]
     return pages, slugs, str(sel.get("reason") or ""), bool(sel.get("use_index"))
 
 
@@ -380,6 +442,8 @@ def _suggest_raw_files(question):
         return []
     res = []
     for c in (out.get("candidates") or [])[:5]:
+        if not isinstance(c, dict):
+            continue
         f = str(c.get("file") or "").strip()
         if f in idx:
             res.append({"file": f, "reason": str(c.get("reason") or "")})
@@ -407,15 +471,18 @@ def _collect_deep_units(question, files=None, char_budget=20000):
             cached = load_cached(p) or _extract_payload(p)
             if not cached:
                 continue
-            allowed[p.name] = (cached["unit"], cached["count"])
+            tag = "段" if cached["unit"] == "para" else "页"
+            shown = set()
             for u in cached["units"]:
                 if not u["text"]:
                     continue
                 if used + len(u["text"]) > char_budget:
                     break
-                tag = "段" if cached["unit"] == "para" else "页"
                 pieces.append(f"[{p.name} | 第{u['n']}{tag}]\n{u['text']}")
                 used += len(u["text"])
+                shown.add(f"{'para' if tag == '段' else 'p'}{u['n']}")
+            # 只把「真的喂给模型看过的单元」记成可引用范围（问题 6）
+            allowed[p.name] = (cached["unit"], cached["count"], shown)
     else:
         scored = []
         keys = _question_keys(question)
@@ -423,21 +490,24 @@ def _collect_deep_units(question, files=None, char_budget=20000):
             cached = load_cached(p) or _extract_payload(p)
             if not cached:
                 continue
-            allowed[p.name] = (cached["unit"], cached["count"])
             for u in cached["units"]:
                 if not u["text"]:
                     continue
                 score = sum(1 for k in keys if k in u["text"])
                 if score:
-                    scored.append((score, p.name, cached["unit"], u))
+                    scored.append((score, p.name, cached["unit"], u, cached["count"]))
         scored.sort(key=lambda x: -x[0])
-        for score, fname, unit, u in scored[:60]:
+        shown_by_file = {}
+        for score, fname, unit, u, count in scored[:60]:
             tag = "段" if unit == "para" else "页"
             text = u["text"]
             if used + len(text) > char_budget:
                 continue
             pieces.append(f"[{fname} | 第{u['n']}{tag}]\n{text}")
             used += len(text)
+            shown_by_file.setdefault(fname, (unit, count, set()))[2].add(
+                f"{'para' if tag == '段' else 'p'}{u['n']}")
+        allowed.update(shown_by_file)
     return pieces, allowed
 
 
@@ -497,6 +567,7 @@ def deep_ask(question, history=None, files=None):
         bad = _violations(answer, allowed)
     result["answer_md"] = answer
     result["validation"] = {"ok": not bad, "violations": bad}
+    _attach_doubts(result, question, answer)
     if not bad:
         result["proposal"] = _propose_distill(question, answer)
     return result
@@ -568,6 +639,7 @@ def ask(question, history=None, propose=True):
         bad = _violations(answer, allowed)
     result["answer_md"] = answer
     result["validation"] = {"ok": not bad, "violations": bad}
+    _attach_doubts(result, question, answer)
     if propose and not bad:
         result["proposal"] = _propose_distill(question, answer)
     return result

@@ -9,6 +9,7 @@ const PANE_HTML = `
   <div class="pane-head">
     <select class="conv-select" title="切换会话"></select>
     <button class="ghost sm new-conv" title="开一个空白会话">新会话</button>
+    <button class="ghost sm rename-conv" title="给当前会话改名">改名</button>
     <button class="ghost sm del-conv" title="删除当前会话">删除</button>
     <button class="ghost sm extract" title="把本会话答案里值得进知识库的内容写进 wiki">提取</button>
   </div>
@@ -27,7 +28,10 @@ function makePane(el) {
   pane.$send = el.querySelector(".send");
 
   pane.loadConvs = function (keepCurrent) {
-    return fetch("/api/conversations").then((r) => r.json()).then((d) => {
+    return fetch("/api/conversations", {cache: "no-cache"})
+      .then((r) => (r.status === 304 ? null : r.json()))
+      .then((d) => {
+      if (!d) return;   // 没变化（304），省掉全量传输
       pane.convs = d.items || [];
       pane.$select.innerHTML = pane.convs.map((c) =>
         `<option value="${c.id}">${App.escapeHtml(c.title || "未命名")}（${c.messages}）</option>`).join("");
@@ -146,6 +150,42 @@ function makePane(el) {
   });
 
   pane.$select.addEventListener("change", () => pane.selectConv(pane.$select.value));
+
+  // 改名（问题 21）
+  const renameBtn = pane.el.querySelector(".rename-conv");
+  if (renameBtn) renameBtn.addEventListener("click", () => {
+    const cid = pane.convId;
+    if (!cid) { App.toast("先选一个会话", "bad"); return; }
+    const cur = (pane.convs.find((c) => c.id === cid) || {}).title || "";
+    const name = window.prompt("给这个会话起个新名字：", cur);
+    if (!name || !name.trim() || name.trim() === cur) return;
+    fetch("/api/conversations/" + encodeURIComponent(cid), {
+      method: "PATCH",
+      headers: {"Content-Type": "application/json", "X-Requested-With": "wiki"},
+      body: JSON.stringify({title: name.trim()}),
+    }).then((r) => r.json()).then((d) => {
+      if (d.error) { App.toast(d.error, "bad"); return; }
+      pane.loadConvs();
+    }).catch((e) => App.toast("改名失败：" + e, "bad"));
+  });
+
+  // 删除（问题 21）
+  const delBtn = pane.el.querySelector(".del-conv");
+  if (delBtn) delBtn.addEventListener("click", () => {
+    const cid = pane.convId;
+    if (!cid) { App.toast("先选一个会话", "bad"); return; }
+    const cur = (pane.convs.find((c) => c.id === cid) || {}).title || "这个会话";
+    if (!window.confirm("删除会话「" + cur + "」？\n（聊天记录不可恢复）")) return;
+    fetch("/api/conversations/" + encodeURIComponent(cid), {
+      method: "DELETE",
+      headers: {"X-Requested-With": "wiki"},
+    }).then((r) => r.json()).then((d) => {
+      if (d.error) { App.toast(d.error, "bad"); return; }
+      pane.convId = null;
+      pane.loadConvs();
+      App.toast("已删除", "good");
+    }).catch((e) => App.toast("删除失败：" + e, "bad"));
+  });
   pane.$send.addEventListener("click", pane.send);
   pane.$text.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); pane.send(); }
@@ -295,6 +335,9 @@ document.addEventListener("DOMContentLoaded", () => {
       paneEls[0].style.flex = "";
       paneEls[1].style.flex = "";
       localStorage.removeItem("askSplit");
+      /* 复位 applyRatio 写下的固定宽度，否则关掉分栏后剩下的窗口仍停在半宽 */
+      paneEls[0].style.flex = "";
+      paneEls[1].style.flex = "";
     }
   };
 
@@ -318,7 +361,17 @@ document.addEventListener("DOMContentLoaded", () => {
   /* 首页跳转带 ?q= 时：新会话自动开问（带上首页选的模型） */
   const params = new URLSearchParams(location.search);
   const model = params.get("model");
-  if (model) localStorage.setItem("askModel", model);
+  /* 问题 10：链接里带 model=xxx 可以偷偷换掉用的模型（花钱的是你的账户）。
+     只接受配置里真实存在的模型名；非法值直接丢掉，不写进 localStorage
+     （写进去会让问答/上传/审校全部 400，网页端瘫掉）。 */
+  if (model) {
+    if (App.validModel && App.validModel(model)) {
+      localStorage.setItem("askModel", model);
+    } else {
+      localStorage.removeItem("askModel");
+      if (App.toast) App.toast("链接里指定的模型不存在，已忽略", "bad");
+    }
+  }
   const q = params.get("q");
   if (q) {
     history.replaceState(null, "", "/ask");

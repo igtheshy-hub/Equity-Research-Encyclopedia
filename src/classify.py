@@ -1,3 +1,4 @@
+import datetime as dt
 import hashlib
 import os
 import re
@@ -5,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from . import config, llm
-from .pdf_extract import SUPPORTED_SUFFIXES, first_text
+from .pdf_extract import SUPPORTED_SUFFIXES, first_text, raw_file_groups
 
 UNSAFE = re.compile(r'[\s\[\]#|/\\:*?"<>\x00-\x1f]')
 
@@ -80,6 +81,22 @@ def sanitize(s):
     return UNSAFE.sub("", str(s or ""))
 
 
+def valid_date8(s):
+    """检查 8 位日期是否真实存在（问题 21）。
+
+    以前只判格式对不对，"20260300"（3 月 0 日）这种也照收，库里已经有这种文件。
+    现在按真实的日历校验，非法日期不写进文件名。
+    """
+    s = str(s or "")
+    if not re.fullmatch(r"\d{8}", s):
+        return False
+    try:
+        dt.date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+    except ValueError:
+        return False
+    return True
+
+
 def build_filename(cls, original_stem, suffix=".pdf"):
     kind_word = {"report": "研报", "filing": "财报", "policy": "政策文件"}[cls["kind"]]
     parts = []
@@ -88,8 +105,11 @@ def build_filename(cls, original_stem, suffix=".pdf"):
     topic = sanitize(cls.get("topic"))
     parts.append(f"{topic}{kind_word}" if topic else kind_word)
     date = sanitize(cls.get("date"))
-    if re.fullmatch(r"\d{8}", date):
+    if valid_date8(date):
         parts.append(date)
+    elif date:
+        # 日期格式对但日历上不存在（如 20260300）——不写进文件名，另记一条提示
+        cls["_bad_date"] = date
     name = "_".join(parts) + suffix
     if name == suffix or set(name[:-len(suffix)]) <= {"_"}:
         name = f"未归类_{sanitize(original_stem) or '文件'}{suffix}"
@@ -97,13 +117,21 @@ def build_filename(cls, original_stem, suffix=".pdf"):
 
 
 def unique_target(directory, filename):
-    if not (directory / filename).exists():
-        return filename
+    """保证文件名在整个 raw（研报/财报/政策/收件台）里唯一，而不只是目标子目录。
+
+    知识条目的锚点只写文件名，同名两份会让审校、深查、删除都指错对象。
+    """
+    taken = set(raw_file_groups())
+    # 来源页 slug 与提取缓存都用 stem，所以 stem 也必须全局唯一（a.pdf / a.docx 不能并存）
+    taken_stems = {Path(n).stem for n in taken}
     stem = Path(filename).stem
+    suffix = Path(filename).suffix
+    if filename not in taken and stem not in taken_stems:
+        return filename
     i = 2
-    while (directory / f"{stem}-{i}{Path(filename).suffix}").exists():
+    while f"{stem}-{i}{suffix}" in taken or f"{stem}-{i}" in taken_stems:
         i += 1
-    return f"{stem}-{i}{Path(filename).suffix}"
+    return f"{stem}-{i}{suffix}"
 
 
 def target_directory(cls):

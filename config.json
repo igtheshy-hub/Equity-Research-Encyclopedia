@@ -1,11 +1,17 @@
 {
   "llm": {
-    "default": "glm-5.1",
+    "default": "auto",
     "max_tokens": 16384,
     "read_timeout_s": 300,
     "max_retries": 3,
     "extra_body": {"thinking": {"type": "disabled"}},
     "models": {
+      "glm-5.3-flash": {
+        "label": "GLM-5.3-Flash",
+        "provider": "智谱",
+        "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        "model": "glm-5.3-flash"
+      },
       "glm-5.1": {
         "label": "GLM-5.1",
         "provider": "智谱",
@@ -54,7 +60,8 @@
   "ingest": {
     "compile_chunk_pages": 20,
     "min_chars_per_page": 50,
-    "filing_check_tol": 0.005
+    "filing_check_tol": 0.005,
+    "task_timeout_s": 7200
   },
   "fetcher": {
     "macro_python": "C:/Users/DELL/anaconda3/envs/macro-data/python.exe",

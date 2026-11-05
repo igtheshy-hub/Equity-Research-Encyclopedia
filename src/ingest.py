@@ -1,11 +1,14 @@
 import json
+import os
 import re
 import threading
+import uuid
 from pathlib import Path
 
 from . import anchor_match, config, llm, wiki
 from .classify import sha256_of, sanitize
-from .pdf_extract import SUPPORTED_SUFFIXES, extract_to_store, unit_kind_of
+from .pdf_extract import (SUPPORTED_SUFFIXES, DuplicateFileError, extract_to_store,
+                          find_raw_file, unit_kind_of)
 
 # 清单落盘的串行锁：摄入线只追加条目、删除线只删条目，两条线都在锁内 load-modify-save，互不覆盖
 MANIFEST_LOCK = threading.RLock()
@@ -84,15 +87,66 @@ def source_kind(path):
 
 
 def load_manifest():
-    if config.MANIFEST_PATH.exists():
-        return json.loads(config.MANIFEST_PATH.read_text(encoding="utf-8"))
+    """读清单。文件损坏时自动回退到 .bak 备份，并把坏文件另存为 .corrupt 供排查。"""
+    p = config.MANIFEST_PATH
+    if p.exists():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("files"), list):
+                return data
+            raise ValueError("清单结构异常")
+        except (ValueError, OSError) as e:
+            bak = p.with_suffix(p.suffix + ".bak")
+            corrupt = p.with_suffix(p.suffix + ".corrupt")
+            try:
+                if p.exists():
+                    os.replace(p, corrupt)          # 坏文件挪开，别直接覆盖丢证据
+            except OSError:
+                pass
+            if bak.exists():
+                try:
+                    data = json.loads(bak.read_text(encoding="utf-8"))
+                    if isinstance(data, dict) and isinstance(data.get("files"), list):
+                        print(f"[清单] 主文件损坏，已用备份恢复（坏文件存为 {corrupt.name}）")
+                        save_manifest(data)          # 把恢复后的内容写回主文件
+                        return data
+                except (ValueError, OSError):
+                    pass
+            print(f"[清单] 主文件损坏且无可用备份，已按空清单继续（原文件 {corrupt.name}）")
+            return {"files": []}
     return {"files": []}
 
 
 def save_manifest(m):
+    """写清单：先写临时文件 → 原子替换；替换前把旧版备份成 .bak。
+
+    问题 3：原来直接 write_text，写到一半被 Ctrl+C / 断电打断，账本就成半截废纸，
+    整个软件从此打不开。os.replace 是原子操作，不存在半截状态。
+    """
     with MANIFEST_LOCK:
-        config.MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-        config.MANIFEST_PATH.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+        p = config.MANIFEST_PATH
+        p.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(m, ensure_ascii=False, indent=1)
+        # 旧版备份（只保留最近一份）
+        if p.exists():
+            try:
+                bak = p.with_suffix(p.suffix + ".bak")
+                bak.write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
+            except OSError:
+                pass
+        tmp = p.with_suffix(p.suffix + f".{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            # Windows 上目标文件被别的线程打开时 os.replace 会抛 PermissionError，
+            # 退避重试几次（wiki._atomic_replace 同一套逻辑）
+            from .wiki import _atomic_replace
+            _atomic_replace(tmp, p)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
 
 
 def append_manifest(entries):
@@ -106,6 +160,31 @@ def append_manifest(entries):
             if (e["file"], e["sha256"]) not in have:
                 m["files"].append(e)
         save_manifest(m)
+
+
+def persist_new_entries(entries):
+    """把「本轮新增的条目」追加到盘上清单，不动盘上已有的条目。
+
+    问题 5：原来几处是「启动时把清单读进内存，干完活整体写回」。干活期间（可能十几分钟）
+    若用户删了文件，删除改的是盘上那份，整体写回会把删除痕迹冲掉——已删材料又"复活"。
+
+    注意：参数必须是**本轮真正新增**的那几条（调用方用 before/after 的 sha 集合算差集），
+    不能把整份内存清单丢进来——那样已删的条目会被当成"新条目"重新加回去。
+
+    返回本次实际追加的条数。
+    """
+    if not entries:
+        return 0
+    with MANIFEST_LOCK:
+        disk = load_manifest()
+        have = {(f.get("file"), f.get("sha256")) for f in disk.get("files", [])}
+        new = [f for f in entries
+               if (f.get("file"), f.get("sha256")) not in have]
+        if not new:
+            return 0
+        disk.setdefault("files", []).extend(new)
+        save_manifest(disk)
+        return len(new)
 
 
 def _norm(s):
@@ -179,10 +258,12 @@ def _focus_rule(focus):
     return FOCUS_RULE_TEMPLATE.replace("{focus_lines}", "\n".join(f"  · {x}" for x in items))
 
 
-def compile_file(path, units, unit_kind, focus=None):
+def compile_file(path, units, unit_kind, focus=None, task_id=None):
+    from . import tasks
     fname = path.name
-    chunk_size = config.CFG["ingest"]["compile_chunk_pages"]
-    chunks = [units] if len(units) <= 40 else [
+    # 分块阈值按配置走（原来写死 40，配置里的 20 对 21-40 页的文件不生效，问题 21）
+    chunk_size = max(1, int(config.CFG["ingest"]["compile_chunk_pages"]))
+    chunks = [units] if len(units) <= chunk_size else [
         units[i:i + chunk_size] for i in range(0, len(units), chunk_size)
     ]
     prompt = COMPILE_PROMPT.replace("{FOCUS_RULE}", _focus_rule(focus))
@@ -193,6 +274,7 @@ def compile_file(path, units, unit_kind, focus=None):
     report_date = ""
     total_dropped = 0
     for chunk in chunks:
+        tasks.check_cancel(task_id)
         tag = "段" if unit_kind == "para" else "页"
         text = "\n\n".join(f"[第{u['n']}{tag}]\n{u['text']}" for u in chunk if u["text"])
         out = llm.chat(
@@ -204,6 +286,8 @@ def compile_file(path, units, unit_kind, focus=None):
         if rd and not report_date:
             report_date = rd
         for t in out.get("topics") or []:
+            if not isinstance(t, dict):  # 嵌套层也可能混进清单/纯文字，跳过不崩
+                continue
             title = str(t.get("title") or "").strip()
             if not title:
                 continue
@@ -216,7 +300,10 @@ def compile_file(path, units, unit_kind, focus=None):
             if not ex["summary"] and t.get("summary"):
                 ex["summary"] = str(t["summary"])
             ex["focus_hits"].extend(str(x).strip() for x in (t.get("focus_hits") or []) if str(x).strip())
-            for s, lines in (t.get("sections") or {}).items():
+            sections = t.get("sections")
+            if not isinstance(sections, dict):
+                sections = {}
+            for s, lines in sections.items():
                 s = str(s).strip() or "其他"
                 keep, dropped = _valid_lines(lines, fname, unit_kind, len(units), units=units)
                 total_dropped += dropped
@@ -265,11 +352,14 @@ def plan_merge(topics, index_entries):
         [{"role": "user", "content": MERGE_PROMPT.replace("{INDEX}", index_text).replace("{TOPICS}", topics_text)}],
         task="merge",
         response_json=True,
+        json_any=True,  # 这里的约定本来就是 JSON 数组，放行任意本体
     )
     items = out if isinstance(out, list) else out.get("decisions") or []
     by_title = {t["title"]: t for t in pending}
     slug_index = {e["slug"]: e for e in index_entries}
     for d in items:
+        if not isinstance(d, dict):
+            continue
         t = by_title.get(str(d.get("title") or ""))
         if t is None:
             continue
@@ -286,38 +376,50 @@ def plan_merge(topics, index_entries):
 
 
 def _apply_merge(page_path, meta, body, topic, extra_sources, note_prefix):
-    sections = wiki.body_to_sections(body)
-    old_anchors = wiki.anchors_of(body)
-    added = 0
-    for s, lines in topic["sections"].items():
-        bucket = sections.setdefault(s, [])
-        for ln in lines:
-            if ln not in bucket:
-                bucket.append(ln)
-                added += 1
-    title = str(meta.get("title") or page_path.stem)
-    new_body = wiki.render_page(title, sections, _dir_type(page_path))
-    new_anchors = wiki.anchors_of(new_body)
-    if not old_anchors <= new_anchors:
-        raise RuntimeError(f"{page_path.name}: 合并后锚点集合减少，拒绝写盘")
-    srcs = meta.get("sources") or []
-    for s in extra_sources:
-        if s not in srcs:
-            srcs.append(s)
-    meta["sources"] = srcs
-    meta["updated"] = config.today_str()
-    aliases = meta.get("aliases") or []
-    for a in topic["aliases"]:
-        if a not in aliases:
-            aliases.append(a)
-    if aliases:
-        meta["aliases"] = aliases
-    hist = meta.get("history") or []
-    hist.append(f"{config.today_str()} {note_prefix}（+{added} 条）")
-    meta["history"] = hist
-    _check_before_write(meta, new_body, page_path)
-    wiki.write_page(page_path, meta, new_body)
-    return added
+    """把新条目并进已有知识页。
+
+    问题 4（并发打架）：摄入线与删除线可能同时改同一页。这里整段持 WIKI_LOCK，
+    并在锁内重新读一遍最新正文——调用方传进来的 body 是更早的快照，
+    直接用会把并发写入的改动抹掉。
+    """
+    with wiki.WIKI_LOCK:
+        if page_path.exists():
+            try:
+                meta, body = wiki.parse_page(page_path)
+            except (OSError, ValueError):
+                pass  # 读不动就沿用调用方给的快照
+        sections = wiki.body_to_sections(body)
+        old_anchors = wiki.anchors_of(body)
+        added = 0
+        for s, lines in topic["sections"].items():
+            bucket = sections.setdefault(s, [])
+            for ln in lines:
+                if ln not in bucket:
+                    bucket.append(ln)
+                    added += 1
+        title = str(meta.get("title") or page_path.stem)
+        new_body = wiki.render_page(title, sections, _dir_type(page_path))
+        new_anchors = wiki.anchors_of(new_body)
+        if not old_anchors <= new_anchors:
+            raise RuntimeError(f"{page_path.name}: 合并后锚点集合减少，拒绝写盘")
+        srcs = meta.get("sources") or []
+        for s in extra_sources:
+            if s not in srcs:
+                srcs.append(s)
+        meta["sources"] = srcs
+        meta["updated"] = config.today_str()
+        aliases = meta.get("aliases") or []
+        for a in topic["aliases"]:
+            if a not in aliases:
+                aliases.append(a)
+        if aliases:
+            meta["aliases"] = aliases
+        hist = meta.get("history") or []
+        hist.append(f"{config.today_str()} {note_prefix}（+{added} 条）")
+        meta["history"] = hist
+        _check_before_write(meta, new_body, page_path)
+        wiki.write_page(page_path, meta, new_body)
+        return added
 
 
 def _check_before_write(meta, body, path):
@@ -335,14 +437,29 @@ def _dir_type(page_path):
     return "concept"
 
 
+def _unique_page_path(type_, slug):
+    """在锁内挑一个没被占用的页面路径（并发新建时不会重名互相覆盖，问题 4）。"""
+    with wiki.WIKI_LOCK:
+        try:
+            path = wiki.slug_to_path(type_, slug)
+        except ValueError:
+            slug = f"未命名-{uuid.uuid4().hex[:8]}"
+            path = wiki.slug_to_path(type_, slug)
+        i = 2
+        while path.exists():
+            try:
+                path = wiki.slug_to_path(type_, f"{slug}-{i}")
+            except ValueError:
+                path = wiki.slug_to_path(type_, f"未命名-{uuid.uuid4().hex[:8]}")
+            i += 1
+        return path
+
+
 def _apply_create(decision, topic, extra_sources, note_prefix):
     type_ = decision["type"]
     slug = sanitize(topic["title"]) or sanitize(decision.get("slug") or "") or "未命名"
-    path = wiki.slug_to_path(type_, slug)
-    i = 2
-    while path.exists():
-        path = wiki.slug_to_path(type_, f"{slug}-{i}")
-        i += 1
+    # slug 必须能安全地映射成 wiki 下的文件名（问题 2 的白名单），不合格就退到哈希名
+    path = _unique_page_path(type_, slug)
     count = sum(len(v) for v in topic["sections"].values())
     meta = {
         "title": topic["title"],
@@ -427,7 +544,7 @@ def normalize_targets(targets):
     return out
 
 
-def ingest_one(path, manifest, focus=None, targets=None):
+def ingest_one(path, manifest, focus=None, targets=None, task_id=None):
     focus = [str(x).strip() for x in (focus or []) if str(x).strip()]
     targets = normalize_targets(targets)
     # 目标数据同时当关注点用：研报管线补到的研报、政策按目标数据优先提炼
@@ -437,6 +554,16 @@ def ingest_one(path, manifest, focus=None, targets=None):
             targets.append({"item": f, "why": "关注点"})
             known.add(f)
     focus = focus or [t["item"] for t in targets]
+    # 锚点只记文件名：同名多份时整份拒绝摄入，避免旧知识条目指向错误文件
+    try:
+        found = find_raw_file(path.name)
+    except DuplicateFileError as e:
+        return {"file": path.name, "error": str(e)}
+    # found is None = 资料库里根本没这个名字，不是"同名冲突"；原来写成 found != path
+    # 会把这种情况也误判成冲突，返回的 error dict 又没有 entries_count，
+    # 一路传到 finish() 触发 KeyError。
+    if found is not None and found != path:
+        return {"file": path.name, "error": f"资料库里存在同名文件（{found}），本份拒绝摄入，请先改名"}
     sha = sha256_of(path)
     dup_entry = next((f for f in manifest["files"] if f["sha256"] == sha), None)
     if dup_entry:
@@ -451,7 +578,7 @@ def ingest_one(path, manifest, focus=None, targets=None):
         return None
     dup_name = next((f for f in manifest["files"] if f["file"] == path.name), None)
     if dup_name:
-        print(f"  [警告] 与已摄入的 {dup_name['file']} 同名但内容不同，旧锚点将指向新文件内容")
+        return {"file": path.name, "error": "清单里已有同名文件但内容不同；锚点只记文件名，为免指错，本份拒绝摄入"}
     units, count, scanned, unit_kind = extract_to_store(path)
     if scanned:
         print("  [拒] 疑似扫描版（无文本层），不编译")
@@ -463,13 +590,14 @@ def ingest_one(path, manifest, focus=None, targets=None):
         # 财报走专用流程（结构化科目 + 勾稽 + 派生指标），见 .claude/skills/finstmt-ingest/SKILL.md
         from . import filing as filing_mod
         try:
-            r = filing_mod.ingest_filing(path, units, unit_kind, manifest, sha, targets=targets)
+            r = filing_mod.ingest_filing(path, units, unit_kind, manifest, sha, targets=targets,
+                                         task_id=task_id)
             if focus and r:
                 _tag_focus_pages(r.get("touched") or [], focus, [])
             return r
         except filing_mod.UnsupportedFiling as e:
             print(f"  [财报] {e}")
-    compiled = compile_file(path, units, unit_kind, focus=focus)
+    compiled = compile_file(path, units, unit_kind, focus=focus, task_id=task_id)
     topics = compiled["topics"]
     existing = wiki.load_pages()
     index_entries = [wiki.build_index_entry(p) for p in existing if p["type"] != "source"]
@@ -525,13 +653,22 @@ def ingest_one(path, manifest, focus=None, targets=None):
     }
 
 
-def finish(manifest, results):
-    """摄入收尾：落盘清单、重建索引、写日志、全库校验。逐份流水线每轮结束后调用一次。"""
-    save_manifest(manifest)
+def finish(manifest, results, new_entries=None):
+    """摄入收尾：落盘清单、重建索引、写日志、全库校验。逐份流水线每轮结束后调用一次。
+
+    落盘用 persist_new_entries（只追加**本轮新增**的条目），不用整份覆盖：
+    整份写回会把并发删除的改动冲掉，已删材料又"复活"（问题 5）。
+    new_entries 由调用方用 before/after 的 sha 集合算差集得到。
+    """
+    persist_new_entries(new_entries or [])
     wiki.rebuild_index_md(wiki.load_pages())
     if results:
-        summary = "；".join(f"{r['file']}（{r['entries_count']} 条）：{r['log']}" for r in results)
-        wiki.append_log("ingest", summary)
+        # 只汇总真正产出了条目的结果（ingest_one 失败时返回的是 {"file":..,"error":..}，
+        # 没有 entries_count，直接取会 KeyError）
+        good = [r for r in results if "error" not in r and r.get("entries_count") is not None]
+        if good:
+            summary = "；".join(f"{r['file']}（{r['entries_count']} 条）：{r.get('log','')}" for r in good)
+            wiki.append_log("ingest", summary)
     from . import validate
     problems = validate.validate_all()
     if problems:
@@ -571,6 +708,11 @@ def dedupe_raw(manifest):
 
 
 def run_all(paths, progress=None, focus=None):
+    """命令行摄入：逐份处理，每份都重新读一遍最新清单、只追加自己那条（问题 5）。
+
+    原来这里是「启动时读一份清单进内存，干完活整体写回」——干活期间用户删了文件，
+    删除改的是盘上那份，整体写回会把删除痕迹冲掉，已删材料又"复活"。
+    """
     manifest = load_manifest()
     removed = dedupe_raw(manifest)
     if removed:
@@ -579,12 +721,16 @@ def run_all(paths, progress=None, focus=None):
     results = []
     paths = [p for p in paths if p.exists()]
     focus = focus or []
+    collected_new = []
     if focus:
         print(f"[关注点] {len(focus)} 项：{'、'.join(focus)}")
     for i, p in enumerate(paths, 1):
         print(f"== 摄入 {p.name} ==")
         if progress:
             progress(i, p.name)
+        # 每份重新读最新清单：并发删除的改动要能立刻看到
+        manifest = load_manifest()
+        before = {f.get("sha256") for f in manifest.get("files", [])}
         try:
             r = ingest_one(p, manifest, focus=focus)
         except Exception as e:
@@ -592,6 +738,9 @@ def run_all(paths, progress=None, focus=None):
             continue
         if r:
             results.append(r)
-        save_manifest(manifest)  # 逐文件落盘，中途失败不丢已完成的部分
-    finish(manifest, results)
+        # 只追加本份新增的条目（差集），逐文件落盘，中途失败不丢已完成的部分
+        new_entries = [f for f in manifest.get("files", []) if f.get("sha256") not in before]
+        collected_new.extend(new_entries)
+        persist_new_entries(new_entries)
+    finish(load_manifest(), results, collected_new)
     return results

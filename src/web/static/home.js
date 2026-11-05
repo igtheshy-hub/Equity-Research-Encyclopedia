@@ -42,6 +42,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!ok.length) return;
     const fd = new FormData();
     ok.forEach((f) => fd.append("files", f));
+    // 首页下拉选中的模型对取名与摄入同样生效，不再需要改 config.json
+    const uploadModel = modelSel ? modelSel.value : (localStorage.getItem("askModel") || "");
+    if (uploadModel) fd.append("model", uploadModel);
 
     // 关注点：填了内容且勾了开关才带上
     const focusText = (focusInput && focusInput.value || "").trim();

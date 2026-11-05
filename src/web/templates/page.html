@@ -5,6 +5,9 @@
 <div class="page-wrap">
   <article class="page-main">
     <p class="crumbs"><a href="/kb">知识库</a> / {{ TYPE_LABELS[ptype] }} / {{ slug }}</p>
+    {% if meta.needs_review %}
+    <div class="banner bad">此页标记为「需复核」：{{ meta.review_reason or '有内容失去锚点，需人工确认' }}。确认无误后可在审校页标注复核。</div>
+    {% endif %}
     <div class="meta-card">
       <div><b>{{ meta.title or slug }}</b>（{{ TYPE_LABELS[ptype] }}）</div>
       {% if meta.aliases %}<div>别名：{{ meta.aliases | join('、') }}</div>{% endif %}
