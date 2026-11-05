@@ -10,7 +10,7 @@ from src.classify import sha256_of  # noqa: E402
 
 def test_audit_raw_files_separates_duplicates_changed_and_missing(tmp_path, monkeypatch):
     raw = tmp_path / "raw"
-    raw.mkdir()
+    raw.mkdir(exist_ok=True)
     base = raw / "a.pdf"
     base.write_bytes(b"A")
     dup = raw / "a-2.pdf"

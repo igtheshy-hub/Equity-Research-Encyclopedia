@@ -42,7 +42,7 @@ def test_ingest_pick_filters(tmp_path, monkeypatch):
     policies = raw / "policies"
     inbox = raw / "inbox"
     for d in (reports, filings, policies, inbox):
-        d.mkdir(parents=True)
+        d.mkdir(parents=True, exist_ok=True)
     ok = reports / "研报.pdf"
     ok.write_bytes(b"ok")
     dup = filings / "财报.pdf"
@@ -50,7 +50,7 @@ def test_ingest_pick_filters(tmp_path, monkeypatch):
     inbox_file = inbox / "待分类.pdf"
     inbox_file.write_bytes(b"inbox")
     isolated = filings / "_rejected" / "坏件.pdf"
-    isolated.parent.mkdir()
+    isolated.parent.mkdir(exist_ok=True)
     isolated.write_bytes(b"bad")
 
     monkeypatch.setattr(api_mod, "raw_file_index", lambda: {
@@ -79,11 +79,11 @@ def test_ingest_pick_filters(tmp_path, monkeypatch):
 def test_file_entries_marks_duplicate(tmp_path, monkeypatch):
     raw = tmp_path / "raw"
     filings = raw / "filings"
-    filings.mkdir(parents=True)
+    filings.mkdir(parents=True, exist_ok=True)
     fresh = filings / "新财报.pdf"
     fresh.write_bytes(b"same")
 
-    monkeypatch.setattr(purge, "raw_file_index", lambda: {fresh.name: fresh})
+    monkeypatch.setattr(purge, "raw_file_groups", lambda: {fresh.name: [fresh]})
     monkeypatch.setattr(purge.config, "ROOT", tmp_path)
     monkeypatch.setattr(purge.config, "INBOX_DIR", raw / "inbox")
     monkeypatch.setattr(purge, "load_manifest",

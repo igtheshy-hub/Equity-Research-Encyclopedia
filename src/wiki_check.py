@@ -80,7 +80,7 @@ def files_info():
 
 
 def file_paths():
-    paths = {f["file"]: config.ROOT / f["path"] for f in load_manifest()["files"]}
+    paths = {f["file"]: config.ROOT / f["path"] for f in load_manifest()["files"] if f.get("path")}
     for name, path in raw_file_index().items():
         paths.setdefault(name, path)
     return paths

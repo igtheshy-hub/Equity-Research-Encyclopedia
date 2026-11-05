@@ -230,8 +230,8 @@ def test_target_ingest():
             {"statement": "利润表", "scope": "合并", "item": "净利润", "value": 100, "unit": "亿元", "page": 6},
         ]
         filing._locate = lambda path, units, targets=None: dict(meta)
-        filing._transcribe = lambda path, units, meta: rows
-        filing._quotes = lambda path, units, meta: []
+        filing._transcribe = lambda path, units, meta, task_id=None: rows
+        filing._quotes = lambda path, units, meta, task_id=None: []
         filing._detect_currency = lambda units, sections: "CNY"
         filing._detect_unit = lambda units, sections: "亿元"
         filing._write_source_page = lambda *a, **k: None
