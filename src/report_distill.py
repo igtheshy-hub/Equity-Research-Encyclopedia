@@ -171,7 +171,8 @@ def build_distill_line(cand, job):
         val = str(cand["value"]).strip()
         return (f"【指标】{cand['period']} {cand['metric']} = {val}{unit} "
                 f"({cand['calc']}) {anchors}")
-    judgment = str(cand["judgment"]).strip().rstrip("。；;")
+    # 模型有时自带【个人观点】前缀，这里还要再加一次，先剥掉免得写成两遍
+    judgment = re.sub(r"^(?:【个人观点】\s*)+", "", str(cand["judgment"]).strip()).rstrip("。；;")
     if cand["class"] == "D":
         cond = str(cand.get("condition") or "").strip()
         when = str(cand.get("forecast_date") or "").strip()

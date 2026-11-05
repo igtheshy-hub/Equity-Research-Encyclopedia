@@ -140,6 +140,7 @@ def _locate(path, units, targets=None):
     if ptype not in ("Q1", "H1", "Q3", "FY"):
         ptype = ""
     period_end = str(out.get("period_end") or "").strip()
+    year = 0
     if period_end[:4].isdigit():
         year = int(period_end[:4])
         month = period_end[5:7]
@@ -239,20 +240,36 @@ def _transcribe_batch(path, units, batch, with_tables=True):
 
 _SCOPE_HEAD_RE = re.compile(
     r"(合并|母公司)\s*(?:资产负债表|利润表|现金流量表|所有者权益变动表|股东权益变动表)")
+# 德勤等版式把母公司表头写作「公司资产负债表」（不带母公司三字），独立成行才算
+_BARE_HEAD_RE = re.compile(
+    r"(?:公司)?\s*(?:资产负债表|利润表|现金流量表|所有者权益变动表|股东权益变动表)\s*(?:\s*[-–—]+\s*续)?")
 
 
 def _scope_marks(text):
-    return [(m.start(), "母公司" if m.group(1) == "母公司" else "合并")
-            for m in _SCOPE_HEAD_RE.finditer(text)]
+    """页内「合并/母公司 × 报表名」标题位置。
+
+    「公司资产负债表」这类不带母公司三字的表头只在页首独立成行时按母公司算，
+    避免正文或目录里的散词把归属切错。"""
+    marks = [(m.start(), "母公司" if m.group(1) == "母公司" else "合并")
+             for m in _SCOPE_HEAD_RE.finditer(text)]
+    lines = str(text or "").splitlines()
+    for i, ln in enumerate(lines[:6]):
+        if _BARE_HEAD_RE.fullmatch(ln.strip()):
+            marks.append((sum(len(x) + 1 for x in lines[:i]), "母公司"))
+    return sorted(marks)
 
 
 def _item_offsets(text, item, value, unit):
-    """科目名在页内的出现位置；数值能在该行找到的位置优先，用于判断它属于哪张表。"""
+    """科目名在页内的出现位置，分两档返回：(数值核得上的位置, 仅科目名对上的位置)。
+
+    页文本里的「加：期初」「其中：子公司」带冒号等标点，科目名匹配时字符间
+    允许空白与常用标点，否则带前缀的科目在声称页上找不到位置，归属会退化成
+    按页首继承，把合并数与母公司数互换。"""
     head = re.sub(r"[（(].*?[）)]", "", str(item or ""))
-    head = re.sub(r"[\s:：]", "", head)[:8]
+    head = re.sub(r"[\s:：、，,；;]", "", head)[:8]
     if len(head) < 2:
-        return []
-    pat = r"\s*".join(re.escape(ch) for ch in head)
+        return [], []
+    pat = r"[\s:：、，,；;]*".join(re.escape(ch) for ch in head)
     num = fin_calc.parse_value(value)
     hits = []
     for m in re.finditer(pat, text):
@@ -261,14 +278,17 @@ def _item_offsets(text, item, value, unit):
         snippet = text[start:end if end >= 0 else len(text)]
         ok = num is not None and _value_on_page(snippet, item, num, unit)
         hits.append((m.start(), ok))
-    return [pos for pos, ok in hits if ok] or [pos for pos, _ in hits]
+    return [pos for pos, ok in hits if ok], [pos for pos, _ in hits]
 
 
 def _mechanical_scopes(units, rows):
     """按页内「合并/母公司 × 报表名」标题的位置给每行定归属。
 
     季报常把合并表、母公司表甚至上年比较表排在同一页，只按页码归属会把母公司数
-    抄进合并口径，勾稽因此不平。标题之前的行归前一张表，标题之后归新表。"""
+    抄进合并口径，勾稽因此不平。标题之前的行归前一张表，标题之后归新表。
+    LLM 抄列还常把页码写偏一两页：声称页上核不到「科目名+数值」时，先去别的页
+    找这对内容真正所在的位置，找不到才退回声称页的表头归属——否则母公司表的
+    行只要页码写成合并表那页，就会按那页的表头被错标成合并口径。"""
     texts = {u["n"]: unicodedata.normalize("NFKC", u["text"]) for u in units}
     marks = {n: _scope_marks(t) for n, t in texts.items()}
     page_start, cur = {}, None
@@ -276,15 +296,30 @@ def _mechanical_scopes(units, rows):
         page_start[n] = cur
         if marks[n]:
             cur = marks[n][-1][1]
+
+    def _scope_at(n, offs):
+        for off in offs:
+            before = [s for pos, s in marks.get(n, []) if pos <= off]
+            if before:
+                return before[-1]
+        return None
+
     scopes = []
     for r in rows:
         n = r["page"]
-        scope = page_start.get(n) or r["scope"]
-        for off in _item_offsets(texts.get(n, ""), r["item"], r["value"], r["unit"]):
-            before = [s for pos, s in marks.get(n, []) if pos <= off]
-            if before:
-                scope = before[-1]
-                break
+        verified, by_name = _item_offsets(texts.get(n, ""), r["item"], r["value"], r["unit"])
+        scope = _scope_at(n, verified)
+        if scope is None and fin_calc.parse_value(r["value"]) is not None:
+            for m in sorted(texts):
+                if m == n:
+                    continue
+                v2, _ = _item_offsets(texts[m], r["item"], r["value"], r["unit"])
+                if v2:
+                    scope = _scope_at(m, v2)
+                    if scope:
+                        break
+        if scope is None:
+            scope = _scope_at(n, by_name) or page_start.get(n) or r["scope"]
         scopes.append(scope)
     return scopes
 
@@ -304,7 +339,7 @@ def _transcribe_pages(path, units, batch, with_tables):
 
 _HEAD_LINE_RE = re.compile(
     r"^(?:[（(][一二三四五六七八九十\d]+[）)]|[一二三四五六七八九十]+、|\d+[.、])?\s*"
-    r"(合并|母公司)\s*(资产负债表|利润表|现金流量表|所有者权益变动表|股东权益变动表)$")
+    r"(合并|母公司|公司)\s*(资产负债表|利润表|现金流量表|所有者权益变动表|股东权益变动表)$")
 _SEC_FOR_STMT = {"资产负债表": "bs", "利润表": "is", "现金流量表": "cf",
                  "所有者权益变动表": "eq", "股东权益变动表": "eq"}
 
@@ -312,7 +347,7 @@ _SEC_FOR_STMT = {"资产负债表": "bs", "利润表": "is", "现金流量表": 
 def _ensure_header_pages(units, meta):
     """报表首页常与「财务报表」「审计意见」同页，定位阶段容易漏掉，导致流动资产、
     收入前几行整段缺失。凡是页里有独立成行的「合并/母公司 × 报表名」标题、又不属于
-    任何已定页的，补进对应报表页集合。"""
+    任何已定页的，补进对应报表页集合。德勤版式的「公司资产负债表」按母公司表算。"""
     secs = meta["sections"]
     have = set()
     for k in ("key", "bs", "is", "cf", "eq", "cf_supp",
@@ -329,7 +364,7 @@ def _ensure_header_pages(units, meta):
             key = _SEC_FOR_STMT.get(m.group(2))
             if not key:
                 continue
-            sec = ("parent_" if m.group(1) == "母公司" else "") + key
+            sec = ("parent_" if m.group(1) in ("母公司", "公司") else "") + key
             secs.setdefault(sec, []).append(u["n"])
             secs[sec].sort()
             have.add(u["n"])
@@ -868,6 +903,12 @@ def ingest_filing(path, units, unit_kind, manifest, sha, targets=None):
             parent.setdefault(name, spec)
         left = [n for n in want if n not in cons]
         print(f"  [补录] 补齐 {len(missing) - len(left)} 项" + (f"，仍缺 {'、'.join(left)}" if left else ""))
+    left = [n for n in want if n not in cons]
+    if left:
+        # 抄列可能整批少返回行（LLM 非确定性），勾稽对残缺数据会空转通过；
+        # 核心科目补录后仍缺说明抄录不完整，宁挂起重试也不把残缺行写进 wiki
+        print(f"  [挂起] 核心科目 {'、'.join(left)} 抄录不齐，整份财报不入库，请重试")
+        return None
     hk_style = _fix_statement_signs(cons)
     _fix_statement_signs(parent)
     print(f"  [抄录] 合并 {len(cons)} 项、母公司 {len(parent)} 项，丢弃 {dropped} 行")

@@ -1,5 +1,6 @@
 from . import config, llm, source_priority, wiki
-from .ask import FIN_ANALYSIS_BLOCK, _allowed_from_pages, _select_pages, _violations, strip_glitch
+from .ask import (FIN_ANALYSIS_BLOCK, REPORT_PAGE_HARD, REPORT_PAGE_SOFT,
+                  _allowed_from_pages, _select_pages, _violations, strip_glitch)
 from .classify import sanitize
 from .ingest import load_manifest
 
@@ -30,10 +31,13 @@ def _tick(task_id, current, detail):
 def generate(title, question, task_id=None, domain="general"):
     """从 wiki 页面生成报告并存 outputs/，返回文件 Path。进度按 0-100 报。domain=finstmt 时注入财报分析纪律。"""
     _tick(task_id, 5, "凭索引选页")
-    pages, slugs, reason, _use_index = _select_pages(question, history=None)
+    pages, slugs, reason, _use_index = _select_pages(
+        question, history=None, max_pages=0, soft_pages=REPORT_PAGE_SOFT)
     if not slugs:
         raise ValueError(f"知识库中没有与「{title}」相关的页面，无法生成报告（{reason or '索引无匹配'}）")
-    sel_pages = [p for p in pages if p["slug"] in slugs and p["type"] != "source"]
+    by_slug = {p["slug"]: p for p in pages}
+    sel_pages = [by_slug[s] for s in slugs
+                 if s in by_slug and by_slug[s]["type"] != "source"][:REPORT_PAGE_HARD]
     manifest = load_manifest()
     chunks = []
     for p in sel_pages:

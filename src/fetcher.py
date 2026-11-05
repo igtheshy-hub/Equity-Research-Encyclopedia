@@ -25,6 +25,7 @@ import re
 import subprocess
 import time
 from datetime import datetime, timedelta
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote, urljoin, urlparse
 
@@ -284,12 +285,40 @@ def _post_json(url, payload, attempts=2):
     raise FetchError(f"接口请求失败：{url}（{_conn_hint(last)}）")
 
 
+_WESTERN_CHARSETS = {"iso-8859-1", "latin-1", "windows-1252", "cp1252", "us-ascii", "ascii"}
+
+
+def _declared_charset(resp):
+    """响应头或页面 meta 里声明的编码，取到了就先按它解。"""
+    headers = getattr(resp, "headers", None) or {}
+    ctype = headers.get("Content-Type", "") if hasattr(headers, "get") else ""
+    m = re.search(r"charset=[\"']?([\w-]+)", str(ctype), re.I)
+    if m:
+        return m.group(1)
+    head = resp.content[:4096].decode("ascii", "ignore")
+    m = re.search(r"<meta[^>]+charset=[\"']?([\w-]+)", head, re.I)
+    return m.group(1) if m else ""
+
+
 def _decode(resp):
+    """按声明编码→utf-8→gb18030 依次解，gb18030 是 GBK 的超集，能接住扩展字。
+
+    只用 gbk 兜底时，混合编码或 GB18030 扩展字会让整段退到带替换解码，
+    快照里出现成片「����」，审校拿乱码当锚点原文核不出数字。"""
     raw = resp.content
-    for enc in ("utf-8", "gbk"):
+    order = []
+    declared = _declared_charset(resp)
+    # 声明成单字节西欧编码的多半是服务器默认值（实际常是 gb2312/gbk），
+    # 照它解不会报错，只会把整页解成乱码，留给后面的 utf-8/gb18030
+    if declared and declared.lower().replace("_", "-") not in _WESTERN_CHARSETS:
+        order.append(declared)
+    order += ["utf-8", "gb18030"]
+    if declared:
+        order.append(declared)
+    for enc in dict.fromkeys(order):
         try:
             return raw.decode(enc)
-        except UnicodeDecodeError:
+        except (UnicodeDecodeError, LookupError):
             continue
     return raw.decode("utf-8", "replace")
 
@@ -688,7 +717,7 @@ def cninfo_stock(code="", name=""):
 def _cninfo_search(query, page_size=10, category="", stock="", column="szse", se_date=""):
     form = {"pageNum": 1, "pageSize": max(int(page_size or 10), 10), "column": column or "szse",
             "tabName": "fulltext", "plate": "", "stock": stock, "searchkey": query,
-            "secdate": se_date, "tdate": "", "type": "", "category": category,
+            "seDate": se_date, "tdate": "", "type": "", "category": category,
             "sortName": "", "sortType": "", "isHLtitle": "true"}
     try:
         with _client() as c:
@@ -835,19 +864,8 @@ CNINFO_PERIODIC = {
 }
 
 
-def fetch_cninfo_periodic(company, kind="interim", days=400, limit=1):
-    """取 A 股半年报或季报。只留正式全文，跳过摘要、英文版与更正稿。"""
-    company = str(company or "").strip()
-    kind = _enum_or_raise(str(kind or "interim").lower(), CNINFO_PERIODIC,
-                          "A 股定期报告类型", hint=f"未知定期报告类型：{kind}")
-    if not company:
-        raise FetchError("取定期报告需要公司名")
-    category, patterns, label = CNINFO_PERIODIC[kind]
-    begin = datetime.now() - timedelta(days=int(days or 400))
-    se_date = f"{begin:%Y-%m-%d}~{datetime.now():%Y-%m-%d}"
-    items = _cninfo_search(company, page_size=50, category=category, se_date=se_date)
-    if not items:
-        items = _cninfo_search(company, page_size=50, category=category)
+def _pick_periodic(items, company, patterns):
+    """只留正式全文：公司对得上、标题含报告名、跳过摘要英文更正稿。"""
     picked = []
     for it in items:
         title = _clean_title(it.get("announcementTitle"))
@@ -859,6 +877,34 @@ def fetch_cninfo_periodic(company, kind="interim", days=400, limit=1):
         if any(x in title for x in ("摘要", "英文", "更正", "补充", "取消", "已取消")):
             continue
         picked.append(it)
+    return picked
+
+
+def fetch_cninfo_periodic(company, kind="interim", days=400, limit=1, code=""):
+    """取 A 股半年报或季报。只留正式全文，跳过摘要、英文版与更正稿。
+
+    关键词全文检索按相关度排序，常只捞到摘要捞不到全文（宇通 2026 半年报全文
+    就被漏掉）；筛不出全文时改按股票代码拉该公司时间窗内的公告再筛标题。"""
+    company = str(company or "").strip()
+    kind = _enum_or_raise(str(kind or "interim").lower(), CNINFO_PERIODIC,
+                          "A 股定期报告类型", hint=f"未知定期报告类型：{kind}")
+    if not company:
+        raise FetchError("取定期报告需要公司名")
+    category, patterns, label = CNINFO_PERIODIC[kind]
+    begin = datetime.now() - timedelta(days=int(days or 400))
+    se_date = f"{begin:%Y-%m-%d}~{datetime.now():%Y-%m-%d}"
+    items = _cninfo_search(company, page_size=50, category=category, se_date=se_date)
+    picked = _pick_periodic(items, company, patterns)
+    if not picked:
+        stock = cninfo_stock(code=str(code or "").strip()) or cninfo_stock(name=company)
+        if stock:
+            sid = f"{stock.get('code')},{stock.get('orgId')}"
+            items = _cninfo_search("", page_size=50, category=category, stock=sid, se_date=se_date)
+            picked = _pick_periodic(items, company, patterns)
+    if not picked:
+        # 时间窗内筛不出时退回无窗口检索，宁可取到旧一期全文也不空手（旧行为）
+        items = _cninfo_search(company, page_size=50, category=category)
+        picked = _pick_periodic(items, company, patterns)
     if not picked:
         raise FetchError(f"巨潮没有搜到「{company}」的{label}（可能是港股，改走 HKEXnews）")
 
@@ -1095,7 +1141,7 @@ def fetch_periodic_report(company, code="", market="", kind="interim", days=400,
         return fetch_annual_report(company, code, market, limit=limit)
     if market == "hk":
         return fetch_hkex_periodic(company, code, kind=kind, days=days, limit=limit)
-    return fetch_cninfo_periodic(company, kind=kind, days=days, limit=limit)
+    return fetch_cninfo_periodic(company, kind=kind, days=days, limit=limit, code=code)
 
 
 def fetch_annual_report(company, code="", market="", year=None, limit=1):
@@ -1818,8 +1864,21 @@ def _snapshot_result(org, topic, url, rows, note, tid=None, targets=None):
             "ingest_failed": [] if r and "error" not in r else [snap.name]}
 
 
+def _garbled_ratio(text):
+    """替换字符（U+FFFD）占比，用来判断这一段是不是解码失败的乱码。"""
+    s = str(text or "")
+    return s.count("�") / len(s) if s else 0.0
+
+
 def _text_snapshot_result(org, topic, url, paragraphs, tid=None, targets=None, note=""):
     tasks.update(tid, detail=f"{topic}落摘录")
+    # 乱码段写进快照后会被审校当成锚点原文，模型核不出数字只能瞎改；
+    # 解码救不回来的段落直接剔除，并在快照说明里记一笔
+    kept = [p for p in (paragraphs or [])
+            if len(p) < 40 or _garbled_ratio(p) <= 0.05]
+    if len(kept) < len(paragraphs or []):
+        note = (note + "；" if note else "") + f"剔除 {len(paragraphs) - len(kept)} 段乱码"
+        paragraphs = kept
     snap = make_text_snapshot(org, topic, url, paragraphs, note=note)
     r = ingest_snapshot(snap, tid, targets=targets)
     summary = f"{topic} 摘录 {len(paragraphs)} 段，快照已落 {snap.name}"
@@ -2099,27 +2158,167 @@ def fetch_web_search(query, limit=5):
     return {"query": query, "items": items[:max(limit * 2, 6)]}
 
 
-def _page_excerpt(url, query, cap=1200, require_number=False):
+_PAGE_JUNK_TAGS = {"script", "style", "noscript", "nav", "header", "footer", "aside",
+                   "form", "svg", "button", "iframe", "template"}
+_PAGE_JUNK_ATTR = re.compile(
+    r"(?:^|[-_ ])(nav|menu|footer|header|sidebar|breadcrumb|copyright|advert|ads?|"
+    r"recommend|related|comment|share|toolbar|search|login|subscribe)(?:[-_ ]|$)", re.I)
+_PAGE_CONTENT_ATTR = re.compile(r"article|content|post|rich_media|detail|main|text", re.I)
+_PAGE_DATE_FIELD_RE = re.compile(
+    r'(?:publishTime|publish_time|pubdate|publishdate|datepublished|datePublished|'
+    r'article:published_time|og:published_time)[^0-9]{0,40}'
+    r'(20\d{2})-(\d{1,2})-(\d{1,2})', re.I)
+_PAGE_FULL_DATE_RE = re.compile(r"(20\d{2})年(\d{1,2})月(\d{1,2})日")
+_PAGE_NUM_DATE_RE = re.compile(r"(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})")
+_PAGE_TITLE_YM_RE = re.compile(r"(20\d{2})\s*年\s*(\d{1,2})\s*月")
+_PAGE_Q_RE = re.compile(r"(?<![\d])(2\d)\s*[Qq]\s*([1-4])")
+
+
+class _PageTextParser(HTMLParser):
+    """只收正文容器里的段落，丢掉导航、页脚、推荐位与脚本。
+
+    有 article/main 或 class/id 像正文的容器时只用容器内文字；整页都没有容器才退回收全部
+    非噪声段落。返回的段落按原顺序拼接，供关键词窗口选取。
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack = []   # [(tag, junk, content)]
+        self.blocks = []  # [(text, in_content)]
+        self.buf = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        attr = dict(attrs)
+        ident = f"{attr.get('class') or ''} {attr.get('id') or ''}"
+        junk = tag in _PAGE_JUNK_TAGS or bool(_PAGE_JUNK_ATTR.search(ident))
+        content = tag in ("article", "main") or bool(_PAGE_CONTENT_ATTR.search(ident))
+        self.stack.append((tag, junk, content))
+        if tag in ("p", "br", "div", "li", "section", "tr", "h1", "h2", "h3", "h4"):
+            self._flush()
+
+    def handle_endtag(self, tag):
+        self._flush()
+        tag = tag.lower()
+        for i in range(len(self.stack) - 1, -1, -1):
+            if self.stack[i][0] == tag:
+                del self.stack[i:]
+                break
+
+    def handle_data(self, data):
+        if any(junk for _t, junk, _c in self.stack):
+            return
+        self.buf.append(data)
+
+    def _flush(self):
+        text = _clean_web_text("".join(self.buf))
+        if text:
+            self.blocks.append((text, any(c for _t, _j, c in self.stack)))
+        self.buf = []
+
+    def text(self):
+        self._flush()
+        content = [t for t, c in self.blocks if c]
+        chosen = content if content else [t for t, _c in self.blocks]
+        return " ".join(chosen)
+
+
+def _title_year(title):
+    """标题里最晚提到的年份；没有返回 None。"""
+    years = [int(y) for y in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", str(title or ""))]
+    return max(years) if years else None
+
+
+def _url_year(url):
+    """URL 路径里的年份，如 /20230522/ 或 /2023/10/。"""
+    m = re.search(r"/((?:19|20)\d{2})(?=[/_.-]|$)", str(url or ""))
+    return int(m.group(1)) if m else None
+
+
+def _page_date(page, url="", title=""):
+    """网页发布日期。URL 日期 → 页面里的发布日期字段 → 标题里的年月 → 正文里的完整日期。
+
+    日期字段常在页面后段（易车的 publishTime 在 15 万字符处），所以不再只扫开头；
+    正文日期只扫前 8000 字符，避免把文末评论、相关推荐的日期当成发布日期。
+    """
+    m = re.search(r"/(20\d{2})(\d{2})(\d{2})(?:[/_.-]|$)", str(url or ""))
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+        except ValueError:
+            pass
+    page = str(page or "")
+    m = _PAGE_DATE_FIELD_RE.search(page)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+        except ValueError:
+            pass
+    m = _PAGE_TITLE_YM_RE.search(str(title or ""))
+    if m:
+        return datetime(int(m.group(1)), int(m.group(2)), 1).date()
+    head = page[:8000]
+    for pat in (_PAGE_FULL_DATE_RE, _PAGE_NUM_DATE_RE):
+        m = pat.search(head)
+        if not m:
+            continue
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _excerpt_year(excerpt):
+    """摘录里最晚提到的年份，作为无发布日期的网页的发布时间估计。
+
+    2023 年的文章不会写到 2026 年；反过来，2026 年的文章比较 2023 年数据很常见，
+    所以取最晚年份而不是最早。
+    """
+    years = [int(y) for y in re.findall(r"(?<!\d)(20\d{2})(?!\d)", str(excerpt or ""))]
+    years += [2000 + int(y) for y, _q in _PAGE_Q_RE.findall(str(excerpt or ""))]
+    return max(years) if years else None
+
+
+def _query_earliest(query):
+    """检索式里点了年份就以最早那年的 1 月 1 日为下限，否则只收近两年的网页。"""
+    years = [int(y) for y in re.findall(r"(?:19|20)\d{2}", str(query or ""))]
+    if years:
+        return datetime(min(years), 1, 1).date()
+    return (datetime.now() - timedelta(days=730)).date()
+
+
+def _page_excerpt(url, query, cap=1200, require_number=False, title=""):
+    """抓一页并摘录正文，返回（摘录, 发布日期）。日期取不到时返回 None。"""
     if _junk_url(url):
-        return ""
+        return "", None
     try:
         with httpx.Client(timeout=20, headers={"User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9"},
                           follow_redirects=True) as c:
             r = c.get(url)
     except httpx.HTTPError:
-        return ""
+        return "", None
     if r.status_code != 200 or "pdf" in (r.headers.get("content-type") or "").lower():
-        return ""
-    text = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", r.text)
-    text = re.sub(r"(?s)<[^>]+>", " ", text)
-    text = _clean_web_text(html.unescape(text))
+        return "", None
+    pub = _page_date(r.text, str(r.url), title)
+    parser = _PageTextParser()
+    try:
+        parser.feed(r.text)
+        text = parser.text()
+    except Exception:
+        text = ""
     if len(text) < 80:
-        return ""
+        text = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", r.text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = _clean_web_text(html.unescape(text))
+    if len(text) < 80:
+        return "", pub
     keys = _query_keys(query)
     # 相关性闸门：检索词至少命中两条（单关键词时命中一条），否则是标题蹭词的无关页
     need = min(2, len(keys)) if keys else 0
     if need and sum(1 for k in keys if k in text.casefold()) < need:
-        return ""
+        return "", pub
+
     def score(win):
         low = win.casefold()
         return sum(2 for k in keys if k in low) + min(
@@ -2139,8 +2338,8 @@ def _page_excerpt(url, query, cap=1200, require_number=False):
         win = text[:cap]
         if require_number and (len(re.findall(r"\d[\d,]*(?:\.\d+)?", win)) < 2
                                or not num_near_key(win)):
-            return ""
-        return win
+            return "", pub
+        return win, pub
     best = ""
     for start in starts:
         win = text[start:start + cap]
@@ -2151,7 +2350,7 @@ def _page_excerpt(url, query, cap=1200, require_number=False):
                 continue
         if not best or score(win) > score(best):
             best = win
-    return best
+    return best, pub
 
 
 def _registry_hits(query, limit=2):
@@ -2179,6 +2378,8 @@ def fetch_web_gap(query, limit=3, tid=None, targets=None):
     """
     query = _clean_web_text(query)
     want_num = bool(_DATA_HINT.search(query))
+    earliest = _query_earliest(query)
+    recent = datetime.now().date() - timedelta(days=365)
     reg = _registry_hits(query, limit=limit)
     if reg:
         tasks.update(tid, detail=f"复用已登记来源 {len(reg)} 个")
@@ -2186,29 +2387,49 @@ def fetch_web_gap(query, limit=3, tid=None, targets=None):
     seen_urls = {r["url"] for r in reg}
     items = reg + [it for it in res["items"] if it["url"] not in seen_urls]
     tasks.update(tid, detail=f"待抓来源 {len(items)} 个，按相关性与数字密度筛正文")
-    ranked = []
+    ranked, dropped_old = [], []
     for it in items:
-        excerpt = _page_excerpt(it["url"], query, require_number=want_num)
+        excerpt, pub = _page_excerpt(it["url"], query, require_number=want_num,
+                                     title=it.get("title") or "")
         if not excerpt:
             continue
+        # 检索词点了年份就按那年 1 月 1 日卡，没点年份只收近两年；旧文放进快照会把旧数据
+        # 顶到「最新」位置，成文拿旧数当当前值
+        if pub and pub < earliest:
+            dropped_old.append((it["url"], pub.isoformat()))
+            continue
+        # 抓不到发布日期的页面（公众号、转载站常见）先看标题和 URL 里的年份，
+        # 标题写着 2022 年的旧文不能因为正文提到 2025 就当新文；都没有年份再看摘录
+        if not pub:
+            year = _title_year(it.get("title")) or _url_year(it["url"]) or _excerpt_year(excerpt)
+            if year and year < earliest.year:
+                dropped_old.append((it["url"], f"约{year}"))
+                continue
         low = excerpt.casefold()
         score = sum(2 for k in _query_keys(query) if k in low)
         score += min(len(re.findall(r"\d[\d,]*(?:\.\d+)?", excerpt)), 20)
-        ranked.append((score, it, excerpt))
+        score += 6 if pub and pub >= recent else 0
+        ranked.append((score, it, excerpt, pub))
     ranked.sort(key=lambda x: x[0], reverse=True)
+    if dropped_old:
+        tasks.update(tid, detail=f"剔除以发布日早于 {earliest.isoformat()} 的网页 "
+                                 f"{len(dropped_old)} 个")
     rows, used = [], []
-    for _, it, excerpt in ranked[:limit]:
+    for _, it, excerpt, pub in ranked[:limit]:
         used.append(it)
-        rows.append({"来源": it["title"], "网址": it["url"], "检索词": query, "摘录": excerpt})
+        rows.append({"来源": it["title"], "网址": it["url"],
+                     "发布日期": pub.isoformat() if pub else "未标注",
+                     "检索词": query, "摘录": excerpt})
     if not rows:
-        _remember_lesson(query, False, [], "数据类缺口没有抓到带数字的正文" if want_num
-                         else "没有抓到相关正文")
-        raise FetchError("检索到的网页都抓不到可用正文" if not want_num
-                         else "检索到的网页没有一条带可用数据，停回缺口关卡，换检索词或上传材料")
+        reason = ("抓到的网页都早于检索词年份下限 %s" % earliest.isoformat() if dropped_old
+                  else ("数据类缺口没有抓到带数字的正文" if want_num else "没有抓到相关正文"))
+        _remember_lesson(query, False, [], reason)
+        raise FetchError(reason + "，停回缺口关卡，换检索词或上传材料")
     tasks.update(tid, detail="网页摘录落快照")
-    snap = make_snapshot("网络检索", query, used[0]["url"], rows,
-                         note=f"检索词：{query}；检索日：{config.today_str()}；正文为网页摘录，"
-                              "引用前请点原网址复核，数字以原网页为准。")
+    note = (f"检索词：{query}；检索日：{config.today_str()}；发布日期下限：{earliest.isoformat()}"
+            + (f"（已剔除 {len(dropped_old)} 个更早的网页）" if dropped_old else "")
+            + "；正文为网页摘录，引用前请点原网址复核，数字以原网页为准。")
+    snap = make_snapshot("网络检索", query, used[0]["url"], rows, note=note)
     r = ingest_snapshot(snap, tid, targets=targets)
     ok = bool(r) and "error" not in r and int((r or {}).get("entries_count") or 0) > 0
     _remember_lesson(query, ok, [_domain(it["url"]) for it in used],
@@ -2385,7 +2606,8 @@ def run_fetch(source, params, tid=None, targets=None):
         res = fetch_eastmoney_reports(params.get("industry"), params.get("broker"),
                                       limit=params.get("limit") or 3,
                                       months=params.get("months") or 24,
-                                      qtype=params.get("qtype") or 1,
+                                      qtype=(params.get("qtype")
+                                             if params.get("qtype") is not None else 1),
                                       stock_code=params.get("stock_code"),
                                       industry_code=params.get("industry_code"),
                                       org_code=params.get("org_code"),
@@ -2575,8 +2797,16 @@ def run_fetch(source, params, tid=None, targets=None):
 
 # ---------- 网页表单用源清单 ----------
 
-def source_specs():
-    return [
+# 网页「主动取数」只暴露这 8 个源；其余（年报/定期报告/榜单/中证/人行/FRED/IMF/
+# DBnomics/世界银行/网络检索）保留给研报管线内部补缺口，不再出现在取数页。
+MANUAL_SOURCE_IDS = (
+    "stats_series", "akshare_series", "eastmoney_reports", "cninfo_announce",
+    "hkex_announce", "sample_chain", "cpca_sales", "caam_article",
+)
+
+
+def source_specs(only=None):
+    specs = [
         {
             "id": "web_search", "label": "网络检索·外部来源兜底",
             "desc": "专用源取不到时用。免登录检索网页，正文摘录落快照 DOCX 并自动摄入；"
@@ -2787,3 +3017,7 @@ def source_specs():
             ],
         },
     ]
+    if only is not None:
+        keep = set(only)
+        specs = [s for s in specs if s["id"] in keep]
+    return specs

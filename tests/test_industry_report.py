@@ -66,6 +66,10 @@ def main():
         company_job = make_job("ann001", kind="company", title="吉利汽车研究报告",
                                question="帮我写一份吉利汽车的研究报告")
         check("公司研报主体", industry_report._subject(company_job), "吉利汽车")
+        check("主体剥公司后缀", industry_report._subject(
+            make_job("sub001", kind="company", title="比亚迪公司研报")), "比亚迪")
+        check("主体剥股份有限公司后缀", industry_report._subject(
+            make_job("sub002", kind="company", title="比亚迪股份有限公司深度报告")), "比亚迪")
         check("报告期解析三季报",
               industry_report._period_from_text("公司_2026年三季报_20261030.pdf"),
               ("quarterly", "2026Q3"))
@@ -189,7 +193,7 @@ def main():
     finally:
         industry_report._begin_write = original_begin
 
-    print("== 补数未入库停回关卡 ==")
+    print("== 补数未入库不阻断成文 ==")
     original_fetch = industry_report.fetcher.run_fetch
     original_start = industry_report.tasks.start
     industry_report.tasks.start = lambda kind, fn, **kw: fn("t1")
@@ -204,9 +208,10 @@ def main():
         industry_report.approve_gaps("hhh888", ["g1"])
         job = industry_report.load_job("hhh888")
         check("入库失败缺口置 failed", [g["status"] for g in job["gaps"]], ["failed"])
-        check("入库失败不成文", started, [])
-        check("入库失败停回关卡", job["status"], "gaps_pending")
-        check("错误说明材料没入库", "没入库" in job.get("error", ""), True)
+        check("入库失败照常成文", started, ["hhh888"])
+        check("失败缺口记进 missing_data",
+              [m["item"] for m in (job.get("missing_data") or [])], ["竞品毛利率"])
+        check("失败原因保留", "没入库" in ((job.get("missing_data") or [{}])[0].get("error") or ""), True)
 
         seen = {}
 

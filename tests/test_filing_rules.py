@@ -213,8 +213,10 @@ def test_target_ingest():
             "file": pdf.name, "path": rel, "sha256": "fake", "unit": "page",
             "count": 20, "source_type": "filing"}]}, ensure_ascii=False), encoding="utf-8")
 
-        units = [{"n": i, "text": f"[第{i}页] 测试公司 2025 年年度报告 营业收入 1,000 亿元"}
-                 for i in range(1, 21)]
+        units = [{"n": i, "text": f"[第{i}页] 测试公司 2025 年年度报告"} for i in range(1, 21)]
+        units[4]["text"] += "\n资产总计 2,000 亿元\n负债合计 1,200 亿元\n所有者权益合计 800 亿元"
+        units[5]["text"] += "\n营业收入 1,000 亿元\n净利润 100 亿元"
+        units[8]["text"] += "\n近三年研发投入：研发投入 50 亿元"
         meta = {"company": "测试公司", "code": "000001", "pk": "2025FY",
                 "period_end": "2025-12-31", "audit_opinion": "标准无保留意见",
                 "sections": {"key": [3], "bs": [5], "is": [6], "cf": [7], "eq": [],

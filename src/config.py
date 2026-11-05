@@ -15,10 +15,10 @@ load_dotenv(ENV_PATH)
 CFG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 # 各服务商的 key 变量名，按 config.json 配的端点主机名自动选，多家 key 可并存于 .env。
-# 主机名不在表里、或对应变量为空时退回通用变量 LLM_API_KEY，换服务商只改 config.json 的 llm 段。
+# 主机名不在表里时退回通用变量 LLM_API_KEY；表里的服务商变量为空就算缺失，不拿别家 key 顶，
+# 否则端点只会返回难懂的 401「key 格式不对」。
 _PROVIDER_KEY_ENV = {
     "open.bigmodel.cn": "ZHIPU_API_KEY",           # 智谱
-    "ark.cn-beijing.volces.com": "ARK_API_KEY",    # 火山方舟
 }
 
 _LLM = CFG["llm"]
@@ -33,12 +33,10 @@ _SHARED_LLM_KEYS = ("max_tokens", "read_timeout_s", "max_retries", "extra_body")
 
 def _resolve_api_key(base_url):
     host = urlparse(base_url).netloc
-    names = ([_PROVIDER_KEY_ENV[host]] if host in _PROVIDER_KEY_ENV else []) + ["LLM_API_KEY"]
-    for name in names:
-        value = os.getenv(name)
-        if value:
-            return name, value
-    return names[0], ""
+    if host in _PROVIDER_KEY_ENV:
+        name = _PROVIDER_KEY_ENV[host]
+        return name, os.getenv(name) or ""
+    return "LLM_API_KEY", os.getenv("LLM_API_KEY") or ""
 
 
 def model_profile(name=None):
@@ -54,9 +52,31 @@ def model_profile(name=None):
 
 
 def model_choices():
-    """网页下拉用的模型清单，顺序同 config.json。"""
-    return [{"id": pid, "label": p.get("label") or pid, "provider": p.get("provider") or ""}
-            for pid, p in MODEL_PROFILES.items()]
+    """网页下拉用的模型清单，顺序同 config.json，只列 key 已配置的模型。"""
+    out = []
+    for pid, p in MODEL_PROFILES.items():
+        if not _resolve_api_key(p["base_url"])[1]:
+            continue
+        out.append({"id": pid, "label": p.get("label") or pid,
+                    "provider": p.get("provider") or ""})
+    return out
+
+
+def rescue_settings(model_name=None):
+    """救火员(claude 子进程)用的 Anthropic 兼容端点，跟随任务所选模型。
+
+    档案缺 anthropic 子段、未知模型 id、或对应 key 为空时返回 None，spawn 据此不派活。
+    """
+    prof = MODEL_PROFILES.get(model_name or DEFAULT_MODEL) or {}
+    anth = prof.get("anthropic") or {}
+    base_url = (anth.get("base_url") or "").strip()
+    model = (anth.get("model") or "").strip()
+    if not base_url or not model:
+        return None
+    key_env, key = _resolve_api_key(base_url)
+    if not key:
+        return None
+    return {"base_url": base_url, "model": model, "key_env": key_env, "key": key}
 
 
 # 默认模型的 key，selftest 等单模型场景直接取用

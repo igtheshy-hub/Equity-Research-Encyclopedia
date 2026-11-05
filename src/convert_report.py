@@ -84,10 +84,19 @@ def prettify(docx_path):
 
     doc = Document(docx_path)
 
-    # 图片等比缩到版心内，并限制最大宽高：只按版心宽度缩，图仍会占满整页显得过大
+    for sdt in doc.element.body.iter(qn("w:sdt")):
+        for t in sdt.iter(qn("w:t")):
+            if t.text == "Table of Contents":
+                t.text = "目录"
+
+    # 版式改成 A4、左右各留 2.2cm：默认 Letter 加 3.17cm 页边距只有 15.24cm 版心，
+    # 6.6 英寸宽的图缩到 12cm 后横轴标签挤在一起。A4 加窄边距把版心放宽到 16.6cm，
+    # 图也按版心放宽，与图的实际宽度匹配。
     sec = doc.sections[0]
+    sec.page_width, sec.page_height = Cm(21.0), Cm(29.7)
+    sec.left_margin = sec.right_margin = Cm(2.2)
     avail = sec.page_width - sec.left_margin - sec.right_margin
-    max_w, max_h = min(avail, Cm(12.0)), Cm(8.0)
+    max_w, max_h = avail - Cm(0.2), Cm(12.0)
     for shape in doc.inline_shapes:
         ratio = min(max_w / shape.width, max_h / shape.height, 1.0)
         if ratio < 1:
@@ -140,7 +149,7 @@ def prettify(docx_path):
         if re.match(r"^\[\d+\]", txt) or txt.startswith("数据来源"):
             p.paragraph_format.first_line_indent = Cm(0)
         # 题注居中加粗：pandoc 把 **表N…** 排成普通段落，不能只认 caption 样式
-        if txt and (re.match(r"^(?:表|附图)\d+", txt)
+        if txt and (re.match(r"^(?:表|附图|图)\d+", txt)
                     or "caption" in (p.style.name or "").lower()):
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             for r in p.runs:

@@ -31,8 +31,12 @@ def _new_id():
     return uuid.uuid4().hex[:12]
 
 
-def start(kind, fn, total=1, label=""):
-    """起后台线程跑 fn(task_id)。互斥类型若同类在跑，任务先置 waiting 排队，前一个结束自动接续。"""
+def start(kind, fn, total=1, label="", key=None):
+    """起后台线程跑 fn(task_id)。互斥类型若同类在跑，任务先置 waiting 排队，前一个结束自动接续。
+
+    key 用来把互斥范围缩到单个业务对象：研报各阶段传 job id，行业研报和公司研报就各跑各的，
+    只有同一份研报的相邻阶段仍按顺序接续；不传 key 时退回按 kind 全局互斥。
+    """
     with _lock:
         tid = _new_id()
         t = {
@@ -57,7 +61,7 @@ def start(kind, fn, total=1, label=""):
             old_t = _TASKS.get(old)
             if old_t and old_t["acknowledged"]:
                 _TASKS.pop(old, None)
-        kl = _KIND_LOCKS.get(kind)
+        kl = _lock_for(kind, key)
 
     def _runner():
         try:
@@ -110,6 +114,14 @@ def acknowledge(tid):
         _TASKS.pop(tid, None)
 
 
+def _lock_for(kind, key=None):
+    """按 kind 或 (kind, key) 取互斥锁；key 为空时沿用该类任务的全局锁。"""
+    if key is None:
+        return _KIND_LOCKS.get(kind)
+    with _lock:
+        return _KEY_LOCKS.setdefault((kind, str(key)), threading.Lock())
+
+
 @contextmanager
 def kind_lock(kind):
     """借用某类任务的互斥锁：取数任务要借取名/摄入锁时用，避免与网页上传线并发写库。"""
@@ -132,3 +144,4 @@ def active_counts():
 
 with _lock:
     _KIND_LOCKS = {k: threading.Lock() for k in MUTEX_KINDS}
+    _KEY_LOCKS = {}

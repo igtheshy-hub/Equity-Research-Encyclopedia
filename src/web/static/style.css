@@ -291,6 +291,16 @@ body.split-ask .pane:last-child { border-radius: 0 var(--radius) var(--radius) 0
   background: var(--warn-weak); color: var(--warn); border-radius: 8px;
   padding: 6px 10px; font-size: 13px; margin-bottom: 8px;
 }
+.rescue-strip {
+  background: var(--accent-weak); color: var(--accent); border-radius: 8px;
+  padding: 6px 10px; font-size: 13px; margin-bottom: 8px;
+}
+.rescue-strip details { margin-top: 4px; }
+.rescue-strip summary { cursor: pointer; font-size: 12px; user-select: none; }
+.rescue-strip pre {
+  white-space: pre-wrap; word-break: break-all; font-size: 12px;
+  margin: 4px 0 0; color: var(--ink-2);
+}
 .prop-note {
   margin-top: 8px; color: var(--ok); background: var(--ok-weak);
   border-radius: 8px; padding: 5px 10px; font-size: 13px;

@@ -208,6 +208,11 @@ def cmd_validate(args):
 
 def cmd_serve(args):
     from src.web.app import app
+    from src import agent_rescue
+    try:
+        agent_rescue.startup_sweep()
+    except OSError as e:
+        print(f"启动清扫救火残留文件失败（不影响服务）：{e}")
     print("启动本地网页：http://127.0.0.1:5000 （Ctrl+C 停止）")
     app.run(host="127.0.0.1", port=5000, debug=False)
     return 0

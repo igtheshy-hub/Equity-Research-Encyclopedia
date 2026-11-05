@@ -8,13 +8,14 @@ from .. import ask as ask_mod
 from .. import audit as audit_mod
 from .. import config, llm, wiki
 from .. import fix as fix_mod
+from .. import ingest as ingest_mod
 from .. import purge as purge_mod
 from .. import report as report_mod
 from .. import industry_report, report_distill
 from .. import sessions, tasks
-from .. import fetcher
+from .. import agent_rescue, fetcher
 from ..classify import sanitize, unique_target
-from ..pdf_extract import SUPPORTED_SUFFIXES
+from ..pdf_extract import SUPPORTED_SUFFIXES, raw_file_index
 from ..pipeline import build_lines
 from .render import anchor_pretty, render_md
 
@@ -304,6 +305,58 @@ def api_files_delete():
     return jsonify({"task_id": tid})
 
 
+def _ingest_pick(names):
+    """网页勾选的未摄入文件 → 可摄入路径。收件台、_ 隔离目录与同内容重复件一律拒绝。"""
+    idx = raw_file_index()
+    allowed = (config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR)
+    known = {f.get("sha256"): f.get("file") for f in ingest_mod.load_manifest()["files"]
+             if f.get("sha256")}
+    paths, rejected = [], []
+    for name in names:
+        path = idx.get(name)
+        reason = ""
+        if not path:
+            reason = "找不到文件"
+        elif not any(path.is_relative_to(d) for d in allowed):
+            reason = "只接受 raw/reports、raw/filings、raw/policies 下的文件"
+        elif any(part.startswith("_") for part in path.relative_to(config.RAW_DIR).parts[:-1]):
+            reason = "隔离目录不摄入"
+        else:
+            try:
+                dup = known.get(ingest_mod.sha256_of(path))
+            except OSError as e:
+                reason = f"读取失败：{e}"
+            else:
+                if dup:
+                    reason = f"与已入库文件 {dup} 内容相同，不重复摄入"
+        if reason:
+            rejected.append({"file": name, "reason": reason})
+        else:
+            paths.append(path)
+    return paths, rejected
+
+
+@api.post("/api/files/ingest")
+def api_files_ingest():
+    data = request.get_json(force=True, silent=True) or {}
+    names = [str(n).strip() for n in (data.get("files") or []) if str(n).strip()]
+    if not names:
+        return jsonify({"error": "没有选中要摄入的文件"}), 400
+    paths, rejected = _ingest_pick(names)
+    if not paths:
+        return jsonify({"error": "没有可摄入的文件", "rejected": rejected}), 400
+
+    def run(tid):
+        def progress(i, name):
+            tasks.update(tid, current=i - 1, detail=f"摄入 {name}")
+        results = ingest_mod.run_all(paths, progress=progress)
+        tasks.update(tid, current=len(paths))
+        return {"ingested": len(results), "files": [r.get("file") for r in results]}
+
+    tid = tasks.start("ingest", run, total=len(paths), label=f"摄入 {len(paths)} 份原文件")
+    return jsonify({"task_id": tid, "accepted": [p.name for p in paths], "rejected": rejected})
+
+
 # ---------- 审校与修复 ----------
 
 @api.post("/api/audit/run")
@@ -352,14 +405,18 @@ def api_audit_fix():
 
 @api.get("/api/fetch/sources")
 def api_fetch_sources():
-    return jsonify({"items": fetcher.source_specs()})
+    # items 只给取数页能手动选的源；labels 给缺口清单用的全集，
+    # periodic_report、web_search 这类管线内部补缺口的源也要有中文名
+    labels = {s["id"]: s["label"] for s in fetcher.source_specs()}
+    return jsonify({"items": fetcher.source_specs(only=fetcher.MANUAL_SOURCE_IDS),
+                    "labels": labels})
 
 
 @api.post("/api/fetch")
 def api_fetch_run():
     data = request.get_json(force=True, silent=True) or {}
     source = str(data.get("source") or "").strip()
-    specs = {s["id"]: s for s in fetcher.source_specs()}
+    specs = {s["id"]: s for s in fetcher.source_specs(only=fetcher.MANUAL_SOURCE_IDS)}
     if source not in specs:
         return jsonify({"error": "未知取数源"}), 400
     params = data.get("params") if isinstance(data.get("params"), dict) else {}
@@ -371,9 +428,12 @@ def api_fetch_run():
 # ---------- 行业研报管线 ----------
 
 def _job_brief(job):
+    rescuing = agent_rescue.rescue_active(job)
+    label = industry_report.STATUS_LABELS.get(job["status"], job["status"])
     return {
         "id": job["id"], "title": job["title"], "status": job["status"],
-        "status_label": industry_report.STATUS_LABELS.get(job["status"], job["status"]),
+        "status_label": f"{label}（救火中）" if rescuing else label,
+        "rescue_active": rescuing,
         "kind": job.get("kind") or "industry",
         "kind_label": industry_report.KIND_LABELS.get(job.get("kind"), "行业研报"),
         "error": job.get("error") or "",
@@ -399,7 +459,9 @@ def api_report_job(jid):
     if not job:
         return jsonify({"error": "报告任务不存在"}), 404
     out = dict(job)
-    out["status_label"] = industry_report.STATUS_LABELS.get(job["status"], job["status"])
+    out["rescue_active"] = agent_rescue.rescue_active(job)
+    label = industry_report.STATUS_LABELS.get(job["status"], job["status"])
+    out["status_label"] = f"{label}（救火中）" if out["rescue_active"] else label
     out["kind"] = job.get("kind") or "industry"
     out["kind_label"] = industry_report.KIND_LABELS.get(out["kind"], "行业研报")
     out["candidates"] = report_distill.load_candidates(jid)

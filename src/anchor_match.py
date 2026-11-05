@@ -25,8 +25,15 @@ def text_overlap(a, b, size=4):
     return sum(1 for g in grams if g in cb)
 
 NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
-UNIT_RE = (r"(?:个百分点|百分点|万辆|万台|万套|万元|亿美元|万人|万家|万千瓦时|万千瓦|"
-           r"亿美元|亿元|亿|万|元|辆|台|套|家|人|个|倍|吨|GW|GWh|MW|MWh|公里|km|度|瓦|%|％)")
+# 文件名里的日期不是数据：「东吴证券_汽车行业研报_20261102.pdf」这类来源列不能当数字核验
+_FILE_TOKEN_RE = re.compile(
+    r"[^\s，,。；;、：:（）()【】\[\]{}<>《》]*\.(?:pdf|docx?|xlsx?|pptx?|csv|txt|md)\b", re.I)
+_FILE_DATE_RE = re.compile(r"[^\s，,。；;、：:（）()【】\[\]{}<>《》]*_\d{8}(?!\d)")
+UNIT_RE = (r"(?:个百分点|百分点|万辆|万台|万套|万元|亿美元|百万元|千元|万人|万家|万千瓦时|万千瓦|"
+           r"亿美元|亿元|亿|万|元|辆|台|套|家|人|个|倍|吨|GW|GWh|MW|MWh|公里|km|度|瓦|"
+           r"pct|ppt|%|％|‰)")
+# 百分号类单位。比率（0.1774）与百分数（17.74%）只在这类单位与无单位数值之间互认。
+PCT_UNITS = ("%", "％", "pct")
 TERM_RE = re.compile(r"(?<![\d.])(\d[\d,]*(?:\.\d+)?)\s*(余)?\s*(" + UNIT_RE + r")?")
 _NUM_SCALES = (1, 1e3, 1e4, 1e5, 1e8, 1e-3, 1e-4, 1e-5, 1e-8)
 _CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
@@ -98,9 +105,15 @@ def page_numbers(text):
     return out
 
 
-def num_on_page(value, nums):
-    """报告按亿元写、原文按千元列示时，换算量级后再比，相对差 2‰ 内算命中。"""
+def num_on_page(value, nums, same_scale=True):
+    """报告按亿元写、原文按千元列示时，换算量级后再比，相对差 2‰ 内算命中。
+
+    same_scale=False 时只认换算过量级的命中：同量级的近似值（22.9 与 22.94）不算，
+    供救火提示挑页用，避免把模型引到只有形似数字的页。
+    """
     for scale in _NUM_SCALES:
+        if scale == 1 and not same_scale:
+            continue
         target = value * scale
         for p in nums:
             if p and abs(p - target) <= abs(p) * 0.002:
@@ -140,10 +153,14 @@ def line_numbers(line, anchors_removed=True):
 def number_terms(text, skip_years=True):
     """抽出「数字 + 紧跟单位」的配对。没有单位的短数字（如 10）不能和 10 万、10% 混同。"""
     text = unicodedata.normalize("NFKC", str(text or ""))
+    text = _FILE_TOKEN_RE.sub(" ", text)
+    text = _FILE_DATE_RE.sub(" ", text)
     # 日期与月份区间不是数据：「2026年1–5月」里的 1、5 不能当销量数字去核锚点
     text = re.sub(r"(?:19|20)\d{2}\s*年\s*\d{1,2}\s*[-–—~至]\s*\d{1,2}\s*月", " ", text)
     text = re.sub(r"(?<![\d.])\d{1,2}\s*[-–—~至]\s*\d{1,2}\s*月", " ", text)
     text = re.sub(r"(?:19|20)\d{2}\s*[-年/]\s*\d{1,2}(?:\s*[-月/]\s*\d{1,2}\s*日?)?", " ", text)
+    # 26Q3、2026Q3 这类季度标签里的 26 不是统计数字
+    text = re.sub(r"(?<![\d.])(?:19|20)?\d{2}\s*[Qq]\s*[1-4](?!\d)", " ", text)
     out = []
     for m in TERM_RE.finditer(text):
         n = m.group(1).replace(",", "")
@@ -159,7 +176,7 @@ def number_terms(text, skip_years=True):
         if unit and rest.startswith(("以上", "以下", "及以上", "及以下")):
             continue  # 30万元以上是价格带定义，不是测量值
         if n == "0":
-            out.append((n, unit))
+            out.append((n, unit, m.start(), m.end()))
             continue
         before_ch = text[:m.start()].rstrip()[-1:]
         if not unit and before_ch in ("M", "m") and len(n) <= 2:
@@ -172,8 +189,17 @@ def number_terms(text, skip_years=True):
             after = rest[:1]
             if (not before or before not in "-–—~至") and (not after or after not in "-–—~至"):
                 continue
-        out.append((n, unit))
-    return out
+        out.append((n, unit, m.start(), m.end()))
+    # 「904411.77/1005187.40/1139295.39百万元」「91.8、88.8、91.7万辆」这类列举，
+    # 尾部单位适用于整组。分隔符限斜杠与顿号逗号，中间夹别的字就不算（避免把无关数字串起来）
+    for k in range(len(out) - 1, 0, -1):
+        n, unit, start, _end = out[k]
+        prev_n, prev_unit, prev_start, prev_end = out[k - 1]
+        if not unit or prev_unit:
+            continue
+        if re.fullmatch(r"\s*[/、，,]\s*", text[prev_end:start]):
+            out[k - 1] = (prev_n, unit, prev_start, prev_end)
+    return [(n, u) for n, u, _s, _e in out]
 
 
 def line_terms(line, skip_years=True):
@@ -188,15 +214,56 @@ def term_value(n, unit):
         return None
     if "亿" in unit:
         return value * 1e8
+    if "百万" in unit:
+        return value * 1e6
+    if "千元" in unit:
+        return value * 1e3
     if "万" in unit:
         return value * 1e4
+    if "‰" in unit:
+        return value / 10
     return value
 
 
-def unit_has_term(text, term):
+def _pct_ratio_match(n, unit, pn, pu, target, pv):
+    """小数比率与百分数互认：0.1774 ↔ 17.74%，正反两个方向都换。
+
+    只在恰好一侧带百分号时换，且小数一侧必须带小数点，免得把整数百分比
+    压成比率、或把「18 家」放大成 1800%。
+    """
+    rep_pct = unit in PCT_UNITS
+    src_pct = pu in PCT_UNITS
+    if rep_pct == src_pct:
+        return False
+    if rep_pct:
+        return "." in pn and abs(pv * 100 - target) <= max(abs(pv * 100), abs(target)) * 0.002
+    return "." in n and abs(target * 100 - pv) <= max(abs(target * 100), abs(pv)) * 0.002
+
+
+def _round_tol(n, target):
+    """报告数字按自身显示精度四舍五入的误差上限。
+
+    原文 0.38352013 报告写 0.38%、原文 73,xxx,xxx 元报告写 0.74 亿元，
+    都是合法的四舍五入；写几位小数就允许原值落在该精度半个单位内（按单位倍数放大）。
+    """
+    try:
+        raw = float(str(n).replace(",", ""))
+    except ValueError:
+        return 0.0
+    if raw == 0:
+        return 0.0
+    s = str(n).replace(",", "")
+    step = 0.5 * 10 ** (-len(s.split(".")[1])) if "." in s else 0.5
+    return abs(target) / abs(raw) * step
+
+
+def unit_has_term(text, term, bare_ok=False, round_ok=False):
     """源单元里要有同量级的数字。带单位的数字按换算值比，避免 10 万被 10% 或 20 家命中。
 
-    表格抽取常把数字和单位分到不同单元格，源里只有裸数字时，再按原始数值比一次。
+    表格抽取常把数字和单位分到不同单元格，源里只有裸数字时，再按原始数值比一次；
+    bare_ok=True 时反向也放行（报告单元格只写裸数字、单位在表头，源里是「78 万辆」）。
+    round_ok=True 时（报告侧核验）容忍写作四舍五入：报告按两位小数写的数，原值落在
+    该精度半个单位内算命中，摄入侧保持精确比对不变。
     """
     n, unit = term
     target = term_value(n, unit)
@@ -214,9 +281,14 @@ def unit_has_term(text, term):
             continue
         if abs(pv - target) <= max(abs(pv), abs(target)) * 0.002:
             return True
+        if round_ok and abs(pv - target) <= _round_tol(n, target):
+            return True
+        # 指标行常把比率记成 0.1774，报告写成 17.74%，两个方向都按百分数换算后再比
+        if _pct_ratio_match(n, unit, pn, pu, target, pv):
+            return True
         # 财报正文常以千元列示、知识行换算成元，源里只有裸数字时允许千/万元级差
         if not pu and abs(target) >= 1000:
-            for scale in (1e3, 1e4, 1e8):
+            for scale in (1e3, 1e4, 1e6, 1e8):
                 scaled = pv * scale
                 if abs(scaled - target) <= max(abs(scaled), abs(target)) * 0.002:
                     return True
@@ -226,11 +298,23 @@ def unit_has_term(text, term):
                     return True
             except ValueError:
                 continue
+        if bare_ok and not unit and raw is not None:
+            # 报告单元格只写裸数字、单位在表头，源里带「亿元/百万元」：换算量级后再比
+            for scale in ((1, 1e4, 1e6, 1e8) if pu else (1,)):
+                scaled = raw * scale
+                if abs(pv - scaled) <= max(abs(pv), abs(scaled)) * 0.002:
+                    return True
+    # 估值表的 PE 是空格分隔的单数字（「11 8 7」），number_terms 会把无单位的一位数当噪声；
+    # 只在「倍」上直接按数字边界找一次，避免 7 倍核不上表里的 7
+    if unit == "倍" and raw is not None:
+        if re.search(r"(?<![\d.])" + re.escape(n) + r"(?![\d.])", text or ""):
+            return True
     return False
 
 
-def unit_covers_terms(unit_text, terms):
-    return all(unit_has_term(unit_text or "", t) for t in terms)
+def unit_covers_terms(unit_text, terms, bare_ok=False, round_ok=False):
+    return all(unit_has_term(unit_text or "", t, bare_ok=bare_ok, round_ok=round_ok)
+               for t in terms)
 
 
 def unit_covers_numbers(unit_text, nums):
@@ -292,8 +376,23 @@ def number_anchor_map(pages):
             anchors = wiki.ANCHOR_RE.findall(ln)
             if not anchors:
                 continue
+            pct_line = any(u in ln for u in PCT_UNITS)
+            pm_line = "‰" in ln
             for n in line_numbers(ln):
                 out.setdefault(n, set()).update(anchors)
+                try:
+                    v = float(n)
+                except ValueError:
+                    continue
+                if "." in n and 0 < v < 10:
+                    # 小数比率 ↔ 百分数：0.1774 的锚点也给 17.74 挂一份候选
+                    out.setdefault(f"{v * 100:g}", set()).update(anchors)
+                if pct_line and "." in n and v > 0:
+                    # 原文写 17.74% 时，报告按比率 0.1774 写也归到同一出处
+                    out.setdefault(f"{v / 100:g}", set()).update(anchors)
+                if pm_line and v > 0:
+                    # 原文按千分号写 3‰，报告写 0.3% 时数字是 0.3
+                    out.setdefault(f"{v / 10:g}", set()).update(anchors)
     return out
 
 

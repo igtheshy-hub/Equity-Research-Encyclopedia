@@ -63,6 +63,82 @@ def test_scope_inherits_header_from_previous_page():
     assert filing._mechanical_scopes(units, rows) == ["母公司"]
 
 
+def test_scope_recovers_from_wrong_claimed_page():
+    """LLM 把页码写偏：母公司的期初标成合并那页、合并的期初标成母公司那页，
+    声称页上核不到数值时应跨页找「科目名+数值」真正所在的位置定归属。"""
+    units = [
+        {"n": 55, "text": "合并现金流量表\n五、现金及现金等价物净增加额 -2,049,648,127.52\n"
+                          "加：期初现金及现金等价物余额 8,414,559,401.82\n"
+                          "六、期末现金及现金等价物余额 6,364,911,274.30"},
+        {"n": 56, "text": "母公司现金流量表\n五、现金及现金等价物净增加额 1,205,368,470.11\n"
+                          "加：期初现金及现金等价物余额 4,251,726,223.05\n"
+                          "六、期末现金及现金等价物余额 5,457,094,693.16"},
+    ]
+    rows = [
+        # 页码互串：合并数值标到 56 页、母公司数值标到 55 页
+        {"statement": "现金流量表", "scope": "母公司", "item": "期初现金及现金等价物余额",
+         "value": 8414559401.82, "unit": "元", "page": 56},
+        {"statement": "现金流量表", "scope": "合并", "item": "期初现金及现金等价物余额",
+         "value": 4251726223.05, "unit": "元", "page": 55},
+        {"statement": "现金流量表", "scope": "合并", "item": "期末现金及现金等价物余额",
+         "value": 6364911274.30, "unit": "元", "page": 55},
+    ]
+    assert filing._mechanical_scopes(units, rows) == ["合并", "母公司", "合并"]
+
+
+def test_scope_falls_back_to_claimed_page_when_value_nowhere():
+    """数值哪页都核不到（表格区内容不在页文本里），退回声称页的表头归属。"""
+    units = [{"n": 1, "text": "合并资产负债表\n货币资金 100 200"}]
+    rows = [{"statement": "资产负债表", "scope": "母公司", "item": "货币资金",
+             "value": 999, "unit": "元", "page": 1}]
+    assert filing._mechanical_scopes(units, rows) == ["合并"]
+
+
+def test_scope_matches_item_with_colon_prefix():
+    """科目名带「加：」前缀时也要能在页上定位：冒号隔开不算找不到，
+    否则合并与母公司的期初余额会按页首继承互换归属（宇通 2025 年报 R2 挂起的根因）。"""
+    units = [
+        {"n": 54, "text": "母公司利润表\n一、营业收入 1 2"},
+        {"n": 55, "text": "合并现金流量表\n五、现金及现金等价物净增加额 -2,049,648,127.52\n"
+                          "加：期初现金及现金等价物余额 8,414,559,401.82\n"
+                          "六、期末现金及现金等价物余额 6,364,911,274.30"},
+        {"n": 56, "text": "母公司现金流量表\n加：期初现金及现金等价物余额 4,251,726,223.05\n"
+                          "六、期末现金及现金等价物余额 1,507,359,992.46"},
+    ]
+    rows = [
+        {"statement": "现金流量表", "scope": "合并", "item": "加：期初现金及现金等价物余额",
+         "value": 8414559401.82, "unit": "元", "page": 55},
+        {"statement": "现金流量表", "scope": "母公司", "item": "加：期初现金及现金等价物余额",
+         "value": 4251726223.05, "unit": "元", "page": 56},
+    ]
+    assert filing._mechanical_scopes(units, rows) == ["合并", "母公司"]
+
+
+def test_scope_marks_bare_company_header_as_parent():
+    """德勤版式的母公司表头是「公司资产负债表」（不带母公司三字），
+    页首独立成行按母公司算，母公司页上的行不能混进合并桶（长城 2025 年报 R3 挂起的根因）。"""
+    units = [
+        {"n": 142, "text": "长城汽车股份有限公司\n2025年12月31日\n合并资产负债表\n"
+                          "货币资金 43,198,725,524.04 40,159,904,761.87"},
+        {"n": 144, "text": "长城汽车股份有限公司\n2025年12月31日\n公司资产负债表\n"
+                          "货币资金 20,313,570,603.06 19,022,657,264.28"},
+        {"n": 145, "text": "长城汽车股份有限公司\n2025年12月31日\n公司资产负债表 - 续\n"
+                          "未分配利润 7,872,302,158.31 6,978,313,476.85"},
+    ]
+    assert filing._scope_marks(units[0]["text"]) == [(23, "合并")]
+    assert filing._scope_marks(units[1]["text"]) == [(23, "母公司")]
+    assert filing._scope_marks(units[2]["text"]) == [(23, "母公司")]
+    rows = [
+        {"statement": "资产负债表", "scope": "合并", "item": "货币资金",
+         "value": 43198725524.04, "unit": "元", "page": 142},
+        {"statement": "资产负债表", "scope": "合并", "item": "货币资金",
+         "value": 20313570603.06, "unit": "元", "page": 144},
+        {"statement": "资产负债表", "scope": "合并", "item": "未分配利润",
+         "value": 7872302158.31, "unit": "元", "page": 145},
+    ]
+    assert filing._mechanical_scopes(units, rows) == ["合并", "母公司", "母公司"]
+
+
 def test_primary_statement_beats_key_financial_data_for_same_item():
     # 三季报主要会计数据先出现（本报告期 0.042），利润表后出现（年初至报告期末 0.493），应保留累计口径
     rows = [

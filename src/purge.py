@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from . import config, tasks, wiki
-from .ingest import MANIFEST_LOCK, load_manifest, save_manifest
+from .ingest import MANIFEST_LOCK, load_manifest, save_manifest, sha256_of
 from .pdf_extract import raw_file_index
 
 KIND_LABELS = {"report": "研报", "filing": "财报", "policy": "政策文件"}
@@ -64,19 +64,28 @@ def _row(name, rel, entry, imp, missing):
         "pages": imp.get("pages", []),
         "empty_pages": imp.get("empty_pages", []),
         "missing": missing,
+        "duplicate_of": "",
     }
 
 
 def file_entries():
     """原文件页清单：raw 里已改名的文件，加上清单里有、raw 里已不在的残留（供清掉）。"""
     by_name = {f["file"]: f for f in load_manifest()["files"]}
+    sha_to_name = {f.get("sha256"): f["file"] for f in by_name.values() if f.get("sha256")}
     impact = _impact(wiki.load_pages())
     rows = []
     for name, path in raw_file_index().items():
         if path.parent == config.INBOX_DIR:  # 还在收件台、没归类的，不算入库
             continue
-        rows.append(_row(name, path.relative_to(config.ROOT).as_posix(),
-                         by_name.get(name), impact.get(name) or {}, missing=False))
+        row = _row(name, path.relative_to(config.ROOT).as_posix(),
+                   by_name.get(name), impact.get(name) or {}, missing=False)
+        # 未摄入行核对内容重复：同 SHA256 的文件摄入只会跳过，网页上标出来只给删除
+        if not row["ingested_at"]:
+            try:
+                row["duplicate_of"] = sha_to_name.get(sha256_of(path), "")
+            except OSError:
+                pass
+        rows.append(row)
     listed = {r["name"] for r in rows}
     for name, f in by_name.items():
         if name not in listed:

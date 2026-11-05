@@ -94,6 +94,10 @@ def main():
     check("A 类带锚点", "[[x.pdf#p5]]" in line, True)
     check("A 类带报告出处", "（个人研报观点，" in line and "report-x.md" in line, True)
     line = report_distill.build_distill_line(
+        cand("A", judgment="【个人观点】行业集中度还会提升"),
+        {"report_path": "outputs/report-x.md"})
+    check("模型自带【个人观点】前缀不重复", line.count("【个人观点】"), 1)
+    line = report_distill.build_distill_line(
         cand("D", judgment="销量会回落", condition="补贴退坡", forecast_date="2026-12"),
         {"report_path": "outputs/report-x.md"})
     check("D 类写清条件", "预测条件：补贴退坡" in line, True)

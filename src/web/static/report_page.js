@@ -1,6 +1,10 @@
 /* 报告页：行业研报任务、大纲确认、缺口勾选、进度与 A-F 沉淀候选 */
 
 const REPORT_RUNNING = new Set(["outlining", "fetching", "writing", "charting", "reviewing", "docxing"]);
+const PHASE_LABELS = {
+  _phase_outline: "生成大纲", _phase_fetch: "补缺口", _phase_write: "成文",
+  _phase_charts: "出图", _phase_review: "审校", _phase_docx: "转 Word", _phase_af: "沉淀",
+};
 const CLASS_LABELS = { A: "综合判断", D: "前瞻预测", E: "推导计算" };
 
 let currentJobId = null;
@@ -14,6 +18,9 @@ function loadSourceLabels() {
     .then((r) => r.json())
     .then((d) => {
       const map = {};
+      // labels 是取数源全集（含 periodic_report、web_search 等管线内部补缺口源），
+      // items 只有取数页可手动选的那几个，缺口清单不能只靠 items 建映射
+      Object.entries(d.labels || {}).forEach(([id, label]) => { map[id] = label || id; });
       (d.items || []).forEach((s) => { map[s.id] = s.label || s.id; });
       SOURCE_LABELS = map;
       if (currentJob && currentJobId) loadJob(currentJobId);
@@ -94,21 +101,26 @@ function loadJob(id) {
 function renderDetail(job) {
   const parts = [];
   const status = job.status || "";
+  // 救火进行中：不显示红色失败，按救火所在环节展示，错误详情折叠
+  const rescuing = status === "error" && job.rescue_active;
+  const phaseLabel = PHASE_LABELS[job.phase] || "处理";
   parts.push(`<div class="report-card">
     <div class="report-head">
       <div>
         <div class="report-title">${esc(job.title)}</div>
         <div class="muted">${esc(job.kind_label || "行业研报")} · ${esc(job.question || "")}</div>
       </div>
-      <span class="job-status ${status === "error" ? "bad" : status === "done" ? "ok" : "run"}">${esc(job.status_label || status)}</span>
+      <span class="job-status ${status === "error" && !rescuing ? "bad" : status === "done" ? "ok" : "run"}">${esc(rescuing ? `正在${phaseLabel}（救火中）` : job.status_label || status)}</span>
     </div>
     ${linksHTML(job)}
-    ${REPORT_RUNNING.has(status) ? "" : `<div class="report-actions"><button class="ghost" data-act="delete-job">删除这份研报</button></div>`}
-    ${status === "error" && job.error ? `<div class="warn-strip">${esc(job.error)}</div>
+    ${REPORT_RUNNING.has(status) || rescuing ? "" : `<div class="report-actions"><button class="ghost" data-act="delete-job">删除这份研报</button></div>`}
+    ${status === "error" && job.error ? (rescuing
+      ? `<div class="rescue-strip">任务在${esc(phaseLabel)}阶段失败，救火员正在自动修复；结束后本页会自动更新，请稍候，先不要点继续或删除。<details><summary>错误详情</summary><pre>${esc(job.error)}</pre></details></div>`
+      : `<div class="warn-strip">${esc(job.error)}</div>
       <div class="report-actions">
         <button class="primary" data-act="continue">继续此阶段</button>
         <button class="ghost" data-act="fallback">改走内置底稿</button>
-      </div>` : ""}
+      </div>`) : ""}
   </div>`);
 
   parts.push(outlineHTML(job));
@@ -213,9 +225,22 @@ function candidatesHTML(job) {
   </div>`;
 }
 
+function stuckHTML(job) {
+  const stuck = job.stuck || [];
+  if (!stuck.length) return "";
+  const rows = stuck.map((s) => `<li class="finding">
+    <div class="f-line"><span class="f-tag">${esc(s.outcome || "")}</span>${esc(s.phase || "")} · ${esc(s.where || "")}</div>
+    ${s.problem ? `<div class="f-note">问题：${esc(s.problem)}</div>` : ""}
+    ${s.diagnosis ? `<div class="f-note">根因：${esc(s.diagnosis)}</div>` : ""}
+    ${s.action ? `<div class="f-note">处理：${esc(s.action)}${s.attempts ? `（重写 ${esc(s.attempts)} 轮）` : ""}</div>` : ""}
+  </li>`).join("");
+  return `<h3>生成卡点（${stuck.length} 处）</h3><ul class="plain-list">${rows}</ul>`;
+}
+
 function reviewHTML(job) {
   const rev = job.review || {};
   const note = rev.sample_note || "";
+  const stuckBlock = stuckHTML(job);
   const missingRows = (job.missing_data || []).map((m) => `<li class="finding">
     <div class="f-line"><span class="f-tag">数据缺失</span>${esc(m.item || "")}</div>
     <div class="f-note">${m.skipped ? "跳过未取数" : esc(m.error || "取数失败")}，需手动补充</div>
@@ -238,16 +263,20 @@ function reviewHTML(job) {
       </li>`).join("");
       return `<h3>${g.title}（${rows.length}）</h3><ul class="plain-list">${items}</ul>`;
     }).join("");
-    if (!blocks && !note && !missingRows) return "";
+    if (!blocks && !note && !missingRows && !stuckBlock) return "";
     return `<details class="report-card"><summary>${esc(rev.summary || "审校记录")}</summary>
       ${note ? `<h3>样板覆盖提示</h3><p>${esc(note)}</p>` : ""}
       ${missingBlock}
       ${blocks}
+      ${stuckBlock}
     </details>`;
   }
   const mech = rev.mechanical || [];
   const issues = rev.issues || [];
-  if (!mech.length && !issues.length && !note && !missingRows) return "";
+  if (!mech.length && !issues.length && !note && !missingRows && !stuckBlock) return "";
+  if (!mech.length && !issues.length && !note && !missingRows) {
+    return `<details class="report-card"><summary>生成卡点（${(job.stuck || []).length} 处）</summary>${stuckBlock}</details>`;
+  }
   const mechRows = mech.map((m) => `<li>${esc(m)}</li>`).join("");
   const issueRows = issues.map((i) => `<li><b>${esc(i.level || "")}</b> ${esc(i.where || "")}：${esc(i.problem || "")}</li>`).join("");
   return `<details class="report-card"><summary>审校记录（程序 ${mech.length} 条，模型 ${issues.length} 条${rev.repaired ? "，硬伤已修一轮" : ""}）</summary>
@@ -255,6 +284,7 @@ function reviewHTML(job) {
     ${missingBlock}
     ${mechRows ? `<h3>程序核对</h3><ul class="plain-list">${mechRows}</ul>` : ""}
     ${issueRows ? `<h3>模型审稿</h3><ul class="plain-list">${issueRows}</ul>` : ""}
+    ${stuckBlock}
   </details>`;
 }
 
@@ -404,10 +434,11 @@ App.onTasks.push((tasks) => {
   area.innerHTML = mine.map((t) => App.taskCardHTML(t)).join("");
 });
 
-/* 阶段推进时自动刷新 */
+/* 阶段推进时自动刷新；error 且救火仍在跑也算进行中，救火结束后恢复失败态 */
 setInterval(() => {
   if (document.hidden || !currentJobId) return;
-  if (currentJob && REPORT_RUNNING.has(currentJob.status)) loadJob(currentJobId);
+  if (currentJob && (REPORT_RUNNING.has(currentJob.status)
+      || (currentJob.status === "error" && currentJob.rescue_active))) loadJob(currentJobId);
 }, 2500);
 
 document.addEventListener("DOMContentLoaded", () => {

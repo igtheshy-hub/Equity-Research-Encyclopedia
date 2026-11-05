@@ -39,6 +39,12 @@ def _clean_name(title):
     return (sanitize(title)[:30] or "图").strip()
 
 
+def _label_rotation(labels, n):
+    """横轴标签多或字长时斜排，避免长中文标签叠在一起。"""
+    longest = max((len(str(v)) for v in labels), default=0)
+    return 45 if n > 8 or longest > 8 else 0
+
+
 def render(spec, number=1):
     """渲染单张图，返回 {title, file, path, note}；数据不足返回 None。"""
     import matplotlib
@@ -78,7 +84,8 @@ def render(spec, number=1):
             ax.plot(range(n), s["values"], marker="o", markersize=4, linewidth=1.8,
                     color=PALETTE[i % len(PALETTE)], label=s["name"] or None)
         ax.set_xticks(range(n))
-        ax.set_xticklabels(x, rotation=45 if n > 8 else 0, ha="right" if n > 8 else "center")
+        rot = _label_rotation(x, n)
+        ax.set_xticklabels(x, rotation=rot, ha="right" if rot else "center")
         ax.grid(axis="y", color="#e8ecf3", linewidth=0.8)
         if len(series) > 1:
             ax.legend(frameon=False, fontsize=9)
@@ -101,7 +108,8 @@ def render(spec, number=1):
             ax.grid(axis="x", color="#e8ecf3", linewidth=0.8)
         else:
             ax.set_xticks(idx)
-            ax.set_xticklabels(x, rotation=45 if n > 8 else 0, ha="right" if n > 8 else "center")
+            rot = _label_rotation(x, n)
+            ax.set_xticklabels(x, rotation=rot, ha="right" if rot else "center")
             ax.grid(axis="y", color="#e8ecf3", linewidth=0.8)
         if len(series) > 1:
             ax.legend(frameon=False, fontsize=9)

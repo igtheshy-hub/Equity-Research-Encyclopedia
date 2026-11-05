@@ -11,12 +11,18 @@ REFUSAL = "知识库中未找到与该问题相关的页面，无法回答。"
 # 按特征剔除：连续>=8个可打印 ASCII 且不含空格、非字母数字占比>=0.4、含>=2个正文罕见符号。
 # 锚点（#p11 只含1个罕见符号）、markdown 表格线（|-不在罕见集）不受影响。
 _GLITCH_RARE = set("<>=?!#%&@~^$\\")
+# 同环比这类数字对「+34.4%/-4.7%」也满足乱码特征（ASCII、标点多、两个%），
+# 不能按乱码删掉；纯数字与千分位、正负号、百分号、斜杠组成的片段一律保留
+_NUMERIC_RUN_RE = re.compile(
+    r"^[+\-−±]?\d[\d,.]*(?:%|pct|个百分点)?(?:/[+\-−±]?\d[\d,.]*(?:%|pct|个百分点)?)*$")
 
 
 def strip_glitch(text):
     out, pos = [], 0
     for m in re.finditer(r"[\x21-\x7e]{8,}", text):
         seg = m.group()
+        if _NUMERIC_RUN_RE.match(seg.strip("[]")):
+            continue
         punct = sum(1 for c in seg if not c.isalnum())
         rare = sum(1 for c in seg if c in _GLITCH_RARE)
         if punct * 10 >= len(seg) * 4 and rare >= 2:
@@ -42,7 +48,7 @@ SELECT_PROMPT = """你是知识库检索员。下面是知识库索引（每行�
 
 {HISTORY}用户问题：{Q}
 
-选出回答该问题所需的页面，最多 {MAXP} 页，宁缺毋滥；问题与所有页面主题都不相关时给空数组。slug 必须来自索引。
+选出回答该问题所需的页面，{MAXRULE}，宁缺毋滥；问题与所有页面主题都不相关时给空数组。slug 必须来自索引。
 问题问的是知识库自身整体情况（库里都有什么、是否都属于某行业、覆盖哪些主题、有多少页面），或需要横跨大部分页面做总览、不针对某个具体页面时，use_index 给 true 且 selected 给空数组，这类问题将直接用索引作答。
 只输出 JSON：{"selected": ["slug", ...], "use_index": true 或 false, "reason": "一句话理由"}"""
 
@@ -314,7 +320,21 @@ def _allowed_from_pages(sel_pages):
     return allowed
 
 
-def _select_pages(question, history):
+# 研报选页：提示词给软上限，代码再兜底硬上限。只写「不限页数」会被模型理解成全选，
+# 宇通一次选中 261/322 个非来源页，把每节成文提示词撑爆
+REPORT_PAGE_SOFT = 20
+REPORT_PAGE_HARD = 30
+
+
+def _max_pages_rule(max_pages=None, soft_pages=None):
+    """选页提示词里的页数规则；soft_pages 给软上限，max_pages=0 表示不限。"""
+    if soft_pages:
+        return f"不设固定上限，通常不超过 {int(soft_pages)} 页"
+    limit = config.CFG["ask"]["max_pages"] if max_pages is None else int(max_pages)
+    return "不限页数" if limit <= 0 else f"最多 {limit} 页"
+
+
+def _select_pages(question, history, max_pages=None, soft_pages=None):
     pages, entries = _index_pages()
     if not entries:
         return pages, [], "", False
@@ -324,7 +344,7 @@ def _select_pages(question, history):
           .replace("{INDEX}", idx_text)
           .replace("{HISTORY}", _history_block(history))
           .replace("{Q}", question)
-          .replace("{MAXP}", str(config.CFG["ask"]["max_pages"]))}],
+          .replace("{MAXRULE}", _max_pages_rule(max_pages, soft_pages))}],
         task="select",
         response_json=True,
     )

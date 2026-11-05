@@ -34,6 +34,14 @@ def test_table_kept():
     check("表格线保留", strip_glitch(text), text)
 
 
+def test_numeric_pairs_kept():
+    print("同环比数字对不被当乱码删掉：")
+    for t in ["同环比+34.4%/-4.7%[[东吴证券_汽车行业研报_20261102.pdf#p9]]",
+              "同比-2.4%/-19.7%",
+              "-1.57/-2.51pct"]:
+        check(f"保留 {t[:16]!r}", strip_glitch(t), t)
+
+
 def test_clean_text():
     print("正常文本原样返回：")
     for t in ["", "DSO 16.80 天，低于 90 天阈值。", "803,964,958,000 元与 ROE(加权披露)@2025FY = 0.1531"]:
@@ -44,6 +52,7 @@ if __name__ == "__main__":
     test_real_glitch()
     test_anchor_kept()
     test_table_kept()
+    test_numeric_pairs_kept()
     test_clean_text()
     print()
     if FAILS:

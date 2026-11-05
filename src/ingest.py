@@ -64,7 +64,11 @@ MERGE_PROMPT = """现有知识库索引如下（每行：slug | 类型 | 别名�
 def iter_raw_files():
     for d in (config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR):
         for suf in SUPPORTED_SUFFIXES:
-            yield from sorted(d.rglob("*" + suf))
+            for p in sorted(d.rglob("*" + suf)):
+                # 下划线开头的目录是隔离区（如 _rejected：摄入失败的下载件），不进摄入与审校检查
+                if any(part.startswith("_") for part in p.relative_to(d).parts[:-1]):
+                    continue
+                yield p
 
 
 # 兼容旧名（审校未摄入检查等处引用）
@@ -241,7 +245,9 @@ def plan_merge(topics, index_entries):
             hit = by_key.get(_norm(key))
             if hit:
                 break
-        if hit and hit["type"] == t["type"]:
+        # 标题或别名完全撞上就并入，不看类型：同一概念被 LLM 判成 industry 或 concept
+        # 都常见，按类型卡会另建一个「xxx-2」平行页，正文重复还各挂各的锚点
+        if hit:
             decisions.append(({"action": "merge", "slug": hit["slug"], "type": hit["type"]}, t))
         else:
             pending.append(t)

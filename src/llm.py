@@ -41,7 +41,7 @@ class _Retryable(Exception):
 
 
 def _is_anthropic(url):
-    # Anthropic 格式端点以 /messages 结尾（火山方舟），OpenAI 兼容端点以 /chat/completions 结尾（智谱等）
+    # Anthropic 格式端点以 /messages 结尾，OpenAI 兼容端点以 /chat/completions 结尾（智谱、DeepSeek 官方）
     return url.rstrip("/").endswith("/messages")
 
 
