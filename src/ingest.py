@@ -33,10 +33,13 @@ COMPILE_PROMPT = """你是行业知识编辑，把一份材料的逐单元文本
   · 政策条文、法规标准 → 概念页（政策背景）；指标与术语的口径定义 → 概念页（定义与口径）
   · 风险因素与不确定性 → 风险提示
 - 每个主题给一句不超过 40 字的 summary
+- entities 抄本段材料里出现的主要实体名（公司、行业、技术、材料、产品等名词），只抄原文出现的名称、不做判断，不确定是不是该建页的实体也要列，过滤交给程序与人；没有给空数组
 {FOCUS_RULE}
 只输出 JSON，不要解释：
 {
   "report_date": "材料中的报告日期 YYYY-MM-DD，识别不出给空字符串",
+  "entities": ["本段提到的主要实体名（抄原文名词）"],
+  "entity_type": {"实体名": "company|industry|concept，你对这个实体类型的参考判断，可缺"},
   "topics": [
     {
       "title": "主题名",
@@ -258,7 +261,7 @@ def _focus_rule(focus):
     return FOCUS_RULE_TEMPLATE.replace("{focus_lines}", "\n".join(f"  · {x}" for x in items))
 
 
-def compile_file(path, units, unit_kind, focus=None, task_id=None):
+def compile_file(path, units, unit_kind, focus=None, task_id=None, only_entity=None):
     from . import tasks
     fname = path.name
     # 分块阈值按配置走（原来写死 40，配置里的 20 对 21-40 页的文件不生效，问题 21）
@@ -267,12 +270,18 @@ def compile_file(path, units, unit_kind, focus=None, task_id=None):
         units[i:i + chunk_size] for i in range(0, len(units), chunk_size)
     ]
     prompt = COMPILE_PROMPT.replace("{FOCUS_RULE}", _focus_rule(focus))
+    if only_entity:
+        # 待建页提案的 mini 摄入：复用同一套编译提示词，只是把主题限定为该实体
+        prompt += (f"\n- 本次只编译与「{only_entity}」这一个主题相关的条目：topics 里只放这一个主题"
+                   f"（title 用「{only_entity}」），与它无关的内容一律丢弃；材料没有提到它就给空 topics")
     words = _unit_words(unit_kind)
     for k, v in words.items():
         prompt = prompt.replace("{" + k + "}", v)
     topics = {}
     report_date = ""
     total_dropped = 0
+    entity_counts = {}
+    entity_types = {}
     for chunk in chunks:
         tasks.check_cancel(task_id)
         tag = "段" if unit_kind == "para" else "页"
@@ -285,6 +294,10 @@ def compile_file(path, units, unit_kind, focus=None, task_id=None):
         rd = str(out.get("report_date") or "").strip()
         if rd and not report_date:
             report_date = rd
+        # entities：该段提到的主要实体名（用于「该建而没建」的提案，可选字段，
+        # 缺键/写坏视为空，不算格式失败——摄入照常完成）
+        if not only_entity:
+            _collect_entities(out, entity_counts, entity_types)
         for t in out.get("topics") or []:
             if not isinstance(t, dict):  # 嵌套层也可能混进清单/纯文字，跳过不崩
                 continue
@@ -316,7 +329,28 @@ def compile_file(path, units, unit_kind, focus=None, task_id=None):
         print(f"  [校验] 丢弃 {total_dropped} 条锚点不合规的条目")
     out_path = config.EXTRACTS_DIR / (path.stem + ".entries.json")
     out_path.write_text(json.dumps({"file": fname, "report_date": report_date, "topics": list(topics.values())}, ensure_ascii=False, indent=1), encoding="utf-8")
-    return {"report_date": report_date, "topics": list(topics.values())}
+    return {"report_date": report_date, "topics": list(topics.values()),
+            "entities": entity_counts, "entity_types": entity_types}
+
+
+def _collect_entities(out, entity_counts, entity_types):
+    """把编译输出里的可选 entities/entity_type 并进汇总。写坏（类型不对）就忽略，不报错。"""
+    ent = out.get("entities")
+    if isinstance(ent, list):
+        for e in ent:
+            name = str(e).strip()
+            if name:
+                entity_counts[name] = entity_counts.get(name, 0) + 1
+    elif isinstance(ent, str) and ent.strip():
+        # 模型偶发把单个实体写成字符串，容错收下
+        entity_counts[ent.strip()] = entity_counts.get(ent.strip(), 0) + 1
+    et = out.get("entity_type")
+    if isinstance(et, dict):
+        for k, v in et.items():
+            name = str(k).strip()
+            t = str(v).strip()
+            if name and t in ("company", "industry", "concept"):
+                entity_types.setdefault(name, t)
 
 
 def plan_merge(topics, index_entries):
@@ -641,6 +675,17 @@ def ingest_one(path, manifest, focus=None, targets=None, task_id=None):
         "focus": list(focus),
         "focus_hits": focus_hits_all,
     })
+    # 待建页提案：汇总本报告 entities → 过滤已有页面 → 高频未建页实体进入提案队列。
+    # 失败不影响摄入本身（提案是锦上添花，不是必经之路）。
+    try:
+        from .page_proposals import merge_detected
+        proposed = merge_detected(compiled.get("entities") or {},
+                                  compiled.get("entity_types") or {},
+                                  path.name, decided_titles=touched_titles)
+        if proposed:
+            print(f"  [提案] 检出 {proposed} 个待建页建议（首页/审校页可查看）")
+    except Exception as e:
+        print(f"  [提案] 生成待建页建议失败（不影响摄入）: {e}")
     log = []
     if created:
         log.append("新建 " + "、".join(created))
@@ -661,6 +706,15 @@ def finish(manifest, results, new_entries=None):
     new_entries 由调用方用 before/after 的 sha 集合算差集得到。
     """
     persist_new_entries(new_entries or [])
+    # 自动补双链：正文提到其他页面名字处插入 [[双链]]，让内容页之间真正连动
+    # （纯程序、幂等、锚点不动；失败不影响摄入收尾的其余步骤）
+    try:
+        from .linking import cross_link_all
+        st = cross_link_all()
+        if st["inserts"]:
+            print(f"  [双链] 自动补 {st['inserts']} 处，覆盖 {st['pages']} 页")
+    except Exception as e:
+        print(f"  [双链] 补链失败（不影响摄入）: {e}")
     wiki.rebuild_index_md(wiki.load_pages())
     if results:
         # 只汇总真正产出了条目的结果（ingest_one 失败时返回的是 {"file":..,"error":..}，
@@ -677,6 +731,8 @@ def finish(manifest, results, new_entries=None):
             print(f"  - {x}")
     else:
         print("\n[校验] 全库校验通过")
+    for h in validate.validate_hints():
+        print(f"  [提示·非错误] {h}")
     return problems
 
 

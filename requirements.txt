@@ -24,5 +24,8 @@ markdown>=3.5             # Markdown → HTML
 # --- Excel 导出（问题 13：体检原来漏查它，点导出页才报错）---
 openpyxl>=3.1
 
+# --- 取数源（fetcher.py 解析 Excel/表格数据；akshare 3.x 需 pandas 2.x）---
+pandas>=2,<3
+
 # --- 测试 ---
 pytest>=8.0

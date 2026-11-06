@@ -244,6 +244,31 @@ td a { font-weight: 600; }
 .plain-list { padding-left: 18px; }
 .plain-list li { margin: 6px 0; }
 
+/* ---------- 知识库图谱视图 ---------- */
+.view-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.view-toggle button { border-radius: 0; background: var(--card); color: var(--ink-2); padding: 6px 16px; font-size: 13px; }
+.view-toggle button.active { background: var(--accent); color: #fff; }
+#graph-view { margin-top: 4px; }
+.graph-controls {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin: 8px 0; font-size: 13px; color: var(--ink);
+}
+.graph-controls select {
+  font: inherit; font-size: 13px; padding: 5px 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+}
+.graph-card {
+  position: relative; background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
+}
+#graph-canvas { display: block; }
+.graph-tooltip {
+  position: absolute; z-index: 5; pointer-events: none;
+  background: #242b3d; color: #fff; border-radius: 8px; padding: 5px 10px;
+  font-size: 12.5px; white-space: nowrap; box-shadow: 0 4px 14px rgba(20, 30, 60, .3);
+}
+.graph-note { margin: 8px 2px 18px; }
+
 /* ---------- 原文件页 ---------- */
 .col-check { width: 40px; text-align: center; }
 .files-name { font-weight: 600; }
@@ -252,7 +277,7 @@ td a { font-weight: 600; }
 
 /* ---------- wiki 页 ---------- */
 .page-wrap { display: flex; gap: 0; align-items: flex-start; }
-.page-main { flex: 1 1 62%; min-width: 0; }
+.page-main { flex: 1 1 40%; min-width: 0; }
 .crumbs { color: var(--ink-2); font-size: 13px; margin: 0 0 10px; }
 .meta-card {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
@@ -264,6 +289,9 @@ td a { font-weight: 600; }
   border-left: 3px solid var(--accent); border-radius: 6px;
   padding: 0 8px 0 6px; margin: 2px 4px 2px 0; font-size: 12px;
 }
+/* 反链面板：入链 tag 复用来源标签的胶囊样式，可点击跳引用页 */
+a.backlink-tag:hover { text-decoration: none; filter: brightness(.94); }
+.backlink-tag .bl-times { color: var(--ink-2); margin-left: 3px; font-weight: 600; }
 .page-body {
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 24px 30px; box-shadow: var(--shadow);
@@ -290,7 +318,7 @@ a.wikilink { border-bottom: 1px dashed var(--accent); }
 }
 .hdivider:hover, .hdivider.on { background: var(--accent-weak); }
 .viewer-panel {
-  flex: 1 1 38%; min-width: 300px; max-width: 60%;
+  flex: 1 1 60%; min-width: 300px; max-width: 60%;
   background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
   box-shadow: var(--shadow); overflow: hidden;
   position: sticky; top: 66px; height: calc(100vh - 92px);
@@ -443,6 +471,12 @@ body.split-ask .pane:last-child { border-radius: 0 var(--radius) var(--radius) 0
 .fi-title { font-weight: 600; margin-bottom: 4px; }
 .fi-quotes { margin: 4px 0 8px; font-size: 13px; }
 .fq { background: #fafbfd; border-radius: 6px; padding: 4px 8px; margin: 3px 0; }
+/* 修复向导：AI 初判严重性徽标与 AI 说明行 */
+.sev-tag { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 0 6px; margin-right: 6px; }
+.sev-tag.high { background: var(--bad-weak); color: var(--bad); }
+.sev-tag.mid { background: var(--warn-weak); color: var(--warn); }
+.sev-tag.low { background: var(--ok-weak); color: var(--ok); }
+.fi-why { color: var(--ink-2); font-size: 13px; margin: 2px 0 6px; }
 .fix-check { display: flex; gap: 8px; align-items: baseline; }
 .merge-dir { font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line); max-width: 100%; }
 
@@ -591,3 +625,11 @@ details.report-card[open] > summary { margin-bottom: 8px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- 审校页报告一览的类型徽标 ---------- */
+.audit-badge {
+  display: inline-block; padding: 2px 10px; border-radius: 7px;
+  font-size: 12px; white-space: nowrap;
+}
+.audit-badge.base { background: var(--accent-weak); color: var(--accent); }
+.audit-badge.ai { background: #f3e8ff; color: #7c3aed; }

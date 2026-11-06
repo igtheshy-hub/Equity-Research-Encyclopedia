@@ -4,6 +4,10 @@
 {% block content %}
 <div class="page-head">
   <h1>知识库</h1>
+  <div class="view-toggle" role="tablist" aria-label="视图切换">
+    <button id="view-list" class="sm active" aria-pressed="true">列表</button>
+    <button id="view-graph" class="sm" aria-pressed="false">图谱</button>
+  </div>
   <input id="filter" type="search" placeholder="按标题、别名或摘要过滤…" autocomplete="off">
   <span id="filter-count" class="muted"></span>
 </div>
@@ -14,6 +18,21 @@
   <div class="stat"><b>{{ stats.updated or '—' }}</b><span>最近更新</span></div>
 </section>
 {% endif %}
+<section id="graph-view" hidden>
+  <div class="graph-controls">
+    <label>行业筛选：
+      <select id="graph-industry"><option value="">全部</option></select>
+    </label>
+    <span class="muted" id="graph-unresolved"></span>
+    <span class="muted" id="graph-hint">悬停看详情 · 单击高亮邻居 · 双击打开页面 · 可拖拽节点</span>
+  </div>
+  <div class="graph-card">
+    <canvas id="graph-canvas"></canvas>
+    <div id="graph-tooltip" class="graph-tooltip" hidden></div>
+  </div>
+  <p class="muted graph-note">此图仅展示页面间的双链引用关系，不代表上下游、竞争或层级关系。</p>
+</section>
+<div id="list-view">
 {% for g in groups %}
 <section class="group" data-group="{{ g.label }}">
   <h2>{{ g.label }}（{{ g.pages | length }}）</h2>
@@ -44,4 +63,6 @@
   {% endif %}
 </section>
 {% endfor %}
+</div>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='kb_graph.js') }}" defer></script>{% endblock %}
