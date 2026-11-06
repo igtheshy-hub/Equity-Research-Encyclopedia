@@ -114,6 +114,27 @@ function makePane(el) {
       .then((d) => pane.loadConvs().then(() => pane.selectConv(d.conv.id)));
   });
 
+  el.querySelector(".del-conv").addEventListener("click", () => {
+    const cur = pane.convs.find((c) => c.id === pane.convId);
+    if (!cur) { App.toast("当前没有会话", "warn"); return; }
+    if (!confirm(`删除会话「${cur.title || "未命名"}」？未提取的沉淀提案会一并删除，不可恢复。`)) return;
+    const gone = pane.convId;
+    fetch("/api/conversations/" + encodeURIComponent(gone), { method: "DELETE" })
+      .then((r) => r.json().then((d) => ({ ok: r.status === 200 || r.status === 404, d })))
+      .then(({ ok, d }) => {
+        // 404 = 会话已在别的窗口/分栏删掉，按已删除处理，别报错吓人
+        if (!ok) { App.toast(d.error || "删除失败", "bad"); return; }
+        App.toast(d.ok ? "会话已删除" : "会话已在别处删除，列表已刷新", "info");
+        // 其他分栏可能还挂着被删会话：统一清引用并各自刷新
+        panes.forEach((p) => {
+          const keep = p.convId && p.convId !== gone;
+          if (!keep) p.convId = null;
+          p.loadConvs(keep);
+        });
+      })
+      .catch((err) => App.toast("删除失败：" + err, "bad"));
+  });
+
   el.querySelector(".extract").addEventListener("click", () => {
     if (!pane.convId) { App.toast("当前没有会话", "warn"); return; }
     fetch("/api/distill/propose", {
@@ -193,9 +214,12 @@ function renderMsg(m) {
     return `<div class="msg bot"><div class="bubble bubble-err">${App.escapeHtml(m.content || "出错了")}</div></div>`;
   }
   if (m.kind === "report_ack") {
+    const pipeline = m.report_job && (m.report_kind === "industry" || m.report_kind === "company");
+    const href = pipeline ? `/report#job=${encodeURIComponent(m.report_job)}` : "/";
+    const label = pipeline ? "前往报告页确认大纲 →" : "回到首页查看进度 →";
     return `<div class="msg bot"><div class="bubble">
       ${App.escapeHtml(m.content || "")}
-      <p><a href="/outputs" target="_blank" rel="noopener">前往产出页查看进度 →</a></p>
+      <p><a href="${href}">${label}</a></p>
     </div></div>`;
   }
   if (m.kind === "referral") {
@@ -307,6 +331,9 @@ document.addEventListener("DOMContentLoaded", () => {
         });
       }
     } else {
+      // 关掉分栏要把拖拽时写死的宽度收回，否则第一栏停在一半宽
+      paneEls[0].style.flex = "";
+      paneEls[1].style.flex = "";
       localStorage.removeItem("askSplit");
       /* 复位 applyRatio 写下的固定宽度，否则关掉分栏后剩下的窗口仍停在半宽 */
       paneEls[0].style.flex = "";

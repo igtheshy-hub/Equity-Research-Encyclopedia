@@ -1,14 +1,17 @@
-from . import config, llm, wiki
-from .ask import FIN_ANALYSIS_BLOCK, _allowed_from_pages, _select_pages, _violations, strip_glitch
+from . import config, llm, source_priority, wiki
+from .ask import (FIN_ANALYSIS_BLOCK, REPORT_PAGE_HARD, REPORT_PAGE_SOFT,
+                  _allowed_from_pages, _select_pages, _violations, strip_glitch)
 from .classify import sanitize
+from .ingest import load_manifest
 
-REPORT_PROMPT = """你是投研分析师，基于知识库页面内容撰写一份结构化报告。
+REPORT_PROMPT = """你是行业分析师，基于知识库页面内容撰写一份结构化报告。
 
 规则：
 - 只用给定页面内容，禁止编造，页面没有的信息明确说知识库中没有
 - 结构固定：# 标题 / ## 核心结论（3-5 条，每条句尾带锚点）/ ## 分节论述（按主题分节，句句带锚点）/ ## 数据表（如有可成表的数据，用 markdown 表格，表格上方或下方注明出处锚点；没有可成表数据可省略本节）/ ## 风险与局限
 - 锚点格式 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]]，只能引用给定页面中出现过的来源文件
 - 不允许出现没有任何锚点的数据性陈述
+- 公司财务数据的来源优先级：财报（年报、半年报、季报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
 - 用中文，markdown 格式
 {FIN}
 --- 页面内容开始 ---
@@ -28,13 +31,20 @@ def _tick(task_id, current, detail):
 def generate(title, question, task_id=None, domain="general"):
     """从 wiki 页面生成报告并存 outputs/，返回文件 Path。进度按 0-100 报。domain=finstmt 时注入财报分析纪律。"""
     _tick(task_id, 5, "凭索引选页")
-    pages, slugs, reason, _use_index = _select_pages(question, history=None)
+    pages, slugs, reason, _use_index = _select_pages(
+        question, history=None, max_pages=0, soft_pages=REPORT_PAGE_SOFT)
     if not slugs:
         raise ValueError(f"知识库中没有与「{title}」相关的页面，无法生成报告（{reason or '索引无匹配'}）")
-    sel_pages = [p for p in pages if p["slug"] in slugs and p["type"] != "source"]
-    pages_text = "\n\n".join(
-        f"### {p['meta'].get('title', p['slug'])}（slug: {p['slug']}）\n{p['body']}" for p in sel_pages
-    )
+    by_slug = {p["slug"]: p for p in pages}
+    sel_pages = [by_slug[s] for s in slugs
+                 if s in by_slug and by_slug[s]["type"] != "source"][:REPORT_PAGE_HARD]
+    manifest = load_manifest()
+    chunks = []
+    for p in sel_pages:
+        legend = source_priority.page_legend(p, manifest)
+        head = f"### {p['meta'].get('title', p['slug'])}（slug: {p['slug']}）"
+        chunks.append("\n".join(x for x in (head, legend, p["body"]) if x))
+    pages_text = "\n\n".join(chunks)
     _tick(task_id, 25, f"已选 {len(sel_pages)} 页，正在撰写")
     fin = FIN_ANALYSIS_BLOCK if domain == "finstmt" else ""
     messages = [{"role": "user", "content": REPORT_PROMPT

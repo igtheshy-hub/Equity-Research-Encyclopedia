@@ -1,10 +1,11 @@
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 
 from . import config, llm
 
-# 后台任务注册表：所有耗时操作（问答/归类/摄入/审校/修复/报告）都在线程里跑，
+# 后台任务注册表：所有耗时操作（问答/归类/摄入/审校/修复/报告/取数）都在线程里跑，
 # 状态留在服务端，页面切换只靠轮询取快照，互不打断。
 
 _lock = threading.RLock()
@@ -12,7 +13,7 @@ _TASKS = {}
 _ORDER = []
 
 # 这些类型同一时间只允许一个在跑，后来的排队等待
-MUTEX_KINDS = {"classify", "ingest", "audit", "fix", "report", "ai_review"}
+MUTEX_KINDS = {"classify", "ingest", "audit", "fix", "report", "ai_review", "fetch"}
 # 内存里最多保留这么多任务；超出的优先清掉已结束且最老的，不再只等页面确认
 MAX_TASKS = 200
 
@@ -24,6 +25,7 @@ KIND_LABELS = {
     "ai_review": "AI 初审",
     "fix": "修复",
     "report": "报告",
+    "fetch": "取数",
     "delete": "删除原文件",
 }
 
@@ -85,8 +87,11 @@ def _prune_locked():
         _TASKS.pop(old, None)
 
 
-def start(kind, fn, total=1, label="", model=None, timeout_s=None):
+def start(kind, fn, total=1, label="", key=None, model=None, timeout_s=None):
     """起后台线程跑 fn(task_id)。互斥类型若同类在跑，任务先置 waiting 排队，前一个结束自动接续。
+
+    key 用来把互斥范围缩到单个业务对象：研报各阶段传 job id，行业研报和公司研报就各跑各的，
+    只有同一份研报的相邻阶段仍按顺序接续；不传 key 时退回按 kind 全局互斥。
 
     model 是网页下拉选中的模型；线程内部用 llm.use_model 包住，取名/摄入/审校/修复
     这些原先只读 config.json 默认模型的环节也跟问答一样按本次选择走。
@@ -114,7 +119,7 @@ def start(kind, fn, total=1, label="", model=None, timeout_s=None):
         _TASKS[tid] = t
         _ORDER.append(tid)
         _prune_locked()
-        kl = _KIND_LOCKS.get(kind)
+        kl = _lock_for(kind, key)
 
     def _runner():
         acquired = False
@@ -189,6 +194,25 @@ def acknowledge(tid):
             pass
 
 
+def _lock_for(kind, key=None):
+    """按 kind 或 (kind, key) 取互斥锁；key 为空时沿用该类任务的全局锁。"""
+    if key is None:
+        return _KIND_LOCKS.get(kind)
+    with _lock:
+        return _KEY_LOCKS.setdefault((kind, str(key)), threading.Lock())
+
+
+@contextmanager
+def kind_lock(kind):
+    """借用某类任务的互斥锁：取数任务要借取名/摄入锁时用，避免与网页上传线并发写库。"""
+    kl = _KIND_LOCKS.get(kind)
+    if kl is None:
+        yield
+    else:
+        with kl:
+            yield
+
+
 def active_counts():
     with _lock:
         c = {}
@@ -200,3 +224,4 @@ def active_counts():
 
 with _lock:
     _KIND_LOCKS = {k: threading.Lock() for k in MUTEX_KINDS}
+    _KEY_LOCKS = {}

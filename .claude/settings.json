@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/page_check.py",
+            "timeout": 60,
+            "statusMessage": "校验 wiki 页面"
+          }
+        ]
+      }
+    ]
+  }
+}

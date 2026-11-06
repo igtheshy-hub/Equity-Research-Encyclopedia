@@ -1,6 +1,7 @@
 import contextlib
 import contextvars
 import json
+import re
 import time
 
 import httpx
@@ -40,7 +41,7 @@ class _Retryable(Exception):
 
 
 def _is_anthropic(url):
-    # Anthropic 格式端点以 /messages 结尾（火山方舟），OpenAI 兼容端点以 /chat/completions 结尾（智谱等）
+    # Anthropic 格式端点以 /messages 结尾，OpenAI 兼容端点以 /chat/completions 结尾（智谱、DeepSeek 官方）
     return url.rstrip("/").endswith("/messages")
 
 
@@ -162,6 +163,9 @@ def _call(messages, task, prof):
     raise LLMError(f"重试 {max_retries} 次后仍失败: {last}")
 
 
+_NUM_COMMA_RE = re.compile(r"(:\s*)(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?)(?=\s*[,}\]])")
+
+
 def _extract_json(text):
     starts = [i for i in (text.find("{"), text.find("[")) if i != -1]
     if not starts:
@@ -170,7 +174,14 @@ def _extract_json(text):
     end = max(text.rfind("}"), text.rfind("]"))
     if end <= start:
         raise ValueError("JSON 结构不完整")
-    return json.loads(text[start:end + 1])
+    body = text[start:end + 1]
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        # 模型抄财报时偶尔把千分位逗号带进 value（1,234,567.89），JSON 因此截断；
+        # 按千分位分组还原成纯数字再解析一次
+        fixed = _NUM_COMMA_RE.sub(lambda m: m.group(1) + m.group(2).replace(",", ""), body)
+        return json.loads(fixed)
 
 
 def chat(messages, *, task, response_json=False, model=None, json_any=False):

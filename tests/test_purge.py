@@ -307,6 +307,20 @@ def test_duplicate_name():
                                                      dup)), True)
 
 
+def test_duplicate_of_sha():
+    print("未摄入重复件按内容标注：")
+    sandbox()
+    m = ingest.load_manifest()
+    m["files"][0]["sha256"] = ingest.sha256_of(config.ROOT / R1)
+    ingest.save_manifest(m)
+    copy = config.REPORTS_DIR / "汽车" / "研报甲副本.pdf"
+    copy.write_bytes((config.ROOT / R1).read_bytes())
+    rows = {r["name"]: r for r in purge.file_entries()}
+    row = rows["研报甲副本.pdf"]
+    check("按 SHA 标出重复来源", row["duplicate_of"], "研报甲.pdf")
+    check("未摄入行不给摄入时间", bool(row["ingested_at"]), False)
+
+
 def test_rollback():
     print("删除中途失败回滚：")
     sandbox()

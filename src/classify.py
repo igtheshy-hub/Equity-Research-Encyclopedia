@@ -1,5 +1,6 @@
 import datetime as dt
 import hashlib
+import os
 import re
 import shutil
 from pathlib import Path
@@ -9,7 +10,7 @@ from .pdf_extract import SUPPORTED_SUFFIXES, first_text, raw_file_groups
 
 UNSAFE = re.compile(r'[\s\[\]#|/\\:*?"<>\x00-\x1f]')
 
-PROMPT = """你是投研资料归档员。下面是一份 PDF 文件开头几页提取出的文字。判断这份文件属于哪一类，并给出归档信息。
+PROMPT = """你是行业资料归档员。下面是一份 PDF 文件开头几页提取出的文字。判断这份文件属于哪一类，并给出归档信息。
 
 只输出 JSON，不要解释，格式如下：
 {
@@ -35,6 +36,45 @@ def sha256_of(path):
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def find_duplicate(path, include_inbox=False):
+    """在 raw 正式目录里找与 path 内容相同的文件，找不到返回 None。
+
+    先比文件大小，只对大小相同的候选算 SHA256，避免每次下载都重算全库。
+    收件台默认不参与比对：同一批里还没归类的文件不能拿来判重，否则会把
+    尚待取名的文件删掉。
+    """
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        size = p.stat().st_size
+    except OSError:
+        return None
+    dirs = [config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR]
+    if include_inbox:
+        dirs.append(config.INBOX_DIR)
+    target = os.path.normcase(str(p.resolve()))
+    digest = None
+    for directory in dirs:
+        if not directory.exists():
+            continue
+        for cand in directory.rglob("*"):
+            if not cand.is_file() or cand.suffix.lower() not in SUPPORTED_SUFFIXES:
+                continue
+            try:
+                if os.path.normcase(str(cand.resolve())) == target:
+                    continue
+                if cand.stat().st_size != size:
+                    continue
+            except OSError:
+                continue
+            if digest is None:
+                digest = sha256_of(p)
+            if sha256_of(cand) == digest:
+                return cand
+    return None
 
 
 def sanitize(s):
@@ -104,7 +144,20 @@ def target_directory(cls):
     return config.POLICIES_DIR
 
 
-def classify_one(path):
+def classify_one(path, force_kind=None):
+    path = Path(path)
+    dup = find_duplicate(path)
+    if dup is not None:
+        path.unlink(missing_ok=True)
+        return {
+            "ok": True,
+            "duplicate": True,
+            "file": path.name,
+            "renamed": dup.name,
+            "target": dup.relative_to(config.ROOT).as_posix(),
+            "kind": None,
+            "reason": f"内容与已归档文件 {dup.name} 相同，删除收件台副本",
+        }
     content = first_text(path)
     if not content.strip():
         return {"ok": False, "file": path.name, "error": "开头没有提取到文字（疑似扫描版或空文档），未归类，文件留在收件台"}
@@ -113,6 +166,8 @@ def classify_one(path):
         task="classify",
         response_json=True,
     )
+    if force_kind in ("report", "filing", "policy"):
+        cls["kind"] = force_kind  # 取数源已知文件类型（如年报），不受模型误判影响
     if cls.get("kind") not in ("report", "filing", "policy"):
         return {"ok": False, "file": path.name, "error": f"LLM 返回的 kind 不合法: {cls.get('kind')!r}，文件留在收件台"}
     filename = build_filename(cls, path.stem, path.suffix.lower())
@@ -144,7 +199,9 @@ def classify_inbox():
             r = classify_one(p)
         except llm.LLMError as e:
             r = {"ok": False, "file": p.name, "error": str(e)}
-        if r["ok"]:
+        if r.get("duplicate"):
+            print(f"  -> 与 {r['target']} 内容重复，已删除收件台副本")
+        elif r["ok"]:
             print(f"  -> {r['renamed']}  移入 {r['target']}")
             print(f"     依据: {r['reason']}")
         else:

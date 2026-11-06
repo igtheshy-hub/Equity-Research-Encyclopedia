@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import pdfplumber
@@ -39,10 +40,36 @@ def _docx_units(path):
     return units
 
 
+def _sha256_of(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def ocr_cache(path):
+    """扫描版 PDF 的外部 OCR 页级缓存：带 ocr 标记且原文 SHA256 一致才算数。"""
+    if path.suffix.lower() != ".pdf":
+        return None
+    data = load_cached(path)
+    if not data or not data.get("ocr"):
+        return None
+    try:
+        if data.get("sha256") != _sha256_of(path):
+            return None
+    except OSError:
+        return None
+    return data
+
+
 def extract_units(path):
     # 统一产出 [{“n”: 序号, “text”: 文本}]：pdf 按页（序号=页码），docx 按文档块（段落/表格，序号=块号）
     if path.suffix.lower() == ".docx":
         return _docx_units(path)
+    cached = ocr_cache(path)
+    if cached:
+        return cached["units"]
     units = []
     with pdfplumber.open(str(path)) as pdf:
         for i, page in enumerate(pdf.pages, 1):
@@ -99,10 +126,12 @@ def load_cached(path):
 
 
 def extract_to_store(path):
-    # 提取全部单元文本并落盘缓存；扫描版检测仅适用于 pdf
-    units = extract_units(path)
+    # 提取全部单元文本并落盘缓存；扫描版检测仅适用于 pdf。已有 OCR 缓存时沿用并保留标记。
+    cached = ocr_cache(path)
+    units = cached["units"] if cached else extract_units(path)
     unit = unit_kind_of(path)
-    scanned = unit == "page" and avg_valid_chars(units) < config.CFG["ingest"]["min_chars_per_page"]
+    scanned = False if cached else (
+        unit == "page" and avg_valid_chars(units) < config.CFG["ingest"]["min_chars_per_page"])
     config.EXTRACTS_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
         "file": path.name,
@@ -111,6 +140,9 @@ def extract_to_store(path):
         "scanned": scanned,
         "units": units,
     }
+    if cached:
+        payload["ocr"] = True
+        payload["sha256"] = cached["sha256"]
     cache_path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     return units, len(units), scanned, unit
 

@@ -13,12 +13,14 @@ from .. import ai_review as ai_review_mod
 from .. import config, llm, wiki
 from .. import fix as fix_mod
 from .. import page_proposals
+from .. import ingest as ingest_mod
 from .. import purge as purge_mod
 from .. import report as report_mod
+from .. import industry_report, report_distill
 from .. import sessions, tasks
-from .. import ingest as ingest_mod
+from .. import agent_rescue, fetcher
 from ..classify import classify_one, sanitize, unique_target
-from ..pdf_extract import SUPPORTED_SUFFIXES
+from ..pdf_extract import SUPPORTED_SUFFIXES, raw_file_index
 from .render import anchor_pretty, render_md
 
 api = Blueprint("api", __name__)
@@ -154,6 +156,18 @@ def _ask_body(cid, mid, question, history, model):
     if result["kind"] == "report":
         title = result["title"]
         domain = result.get("domain") or "general"
+        if result.get("report_type") in ("industry", "company"):
+            kind = result["report_type"]
+            kind_name = industry_report.KIND_LABELS[kind]
+            try:
+                job = industry_report.start_job(question, title, model=model, domain=domain, kind=kind)
+                sessions.update_message(cid, mid, status="done", kind="report_ack",
+                                        content=f"已开始生成{kind_name}《{title}》，先到报告页确认大纲。",
+                                        report_job=job["id"], report_kind=kind)
+                return {"kind": "report", "report_job": job["id"], "report_kind": kind}
+            except Exception as e:  # 管线起不来就退回内置底稿，不让问答卡死
+                sessions.update_message(cid, mid, status="running", kind="pending",
+                                        content=f"{kind_name}管线启动失败（{e}），改用内置底稿。")
 
         def _report_run(t):
             with llm.use_model(model):
@@ -604,6 +618,60 @@ def api_files_delete():
     return jsonify({"task_id": tid})
 
 
+def _ingest_pick(names):
+    """网页勾选的未摄入文件 → 可摄入路径。收件台、_ 隔离目录与同内容重复件一律拒绝。"""
+    idx = raw_file_index()
+    allowed = (config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR)
+    known = {f.get("sha256"): f.get("file") for f in ingest_mod.load_manifest()["files"]
+             if f.get("sha256")}
+    paths, rejected = [], []
+    for name in names:
+        path = idx.get(name)
+        reason = ""
+        if not path:
+            reason = "找不到文件"
+        elif not any(path.is_relative_to(d) for d in allowed):
+            reason = "只接受 raw/reports、raw/filings、raw/policies 下的文件"
+        elif any(part.startswith("_") for part in path.relative_to(config.RAW_DIR).parts[:-1]):
+            reason = "隔离目录不摄入"
+        else:
+            try:
+                dup = known.get(ingest_mod.sha256_of(path))
+            except OSError as e:
+                reason = f"读取失败：{e}"
+            else:
+                if dup:
+                    reason = f"与已入库文件 {dup} 内容相同，不重复摄入"
+        if reason:
+            rejected.append({"file": name, "reason": reason})
+        else:
+            paths.append(path)
+    return paths, rejected
+
+
+@api.post("/api/files/ingest")
+def api_files_ingest():
+    if err := _require_same_origin():
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    names = [str(n).strip() for n in (data.get("files") or []) if str(n).strip()]
+    if not names:
+        return jsonify({"error": "没有选中要摄入的文件"}), 400
+    paths, rejected = _ingest_pick(names)
+    if not paths:
+        return jsonify({"error": "没有可摄入的文件", "rejected": rejected}), 400
+
+    def run(tid):
+        def progress(i, name):
+            tasks.update(tid, current=i - 1, detail=f"摄入 {name}")
+        results = ingest_mod.run_all(paths, progress=progress)
+        tasks.update(tid, current=len(paths))
+        return {"ingested": len(results), "files": [r.get("file") for r in results]}
+
+    tid = tasks.start("ingest", run, total=len(paths), label=f"摄入 {len(paths)} 份原文件")
+    return jsonify({"task_id": tid, "accepted": [p.name for p in paths], "rejected": rejected})
+
+
 # ---------- 审校与修复 ----------
 
 @api.post("/api/audit/run")
@@ -771,6 +839,169 @@ def api_graph():
     for n in nodes:
         n["inbound"] = inbound.get(n["id"], 0)
     return jsonify({"nodes": nodes, "links": links, "unresolved": unresolved})
+
+
+# ---------- 主动取数 ----------
+
+@api.get("/api/fetch/sources")
+def api_fetch_sources():
+    # items 只给取数页能手动选的源；labels 给缺口清单用的全集，
+    # periodic_report、web_search 这类管线内部补缺口的源也要有中文名
+    labels = {s["id"]: s["label"] for s in fetcher.source_specs()}
+    return jsonify({"items": fetcher.source_specs(only=fetcher.MANUAL_SOURCE_IDS),
+                    "labels": labels})
+
+
+@api.post("/api/fetch")
+def api_fetch_run():
+    if err := _require_same_origin():
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    source = str(data.get("source") or "").strip()
+    specs = {s["id"]: s for s in fetcher.source_specs(only=fetcher.MANUAL_SOURCE_IDS)}
+    if source not in specs:
+        return jsonify({"error": "未知取数源"}), 400
+    params = data.get("params") if isinstance(data.get("params"), dict) else {}
+    tid = tasks.start("fetch", lambda t: fetcher.run_fetch(source, params, t),
+                      label=f"取数·{specs[source]['label']}")
+    return jsonify({"task_id": tid})
+
+
+# ---------- 行业研报管线 ----------
+
+def _job_brief(job):
+    rescuing = agent_rescue.rescue_active(job)
+    label = industry_report.STATUS_LABELS.get(job["status"], job["status"])
+    return {
+        "id": job["id"], "title": job["title"], "status": job["status"],
+        "status_label": f"{label}（救火中）" if rescuing else label,
+        "rescue_active": rescuing,
+        "kind": job.get("kind") or "industry",
+        "kind_label": industry_report.KIND_LABELS.get(job.get("kind"), "行业研报"),
+        "error": job.get("error") or "",
+        "outline_path": job.get("outline_path") or "",
+        "report_path": job.get("report_path") or "",
+        "docx_path": job.get("docx_path") or "",
+        "gaps": job.get("gaps") or [],
+        "candidates_count": job.get("candidates_count") or 0,
+        "updated_at": job.get("updated_at") or "",
+    }
+
+
+@api.get("/api/report/jobs")
+def api_report_jobs():
+    items = industry_report.list_jobs()
+    items.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
+    return jsonify({"items": items})
+
+
+@api.get("/api/report/<jid>")
+def api_report_job(jid):
+    job = industry_report.load_job(jid)
+    if not job:
+        return jsonify({"error": "报告任务不存在"}), 404
+    out = dict(job)
+    out["rescue_active"] = agent_rescue.rescue_active(job)
+    label = industry_report.STATUS_LABELS.get(job["status"], job["status"])
+    out["status_label"] = f"{label}（救火中）" if out["rescue_active"] else label
+    out["kind"] = job.get("kind") or "industry"
+    out["kind_label"] = industry_report.KIND_LABELS.get(out["kind"], "行业研报")
+    out["candidates"] = report_distill.load_candidates(jid)
+    out["pages"] = job.get("pages") or []
+    return jsonify(out)
+
+
+@api.post("/api/report/<jid>/outline")
+def api_report_outline(jid):
+    if err := _require_same_origin():
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    outline_md = data.get("outline_md")
+    try:
+        job = industry_report.approve_outline(jid, outline_md)
+    except KeyError as e:
+        return jsonify({"error": str(e) or "报告任务不存在"}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"job": _job_brief(job)})
+
+
+@api.post("/api/report/<jid>/gaps")
+def api_report_gaps(jid):
+    if err := _require_same_origin():
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    ids = [str(x) for x in (data.get("gap_ids") or [])]
+    try:
+        ret = industry_report.approve_gaps(jid, ids)
+    except KeyError as e:
+        return jsonify({"error": str(e) or "报告任务不存在"}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(ret)
+
+
+@api.post("/api/report/<jid>/continue")
+def api_report_continue(jid):
+    if err := _require_same_origin():
+        return err
+    try:
+        job = industry_report.continue_job(jid)
+    except KeyError as e:
+        return jsonify({"error": str(e) or "报告任务不存在"}), 404
+    return jsonify({"job": _job_brief(job)})
+
+
+@api.post("/api/report/<jid>/candidates/apply")
+def api_report_candidates_apply(jid):
+    if err := _require_same_origin():
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    ids = [str(x) for x in (data.get("candidate_ids") or [])]
+    try:
+        ret = report_distill.apply(jid, ids, industry_report.load_job, industry_report.save_job)
+    except KeyError as e:
+        return jsonify({"error": str(e) or "报告任务不存在"}), 404
+    return jsonify(ret)
+
+
+@api.post("/api/report/<jid>/delete")
+def api_report_delete(jid):
+    if err := _require_same_origin():
+        return err
+    try:
+        ret = industry_report.delete_job(jid)
+    except KeyError as e:
+        return jsonify({"error": str(e) or "报告任务不存在"}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(ret)
+
+
+@api.post("/api/report/<jid>/fallback")
+def api_report_fallback(jid):
+    if err := _require_same_origin():
+        return err
+    job = industry_report.load_job(jid)
+    if not job:
+        return jsonify({"error": "报告任务不存在"}), 404
+
+    def run(t):
+        with llm.use_model(job.get("model")):
+            p = report_mod.generate(job["title"], job["question"], task_id=t,
+                                    domain=job.get("domain") or "general")
+        j = industry_report.load_job(jid) or job
+        j["fallback_path"] = p.relative_to(config.ROOT).as_posix()
+        industry_report.save_job(j)
+        return {"file": p.name}
+
+    rid = tasks.start("report", run, label=f"内置底稿《{job['title']}》")
+    job["status"] = "fallback"
+    job["error"] = ""
+    job["fallback_task"] = rid
+    job.setdefault("log", []).append({"ts": config.now_iso(), "msg": "改走内置四段式底稿"})
+    industry_report.save_job(job)
+    return jsonify({"task_id": rid})
 
 
 # ---------- 任务 ----------

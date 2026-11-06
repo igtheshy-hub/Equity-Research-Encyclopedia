@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src import ask as ask_mod  # noqa: E402
@@ -30,6 +32,20 @@ class FakeLLM:
 def setup(fake):
     ask_mod.llm.chat = fake
     ask_mod.wiki.load_pages = lambda: []
+
+
+_ORIG = (ask_mod.llm.chat, ask_mod.wiki.load_pages)
+
+
+def restore():
+    """把 setup 打的桩还原；不还原会污染同进程的后续测试（wiki.load_pages 变空）"""
+    ask_mod.llm.chat, ask_mod.wiki.load_pages = _ORIG
+
+
+@pytest.fixture(autouse=True)
+def _restore_after():
+    yield
+    restore()
 
 
 def check(label, got, want):
@@ -83,6 +99,22 @@ def test_repair_hallucinated_anchor():
     check("提案为空", p is None, True)
 
 
+def test_multi_company_match_creates_concept_page():
+    print("标题命中多家公司页时新建对比概念页：")
+    fake = FakeLLM(
+        {"new_knowledge": True, "topic": "比亚迪与长安汽车盈利能力对比", "type": "company",
+         "summary": "两家公司盈利能力对比", "lines": [GOOD_LINE]},
+    )
+    setup(fake)
+    ask_mod.wiki.load_pages = lambda: [
+        {"type": "company", "slug": "比亚迪", "meta": {"title": "比亚迪"}},
+        {"type": "company", "slug": "长安汽车", "meta": {"title": "长安汽车"}},
+    ]
+    p = ask_mod._propose_distill("比亚迪和长安汽车盈利能力对比", ANSWER)
+    check("不并入单一公司页", p["action"] if p else None, "create")
+    check("改新建概念页", p["type"] if p else None, "concept")
+
+
 def test_not_new_knowledge():
     print("非新知识直接空提案：")
     fake = FakeLLM({"new_knowledge": False, "topic": "", "type": "concept", "summary": "", "lines": []})
@@ -103,11 +135,13 @@ def test_answer_without_anchors():
 
 
 if __name__ == "__main__":
-    test_repair_round()
-    test_lines_already_anchored()
-    test_repair_hallucinated_anchor()
-    test_not_new_knowledge()
-    test_answer_without_anchors()
+    for fn in (test_repair_round, test_lines_already_anchored,
+               test_repair_hallucinated_anchor, test_not_new_knowledge,
+               test_answer_without_anchors, test_multi_company_match_creates_concept_page):
+        try:
+            fn()
+        finally:
+            restore()
     print()
     if FAILS:
         print(f"FAILED {len(FAILS)}: {'、'.join(FAILS)}")

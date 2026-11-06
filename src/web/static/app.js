@@ -154,8 +154,14 @@ App.doneText = function (t) {
       if (aborted.length) parts.push("整批已中止，未继续删除后面的文件");
       return parts.join("；") || "没有删除任何文件";
     }
+    if (t.kind === "fetch" && r && r.summary) {
+      return App.escapeHtml(r.summary);
+    }
     if (t.kind === "report" && r && r.file) {
       return `报告已生成：<a href="/outputs/${encodeURIComponent(r.file)}" target="_blank" rel="noopener">${App.escapeHtml(r.file)}</a>`;
+    }
+    if (t.kind === "report" && r && r.report_job) {
+      return `阶段完成，<a href="/report#job=${encodeURIComponent(r.report_job)}">去报告页继续</a>`;
     }
     if (t.kind === "audit" && r && r.counts) {
       const c = r.counts;

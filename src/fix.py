@@ -45,7 +45,8 @@ def _fix_merge(action, notes):
     topic = {
         "title": title,
         "type": a["type"],
-        "aliases": [str(x) for x in (a["meta"].get("aliases") or [])],
+        # 旧页名与新页别名都进 aliases，日后按任一名称检索或摄入都能命中保留页
+        "aliases": [title] + [str(x) for x in (a["meta"].get("aliases") or [])],
         "summary": str(a["meta"].get("summary") or ""),
         "sections": wiki.body_to_sections(a["body"]),
     }

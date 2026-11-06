@@ -5,7 +5,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from . import config, llm, wiki
+from . import anchor_match, config, llm, wiki
 from .classify import sha256_of, sanitize
 from .pdf_extract import (SUPPORTED_SUFFIXES, DuplicateFileError, extract_to_store,
                           find_raw_file, unit_kind_of)
@@ -13,16 +13,25 @@ from .pdf_extract import (SUPPORTED_SUFFIXES, DuplicateFileError, extract_to_sto
 # 清单落盘的串行锁：摄入线只追加条目、删除线只删条目，两条线都在锁内 load-modify-save，互不覆盖
 MANIFEST_LOCK = threading.RLock()
 
-COMPILE_PROMPT = """你是投研知识编辑，把一份材料的逐单元文本编译成 wiki 知识条目。单元{UNIT_WORD}，每单元文字前有形如「[第3页]」「[第3段]」的序号标记；锚点格式 {ANCHOR_FORM}，序号必须取该内容所在单元的实际序号。
+COMPILE_PROMPT = """你是行业知识编辑，把一份材料的逐单元文本编译成 wiki 知识条目。单元{UNIT_WORD}，每单元文字前有形如「[第3页]」「[第3段]」的序号标记；锚点格式 {ANCHOR_FORM}，序号必须取该内容所在单元的实际序号。
 
 规则：
 - 只用给定材料，禁止编造，材料里没有的信息不写
 - 每条知识一句话，句尾必须带锚点 {ANCHOR_EXAMPLE}
 - 保留原文关键数字（金额、增速、比率、评级、目标价等），不改口径
 - 营销表述、免责声明、分析师介绍一律丢弃
+- 材料的检索词、来源地址、取数时点、引用提示等元信息不是知识，不写成条目；材料明确说没有的数据，也不写「未给出」条目
 - 主题划分：公司给 type=company，行业给 type=industry，估值方法/政策术语等给 type=concept
 - 主题名与别名用中文规范名（英文材料也译成中文通用名；证券代码等专有缩写可保留英文）
 - 分节只能用这些节名——公司/行业页：公司概况、行业格局、经营与财务、盈利预测、估值、风险提示、其他；概念页：定义与口径、方法要点、政策背景、应用示例、其他
+- 按固定维度清单逐项过材料，命中的提炼归入对应节，材料没写的维度跳过、不硬凑：
+  · 评级、目标价、营收利润销量的预测值及对应年份 → 盈利预测
+  · 估值方法、估值假设、倍数区间 → 估值；方法与测算口径的讲解另立概念页（方法要点）
+  · 市场规模、产销量、价格、份额与集中度、产业链分工 → 行业格局
+  · 公司主业、股权、产品线 → 公司概况；行业界定与发展脉络 → 行业概况
+  · 公司业务进展、项目产能、财务表现 → 经营与财务
+  · 政策条文、法规标准 → 概念页（政策背景）；指标与术语的口径定义 → 概念页（定义与口径）
+  · 风险因素与不确定性 → 风险提示
 - 每个主题给一句不超过 40 字的 summary
 - entities 抄本段材料里出现的主要实体名（公司、行业、技术、材料、产品等名词），只抄原文出现的名称、不做判断，不确定是不是该建页的实体也要列，过滤交给程序与人；没有给空数组
 {FOCUS_RULE}
@@ -61,7 +70,11 @@ MERGE_PROMPT = """现有知识库索引如下（每行：slug | 类型 | 别名�
 def iter_raw_files():
     for d in (config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR):
         for suf in SUPPORTED_SUFFIXES:
-            yield from sorted(d.rglob("*" + suf))
+            for p in sorted(d.rglob("*" + suf)):
+                # 下划线开头的目录是隔离区（如 _rejected：摄入失败的下载件），不进摄入与审校检查
+                if any(part.startswith("_") for part in p.relative_to(d).parts[:-1]):
+                    continue
+                yield p
 
 
 # 兼容旧名（审校未摄入检查等处引用）
@@ -185,13 +198,24 @@ def _safe_type(t):
     return t if t in ("company", "industry", "concept") else "concept"
 
 
-def _valid_lines(lines, fname, unit_kind, count):
-    # 锚点校验：每条必须有锚点且全部指向本文件、单元类型与序号范围正确，违规行丢弃
+# 快照的来源、检索词、取数时点、引用提示是材料元信息，不是知识，编译时直接丢弃
+_META_LINE_RE = re.compile(
+    r"材料检索词|检索日为|检索词[：:]|取数时点|数据来源标注|材料取数|"
+    r"摘录正文(?:未|没有)|正文为网页摘录|引用前请点原网址|本快照由|"
+    r"未给出.{0,20}(?:数值|数据)|未提供.{0,20}(?:数值|数据)"
+)
+
+
+def _valid_lines(lines, fname, unit_kind, count, units=None):
+    # 锚点校验：每条必须有锚点且全部指向本文件、单元类型与序号范围正确；数字还要
+    # 真出现在所挂单元里，挂错页的行先按数字回找正确单元，找不到才丢弃。
     keep, dropped = [], 0
+    texts = [(u.get("n"), u.get("text") or "") for u in (units or [])]
+    prefix = "para" if unit_kind == "para" else "p"
     for ln in lines:
         ln = str(ln).strip()
         ln = ln.removeprefix("- ").strip()
-        if not ln:
+        if not ln or _META_LINE_RE.search(ln):
             continue
         found = wiki.ANCHOR_RE.findall(ln)
         ok = bool(found) and all(
@@ -201,6 +225,18 @@ def _valid_lines(lines, fname, unit_kind, count):
         if not ok:
             dropped += 1
             continue
+        if texts and not re.search(r"[（(]\s*测算\s*[:：]", ln):
+            terms = anchor_match.line_terms(ln)
+            if terms:
+                current = "\n".join(t for n, t in texts
+                                    if n in {wiki.loc_num(loc) for f, loc in found if f == fname})
+                if not anchor_match.unit_covers_terms(current, terms):
+                    best = anchor_match.best_units_for_terms(units, terms, hint_text=ln)
+                    if not best:
+                        dropped += 1
+                        continue
+                    ln = wiki.ANCHOR_RE.sub("", ln).rstrip()
+                    ln += "".join(f"[[{fname}#{prefix}{n}]]" for n in best)
         if ln not in keep:
             keep.append(ln)
     return keep, dropped
@@ -282,7 +318,7 @@ def compile_file(path, units, unit_kind, focus=None, task_id=None, only_entity=N
                 sections = {}
             for s, lines in sections.items():
                 s = str(s).strip() or "其他"
-                keep, dropped = _valid_lines(lines, fname, unit_kind, len(units))
+                keep, dropped = _valid_lines(lines, fname, unit_kind, len(units), units=units)
                 total_dropped += dropped
                 bucket = ex["sections"].setdefault(s, [])
                 for ln in keep:
@@ -330,7 +366,9 @@ def plan_merge(topics, index_entries):
             hit = by_key.get(_norm(key))
             if hit:
                 break
-        if hit and hit["type"] == t["type"]:
+        # 标题或别名完全撞上就并入，不看类型：同一概念被 LLM 判成 industry 或 concept
+        # 都常见，按类型卡会另建一个「xxx-2」平行页，正文重复还各挂各的锚点
+        if hit:
             decisions.append(({"action": "merge", "slug": hit["slug"], "type": hit["type"]}, t))
         else:
             pending.append(t)
@@ -413,8 +451,17 @@ def _apply_merge(page_path, meta, body, topic, extra_sources, note_prefix):
         hist = meta.get("history") or []
         hist.append(f"{config.today_str()} {note_prefix}（+{added} 条）")
         meta["history"] = hist
+        _check_before_write(meta, new_body, page_path)
         wiki.write_page(page_path, meta, new_body)
         return added
+
+
+def _check_before_write(meta, body, path):
+    # 与 Claude 会话写入同一套校验规则；wikilink 存在性由写盘后的 validate_all 兜底
+    from . import wiki_check
+    problems = wiki_check.check_content(meta, body, path, check_wikilinks=False)
+    if problems:
+        raise RuntimeError(f"{path.name} 写盘前校验未通过：{'；'.join(problems)}")
 
 
 def _dir_type(page_path):
@@ -455,12 +502,19 @@ def _apply_create(decision, topic, extra_sources, note_prefix):
         "updated": config.today_str(),
         "history": [f"{config.today_str()} {note_prefix}（{count} 条）"],
     }
-    aliases = [a for a in topic["aliases"] if _norm(a) != _norm(topic["title"])]
+    seen = {_norm(topic["title"])}
+    aliases = []
+    for a in topic["aliases"]:
+        key = _norm(a)
+        if key and key not in seen:
+            seen.add(key)
+            aliases.append(a)
     if aliases:
         meta["aliases"] = aliases
     if topic["summary"]:
         meta["summary"] = topic["summary"]
     body = wiki.render_page(topic["title"], topic["sections"], type_)
+    _check_before_write(meta, body, path)
     wiki.write_page(path, meta, body)
     return path, count
 
@@ -480,7 +534,9 @@ def _write_source_page(path, topic_titles, report_date, entries_count, extra=Non
     links = "、".join(f"[[{t}]]" for t in topic_titles)
     sections = {"材料信息": info, "贡献": [f"贡献主题页：{links}" if links else "贡献主题页：无"]}
     meta = {"title": title, "type": "source", "sources": [rel], "updated": config.today_str()}
-    wiki.write_page(out_path, meta, wiki.render_page(title, sections, "source"))
+    body = wiki.render_page(title, sections, "source")
+    _check_before_write(meta, body, out_path)
+    wiki.write_page(out_path, meta, body)
 
 
 def _tag_focus_pages(touched_titles, focus, focus_hits):
@@ -508,8 +564,30 @@ def _tag_focus_pages(touched_titles, focus, focus_hits):
         print(f"  [关注] {title} 标注 {len(old_hits)} 条命中")
 
 
-def ingest_one(path, manifest, focus=None, task_id=None):
-    focus = focus or []
+def normalize_targets(targets):
+    """目标数据统一成 [{"item", "why"}]：接受字符串、{"item","why"} 与缺字段的字典。"""
+    out = []
+    for t in targets or []:
+        if isinstance(t, dict):
+            item = str(t.get("item") or "").strip()
+            why = str(t.get("why") or "").strip()
+        else:
+            item, why = str(t).strip(), ""
+        if item:
+            out.append({"item": item, "why": why})
+    return out
+
+
+def ingest_one(path, manifest, focus=None, targets=None, task_id=None):
+    focus = [str(x).strip() for x in (focus or []) if str(x).strip()]
+    targets = normalize_targets(targets)
+    # 目标数据同时当关注点用：研报管线补到的研报、政策按目标数据优先提炼
+    known = {t["item"] for t in targets}
+    for f in focus:
+        if f not in known:
+            targets.append({"item": f, "why": "关注点"})
+            known.add(f)
+    focus = focus or [t["item"] for t in targets]
     # 锚点只记文件名：同名多份时整份拒绝摄入，避免旧知识条目指向错误文件
     try:
         found = find_raw_file(path.name)
@@ -521,8 +599,16 @@ def ingest_one(path, manifest, focus=None, task_id=None):
     if found is not None and found != path:
         return {"file": path.name, "error": f"资料库里存在同名文件（{found}），本份拒绝摄入，请先改名"}
     sha = sha256_of(path)
-    if any(f["sha256"] == sha for f in manifest["files"]):
-        print("  已摄入过（SHA256 一致），跳过")
+    dup_entry = next((f for f in manifest["files"] if f["sha256"] == sha), None)
+    if dup_entry:
+        rel = path.relative_to(config.ROOT).as_posix()
+        same_file = dup_entry.get("path") == rel or (
+            not dup_entry.get("path") and dup_entry.get("file") == path.name)
+        if same_file:
+            print("  已摄入过（SHA256 一致），跳过")
+        else:
+            print(f"  重复件（与 {dup_entry.get('path') or dup_entry['file']} 相同），删除")
+            path.unlink(missing_ok=True)
         return None
     dup_name = next((f for f in manifest["files"] if f["file"] == path.name), None)
     if dup_name:
@@ -535,9 +621,16 @@ def ingest_one(path, manifest, focus=None, task_id=None):
         print("  [拒] 未提取到任何文字，不编译")
         return None
     if source_kind(path) == "filing":
-        # 财报走专用流程（结构化科目 + 勾稽 + 派生指标），见 schema/财报摄取-skill.md
+        # 财报走专用流程（结构化科目 + 勾稽 + 派生指标），见 .claude/skills/finstmt-ingest/SKILL.md
         from . import filing as filing_mod
-        return filing_mod.ingest_filing(path, units, unit_kind, manifest, sha, task_id=task_id)
+        try:
+            r = filing_mod.ingest_filing(path, units, unit_kind, manifest, sha, targets=targets,
+                                         task_id=task_id)
+            if focus and r:
+                _tag_focus_pages(r.get("touched") or [], focus, [])
+            return r
+        except filing_mod.UnsupportedFiling as e:
+            print(f"  [财报] {e}")
     compiled = compile_file(path, units, unit_kind, focus=focus, task_id=task_id)
     topics = compiled["topics"]
     existing = wiki.load_pages()
@@ -643,14 +736,46 @@ def finish(manifest, results, new_entries=None):
     return problems
 
 
+def dedupe_raw(manifest):
+    """删除 raw 正式目录里与已摄入文件 SHA256 相同的副本，返回 [(副本, 保留件)]。
+
+    历史上下载层每次重下都会用 -2/-3 或换目录再落一份，摄入层只跳过不清理。
+    这里把清理接到每次摄入前，和归名/下载时的即时去重形成两道闸。
+    """
+    by_path = {f.get("path"): f for f in manifest["files"] if f.get("path")}
+    by_sha = {f["sha256"]: f for f in manifest["files"] if f.get("sha256")}
+    removed = []
+    for p in iter_raw_files():
+        rel = p.relative_to(config.ROOT).as_posix()
+        if rel in by_path:
+            continue
+        try:
+            same = by_sha.get(sha256_of(p))
+        except OSError:
+            continue
+        if same is None:
+            continue
+        keep = same.get("path") or same.get("file") or ""
+        if keep == rel:
+            continue
+        p.unlink(missing_ok=True)
+        removed.append((rel, keep))
+    return removed
+
+
 def run_all(paths, progress=None, focus=None):
     """命令行摄入：逐份处理，每份都重新读一遍最新清单、只追加自己那条（问题 5）。
 
     原来这里是「启动时读一份清单进内存，干完活整体写回」——干活期间用户删了文件，
     删除改的是盘上那份，整体写回会把删除痕迹冲掉，已删材料又"复活"。
     """
+    manifest = load_manifest()
+    removed = dedupe_raw(manifest)
+    if removed:
+        print(f"[去重] 删除 {len(removed)} 个与已摄入文件同内容的副本")
+        wiki.append_log("dedupe", "；".join(f"{d} ← {k}" for d, k in removed))
     results = []
-    paths = list(paths)
+    paths = [p for p in paths if p.exists()]
     focus = focus or []
     collected_new = []
     if focus:

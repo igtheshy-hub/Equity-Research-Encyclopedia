@@ -16,13 +16,22 @@
         "label": "GLM-5.1",
         "provider": "智谱",
         "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-        "model": "glm-5.1"
+        "model": "glm-5.1",
+        "anthropic": {
+          "base_url": "https://open.bigmodel.cn/api/anthropic",
+          "model": "glm-5.1"
+        }
       },
-      "deepseek-v4.1-flash": {
-        "label": "DeepSeek-V4.1-Flash",
-        "provider": "火山方舟",
-        "base_url": "https://ark.cn-beijing.volces.com/api/plan/v1/messages",
-        "model": "deepseek-v4.1-flash"
+      "deepseek-v4-flash": {
+        "label": "DeepSeek-V4-Flash",
+        "provider": "DeepSeek官方",
+        "base_url": "https://api.deepseek.com/chat/completions",
+        "model": "deepseek-v4-flash",
+        "extra_body": {"thinking": {"type": "disabled"}},
+        "anthropic": {
+          "base_url": "https://api.deepseek.com/anthropic",
+          "model": "deepseek-v4-pro"
+        }
       }
     }
   },
@@ -35,7 +44,11 @@
     "compile": 0.2,
     "filing": 0.0,
     "answer": 0.2,
-    "summary": 0.3
+    "summary": 0.3,
+    "outline": 0.2,
+    "report_write": 0.2,
+    "af_classify": 0.0,
+    "review": 0.1
   },
   "ask": {
     "max_pages": 8,
@@ -51,5 +64,15 @@
     "page_proposal_threshold": 3,
     "filing_check_tol": 0.005,
     "task_timeout_s": 7200
+  },
+  "fetcher": {
+    "macro_python": "C:/Users/DELL/anaconda3/envs/macro-data/python.exe",
+    "timeout_s": 30,
+    "delay_s": 1.5,
+    "eastmoney_max": 3
+  },
+  "report_pipeline": {
+    "max_charts": 8,
+    "max_sections": 9
   }
 }

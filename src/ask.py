@@ -1,6 +1,6 @@
 import re
 
-from . import anchor_verify, config, llm, wiki
+from . import anchor_verify, config, llm, source_priority, wiki
 from .ingest import _apply_create, _apply_merge, load_manifest
 from .pdf_extract import extract_to_store, load_cached, raw_file_index
 
@@ -11,12 +11,18 @@ REFUSAL = "知识库中未找到与该问题相关的页面，无法回答。"
 # 按特征剔除：连续>=8个可打印 ASCII 且不含空格、非字母数字占比>=0.4、含>=2个正文罕见符号。
 # 锚点（#p11 只含1个罕见符号）、markdown 表格线（|-不在罕见集）不受影响。
 _GLITCH_RARE = set("<>=?!#%&@~^$\\")
+# 同环比这类数字对「+34.4%/-4.7%」也满足乱码特征（ASCII、标点多、两个%），
+# 不能按乱码删掉；纯数字与千分位、正负号、百分号、斜杠组成的片段一律保留
+_NUMERIC_RUN_RE = re.compile(
+    r"^[+\-−±]?\d[\d,.]*(?:%|pct|个百分点)?(?:/[+\-−±]?\d[\d,.]*(?:%|pct|个百分点)?)*$")
 
 
 def strip_glitch(text):
     out, pos = [], 0
     for m in re.finditer(r"[\x21-\x7e]{8,}", text):
         seg = m.group()
+        if _NUMERIC_RUN_RE.match(seg.strip("[]")):
+            continue
         punct = sum(1 for c in seg if not c.isalnum())
         rare = sum(1 for c in seg if c in _GLITCH_RARE)
         if punct * 10 >= len(seg) * 4 and rare >= 2:
@@ -26,12 +32,14 @@ def strip_glitch(text):
     return "".join(out)
 
 INTENT_PROMPT = """判断用户这条消息的意图与领域，只输出 JSON：
-{"intent": "chat 或 report", "title": "report 时给一个不超过 16 字的报告标题，chat 给空字符串", "domain": "finstmt 或 general"}
+{"intent": "chat 或 report", "title": "report 时给一个不超过 16 字的报告标题，chat 给空字符串", "domain": "finstmt 或 general", "report_type": "industry、company 或 builtin", "method": "earnings、comps、both 或 none"}
 
 chat = 普通问答、追问、信息咨询，包括「怎么样/多少/为什么/怎么看/什么观点/对比一下」这类问法。
 report = 用户明确要求生成一份可保存的成文档交付物，措辞中带有「写一份/生成一份/帮我出一份/做一份报告/对比分析报告/财务报告」等明确的成文动作。只是打听情况、数据或观点，哪怕话题很专业，也算 chat。
 finstmt = 问题涉及财务报表数据的分析理解：比率、盈利、毛利、现金流、资产负债、ROE/ROA/ROIC、偿债、周转（应收/存货/应付账款天数）、营收利润增速、财报地雷或造假嫌疑、审计意见等。只要问题需要读报表数字才能回答就算 finstmt，漏判比误判伤害大，拿不准给 finstmt。
 general = 其余所有问题。
+report_type = 只在 intent=report 时有意义：写某一行业的研报（行业研报、行业深度、行业月报、行业专题）给 industry；写单一一家公司的研究报告（公司深度、公司研究、个股研报）给 company；多公司对比分析、财务分析报告、快速数据底稿、其他报告给 builtin。拿不准给 builtin。
+method = 只在 intent=chat 时有意义，判断回答该问题该用哪种分析框架：业绩点评、季报中报年报解读、业绩超预期或不及预期、单期经营数据拆解给 earnings；可比公司、同业估值对比、相对估值、估值溢价折价、对标给 comps；两者都明显涉及给 both；其余给 none。拿不准给 none，不要为了专业感硬套框架。
 
 用户消息：{Q}"""
 
@@ -40,19 +48,21 @@ SELECT_PROMPT = """你是知识库检索员。下面是知识库索引（每行�
 
 {HISTORY}用户问题：{Q}
 
-选出回答该问题所需的页面，最多 {MAXP} 页，宁缺毋滥；问题与所有页面主题都不相关时给空数组。slug 必须来自索引。
+选出回答该问题所需的页面，{MAXRULE}，宁缺毋滥；问题与所有页面主题都不相关时给空数组。slug 必须来自索引。
 问题问的是知识库自身整体情况（库里都有什么、是否都属于某行业、覆盖哪些主题、有多少页面），或需要横跨大部分页面做总览、不针对某个具体页面时，use_index 给 true 且 selected 给空数组，这类问题将直接用索引作答。
 只输出 JSON：{"selected": ["slug", ...], "use_index": true 或 false, "reason": "一句话理由"}"""
 
-ANSWER_PROMPT = """你是投研知识库的问答员，只能用给定页面内容回答。
+ANSWER_PROMPT = """你是行业知识库的问答员，只能用给定页面内容回答。
 
 规则：
 - 只用给定页面内容，禁止使用你自己的知识补全
 - 每个陈述句句尾带锚点 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]]，锚点只能引用给定页面中出现过的来源文件
 - 页面没有的信息，明说「知识库中没有该信息」
 - 不允许出现没有任何锚点的数据性陈述
+- 公司财务数据的来源优先级：财报（年报、半年报、季报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
 - 回答用中文，markdown 格式
 {FIN}
+{METHOD}
 {HISTORY}--- 页面内容开始 ---
 {PAGES}
 --- 页面内容结束 ---
@@ -62,14 +72,13 @@ ANSWER_PROMPT = """你是投研知识库的问答员，只能用给定页面内�
 输出前自检：正文每个含数据的句子句尾是否都带了 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]] 锚点？锚点只能取自上方页面里出现过的来源文件。倒金字塔第一屏的判断句同样要带锚点，不能只写「（依据：…）」而不挂锚点。有缺的补上再输出。"""
 
 # 索引直答：问题针对知识库整体时用，索引无页码故不允许锚点
-INDEX_ANSWER_PROMPT = """你是投研知识库的问答员，用户问的是知识库自身的整体情况（覆盖范围、内容构成、页面数量等）或跨页总览，只能用给定的知识库总索引回答（每行：slug | 类型 | 别名 | 摘要）。
+INDEX_ANSWER_PROMPT = """你是行业知识库的问答员，用户问的是知识库自身的整体情况（覆盖范围、内容构成、页面数量等）或跨页总览，只能用给定的知识库总索引回答（每行：slug | 类型 | 别名 | 摘要）。
 
 规则：
 - 只用索引信息回答，禁止使用你自己的知识补全
-- 索引没有的信息，明说「知识库索引中看不出」
 - 提到具体条目时用页面名（如「比亚迪」「智能汽车」），不用 slug
 - 索引不含页码，回答中不允许出现任何 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]] 形式的锚点
-- 索引信息不足以回答时，只输出 UNANSWERABLE 一个词，不输出其他内容
+- 索引信息不足以回答时，只输出 UNANSWERABLE 一个词，不输出其他内容；不要写「索引中看不出」之类的说明句
 - 回答用中文，markdown 格式
 {HISTORY}--- 知识库索引开始 ---
 {INDEX}
@@ -77,9 +86,10 @@ INDEX_ANSWER_PROMPT = """你是投研知识库的问答员，用户问的是知�
 
 用户问题：{Q}"""
 
-# 财报分析类问题的附加纪律，浓缩自 schema/财报问答-skill.md v1.1；{FIN} 占位符按 domain 注入
+# 财报分析类问题的附加纪律，浓缩自 .claude/skills/finstmt-qa v1.1；{FIN} 占位符按 domain 注入
 FIN_ANALYSIS_BLOCK = """
 本次问题属财报分析类，再遵守以下纪律（方法论来源：financial-statement-reading skill，张明辉、Berman 等三本书整合）：
+- 公司财务数据的来源优先级：财报（年报、半年报、季报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
 - 呈现顺序倒金字塔：第一屏直接回答用户问题。问单一数据或事实时直接给数带口径；问分析、评价、风险类问题时，先给 3-5 条一句话判断（每条独立一行，句后括注一句依据），再给综合结论，六步框架的详细盘点放在其后展开，展开部分不重复抄写判断清单里已给的数字
 - 先盘点给定内容中已有的财报数据再下判断：wiki 页面里的【数据】行是报表原值、【指标】行是固定口径的派生值、【管理层】行是原文摘录；原始材料则直接读报表数字。数据缺失的项明说「无法核验」，不用自身知识补
 - 引用任何指标必须带口径标签与报告期（如 ROE(归母平均)@2025FY），中途换口径必须说明理由
@@ -100,6 +110,7 @@ DISTILL_PROMPT = """判断这次问答是否产生了值得沉淀进知识库的
 lines 规则：
 - 每行句尾必须带至少一个锚点，格式 [[文件名.pdf#p页码]] 或 [[文件名.docx#para段落号]]，只能原样复用答案中已出现的锚点，禁止新造；判断句综合多个数据、无法精确对应单个数据点时，挂到支撑该判断最核心的数据所在锚点
 - 答案中属财报分析判断的行以【观点】前缀开头（格式：【观点】报告期 判断句，报告期如 2025FY），普通事实结论不加前缀
+- 比较两家及以上公司的结论，type 填 concept（新建对比概念页），不要填 company
 
 问题：{Q}
 答案：{A}"""
@@ -114,7 +125,7 @@ ANCHOR_REPAIR_PROMPT = """下面这些结论句要沉淀进知识库，但句尾
 结论句：
 {LINES}"""
 
-RAW_SUGGEST_PROMPT = """用户在投研知识库里提问，但知识库页面无法回答。下面是 raw 原始资料库的文件清单（每行：文件名 | 相对路径 | 已摄入页的一句话摘要或「未摄入」）：
+RAW_SUGGEST_PROMPT = """用户在行业知识库里提问，但知识库页面无法回答。下面是 raw 原始资料库的文件清单（每行：文件名 | 相对路径 | 已摄入页的一句话摘要或「未摄入」）：
 {FILES}
 
 判断哪些文件可能含有能回答该问题的内容。只依据文件名与摘要判断，宁缺毋滥，最多给 5 个；都不可能就给空数组。
@@ -122,15 +133,17 @@ RAW_SUGGEST_PROMPT = """用户在投研知识库里提问，但知识库页面�
 
 用户问题：{Q}"""
 
-DEEP_ANSWER_PROMPT = """你是投研助手，只能用给定的原始材料片段回答，这些片段来自尚未入库的 raw 原始文件。
+DEEP_ANSWER_PROMPT = """你是行业研究助手，只能用给定的原始材料片段回答，这些片段来自尚未入库的 raw 原始文件。
 
 规则：
 - 只用给定片段，禁止编造，材料片段没有的信息明说「所给材料中没有该信息」
 - 每个陈述句句尾带锚点：PDF 片段用 [[文件名.pdf#p页码]]，Word 片段用 [[文件名.docx#para段落号]]，页码/段落号取片段标记中的序号
 - 片段标记形如「[文件名 | 第3页]」，请原样使用其中的文件名与序号
 - 不允许出现没有任何锚点的数据性陈述
+- 公司财务数据的来源优先级：财报（年报、半年报、季报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
 - 回答用中文，markdown 格式
 {FIN}
+{METHOD}
 {HISTORY}--- 材料片段开始 ---
 {UNITS}
 --- 材料片段结束 ---
@@ -151,6 +164,70 @@ def _history_block(history):
     return "\n".join(lines) + "\n\n"
 
 
+# 业绩点评与可比公司两个问答框架，取自研报技能的 references，只注入标记段，不加载全文
+QA_REFERENCES_DIR = config.ROOT / ".claude" / "skills" / "industry-report" / "references"
+QA_FRAMEWORK_FILES = {
+    "earnings": QA_REFERENCES_DIR / "report-structure.md",
+    "comps": QA_REFERENCES_DIR / "comps-analysis.md",
+}
+QA_FRAMEWORK_RE = re.compile(r"<!-- QA-FRAMEWORK:START -->(.*?)<!-- QA-FRAMEWORK:END -->", re.S)
+_QA_FRAMEWORK_CACHE = {}
+
+_EARNINGS_KEYS = ("业绩点评", "财报点评", "季报点评", "中报点评", "年报点评", "业绩快报",
+                  "业绩预告", "三季报", "半年报", "一季报", "超预期", "不及预期",
+                  "低于预期", "高于预期")
+_COMPS_KEYS = ("可比公司", "同业", "可比", "估值对比", "相对估值", "估值溢价",
+               "估值折价", "对标", "peer", "comps")
+
+
+def _keyword_method(question):
+    q = str(question or "").lower()
+    earnings = any(k in q for k in _EARNINGS_KEYS)
+    comps = any(k in q for k in _COMPS_KEYS)
+    if earnings and comps:
+        return "both"
+    if earnings:
+        return "earnings"
+    if comps:
+        return "comps"
+    return ""
+
+
+def _merge_method(method, question):
+    """模型判定的框架与关键词命中合并，宁可多给一个组织顺序，不硬套事实。"""
+    kw = _keyword_method(question)
+    if not kw:
+        return method
+    if not method:
+        return kw
+    return "both" if method != kw else method
+
+
+def _method_block(method):
+    if method not in ("earnings", "comps", "both"):
+        return ""
+    parts = []
+    for name in ("earnings", "comps"):
+        if method not in (name, "both"):
+            continue
+        text = _QA_FRAMEWORK_CACHE.get(name)
+        if text is None:
+            try:
+                raw = QA_FRAMEWORK_FILES[name].read_text(encoding="utf-8")
+                hit = QA_FRAMEWORK_RE.search(raw)
+                text = hit.group(1).strip() if hit else ""
+            except OSError:
+                text = ""
+            _QA_FRAMEWORK_CACHE[name] = text
+        if text:
+            parts.append(text)
+    if not parts:
+        return ""
+    return ("本次问题按下面的答题框架组织。框架只给组织顺序，不给事实与数字；"
+            "所有事实、数据、评级与目标价仍只能来自给定页面，句尾按上文规则带锚点。\n\n"
+            + "\n\n".join(parts))
+
+
 def _detect_intent(question):
     try:
         out = llm.chat(
@@ -159,11 +236,13 @@ def _detect_intent(question):
             response_json=True,
         )
     except llm.LLMError:
-        return "chat", "", "general"
+        return "chat", "", "general", "builtin", _keyword_method(question)
     domain = "finstmt" if out.get("domain") == "finstmt" else "general"
+    report_type = out.get("report_type") if out.get("report_type") in ("industry", "company") else "builtin"
     if out.get("intent") == "report":
-        return "report", str(out.get("title") or "").strip()[:16] or "未命名报告", domain
-    return "chat", "", domain
+        return "report", str(out.get("title") or "").strip()[:16] or "未命名报告", domain, report_type, ""
+    method = out.get("method") if out.get("method") in ("earnings", "comps", "both") else ""
+    return "chat", "", domain, "builtin", _merge_method(method, question)
 
 
 # 带单位的数据陈述（「营收 50 亿元」「净息差 1.42%」这类）——用来判断答案里有没有需要出处的数据
@@ -303,7 +382,21 @@ def _allowed_from_pages(sel_pages):
     return allowed
 
 
-def _select_pages(question, history):
+# 研报选页：提示词给软上限，代码再兜底硬上限。只写「不限页数」会被模型理解成全选，
+# 宇通一次选中 261/322 个非来源页，把每节成文提示词撑爆
+REPORT_PAGE_SOFT = 20
+REPORT_PAGE_HARD = 30
+
+
+def _max_pages_rule(max_pages=None, soft_pages=None):
+    """选页提示词里的页数规则；soft_pages 给软上限，max_pages=0 表示不限。"""
+    if soft_pages:
+        return f"不设固定上限，通常不超过 {int(soft_pages)} 页"
+    limit = config.CFG["ask"]["max_pages"] if max_pages is None else int(max_pages)
+    return "不限页数" if limit <= 0 else f"最多 {limit} 页"
+
+
+def _select_pages(question, history, max_pages=None, soft_pages=None):
     pages, entries = _index_pages()
     if not entries:
         return pages, [], "", False
@@ -313,7 +406,7 @@ def _select_pages(question, history):
           .replace("{INDEX}", idx_text)
           .replace("{HISTORY}", _history_block(history))
           .replace("{Q}", question)
-          .replace("{MAXP}", str(config.CFG["ask"]["max_pages"]))}],
+          .replace("{MAXRULE}", _max_pages_rule(max_pages, soft_pages))}],
         task="select",
         response_json=True,
     )
@@ -451,7 +544,7 @@ def deep_ask(question, history=None, files=None):
     result = {"kind": "answer", "deep": True, "question": question,
               "step1": {"selected": [], "reason": reason},
               "answer_md": "", "validation": {"ok": True, "violations": []}, "proposal": None}
-    _, _, domain = _detect_intent(question)
+    _, _, domain, _, method = _detect_intent(question)
     pieces, allowed = _collect_deep_units(question, files=files)
     if not pieces:
         result["answer_md"] = "没有从 raw 文件提取到可用于回答的文字（可能均为扫描版或文件已移走）。"
@@ -459,6 +552,7 @@ def deep_ask(question, history=None, files=None):
     fin = FIN_ANALYSIS_BLOCK if domain == "finstmt" else ""
     messages = [{"role": "user", "content": DEEP_ANSWER_PROMPT
                  .replace("{FIN}", fin)
+                 .replace("{METHOD}", _method_block(method))
                  .replace("{HISTORY}", _history_block(history))
                  .replace("{UNITS}", "\n\n".join(pieces))
                  .replace("{Q}", question)}]
@@ -484,9 +578,10 @@ def ask(question, history=None, propose=True):
     result = {"kind": "answer", "question": question,
               "step1": {"selected": [], "reason": ""},
               "answer_md": "", "validation": {"ok": True, "violations": []}, "proposal": None}
-    intent, title, domain = _detect_intent(question)
+    intent, title, domain, report_type, method = _detect_intent(question)
     if intent == "report":
-        return {"kind": "report", "question": question, "title": title, "domain": domain}
+        return {"kind": "report", "question": question, "title": title, "domain": domain,
+                "report_type": report_type}
 
     pages, slugs, reason, use_index = _select_pages(question, history)
     result["step1"] = {"selected": slugs, "reason": reason}
@@ -518,12 +613,17 @@ def ask(question, history=None, propose=True):
         return result
 
     sel_pages = [p for p in pages if p["slug"] in slugs and p["type"] != "source"]
-    pages_text = "\n\n".join(
-        f"### {p['meta'].get('title', p['slug'])}（slug: {p['slug']}）\n{p['body']}" for p in sel_pages
-    )
+    manifest = load_manifest()
+    chunks = []
+    for p in sel_pages:
+        legend = source_priority.page_legend(p, manifest)
+        head = f"### {p['meta'].get('title', p['slug'])}（slug: {p['slug']}）"
+        chunks.append("\n".join(x for x in (head, legend, p["body"]) if x))
+    pages_text = "\n\n".join(chunks)
     fin = FIN_ANALYSIS_BLOCK if domain == "finstmt" else ""
     messages = [{"role": "user", "content": ANSWER_PROMPT
                  .replace("{FIN}", fin)
+                 .replace("{METHOD}", _method_block(method))
                  .replace("{HISTORY}", _history_block(history))
                  .replace("{PAGES}", pages_text)
                  .replace("{Q}", question)}]
@@ -598,22 +698,34 @@ def _propose_distill(question, answer):
         "target_title": "",
         "target_type": "",
     }
-    # 命中已有页则改为 merge（应用时按 slug 重新定位，防止这期间页面变化）
+    # 命中已有页则改为 merge（应用时按 slug 重新定位，防止这期间页面变化）。
+    # 标题同时命中多个页面说明是跨页对比，不能按页序并进其中一家，改新建对比概念页。
+    matches = []
     for p in wiki.load_pages():
         t = str(p["meta"].get("title") or p["slug"])
         if p["type"] != ptype:
             continue
         if t == proposal["title"] or t in proposal["title"] or proposal["title"] in t:
-            proposal["action"] = "merge"
-            proposal["target_slug"] = p["slug"]
-            proposal["target_title"] = t
-            proposal["target_type"] = p["type"]
-            break
+            matches.append((p, t))
+    if len(matches) == 1:
+        p, t = matches[0]
+        proposal["action"] = "merge"
+        proposal["target_slug"] = p["slug"]
+        proposal["target_title"] = t
+        proposal["target_type"] = p["type"]
+    elif len(matches) > 1:
+        proposal["action"] = "create"
+        if ptype == "company":
+            proposal["type"] = "concept"
     return proposal
 
 
-def apply_distill(proposal, chosen_lines=None):
-    """把提案（可只取部分行）写入 wiki，返回 {page, action, lines}。【观点】行进「分析观点」节。"""
+def apply_distill(proposal, chosen_lines=None, note_prefix="会话中提取"):
+    """把提案（可只取部分行）写入 wiki，返回 {page, action, lines}。
+
+    【观点】/【个人观点】行进「分析观点」节；【数据】/【指标】行进「经营与财务」节；
+    note_prefix 区分来源（会话提取 / 报告沉淀）。
+    """
     lines = list(proposal["lines"])
     if chosen_lines:
         keep = [ln for ln in chosen_lines if ln in lines]
@@ -622,7 +734,12 @@ def apply_distill(proposal, chosen_lines=None):
         lines = keep
     sections = {}
     for ln in lines:
-        bucket = "分析观点" if ln.startswith("【观点】") else "其他"
+        if ln.startswith(("【观点】", "【个人观点】")):
+            bucket = "分析观点"
+        elif ln.startswith(("【数据】", "【指标】")) and proposal.get("type") in ("company", "industry"):
+            bucket = "经营与财务"
+        else:
+            bucket = "其他"
         sections.setdefault(bucket, []).append(ln)
     topic = {
         "title": proposal["title"],
@@ -642,11 +759,11 @@ def apply_distill(proposal, chosen_lines=None):
     extra_sources = [path_of[f] for f in sorted(anchor_files) if f in path_of]
     question = proposal.get("question") or ""
     if hit:
-        _apply_merge(hit["path"], hit["meta"], hit["body"], topic, extra_sources, "会话中提取")
+        _apply_merge(hit["path"], hit["meta"], hit["body"], topic, extra_sources, note_prefix)
         ret = {"page": hit["slug"], "action": "merge", "lines": len(lines)}
     else:
         decision = {"action": "create", "type": topic["type"]}
-        path, count = _apply_create(decision, topic, extra_sources, "会话中提取新建")
+        path, count = _apply_create(decision, topic, extra_sources, f"{note_prefix}新建")
         ret = {"page": path.stem, "action": "create", "lines": count}
     wiki.rebuild_index_md(wiki.load_pages())
     # 沉淀的新行也可能提到其他页面，一并补双链（幂等，无改动时零开销）
@@ -655,5 +772,5 @@ def apply_distill(proposal, chosen_lines=None):
         cross_link_all()
     except Exception:
         pass
-    wiki.append_log("ask", f"会话中提取新知识到 {ret['page']}（{ret['lines']} 条）：{question}")
+    wiki.append_log("ask", f"{note_prefix}新知识到 {ret['page']}（{ret['lines']} 条）：{question}")
     return ret

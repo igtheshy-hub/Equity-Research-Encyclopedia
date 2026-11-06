@@ -1,34 +1,21 @@
 # 密钥（安全红线，绝不入库）
 .env
 
-# 原始资料：研报/财报/政策原文有版权，不入公开仓库
+# 知识库内容层：原始资料有版权，wiki 页面是个人库编译产物；
+# fork 者得到的是空知识库，自行摄入自建
 raw/
-data/reports/
-data/exports/
-data/pdf_cache/
+wiki/
 
 # 每个人的知识库与运行数据都是本地私有的：新克隆后应为空，
 # 不把别人的 wiki、会话、日志、材料清单带进来
-wiki/
 data/
+
+# 报告产出：成品密集引用库内研报数据，且含 Word/图表二进制，不入库
 outputs/
 
-# 本地运行日志与虚拟环境
-*.log
-.venv/
-*.egg-info/
-.pytest_cache/
-
-# 运行期数据库与缓存（本地状态，不该进仓库）
-data/*.sqlite
-data/*.sqlite3
-data/*.db
-data/*.sqlite-journal
-data/*.sqlite-wal
-data/*.sqlite-shm
-
-# 网页本地运行状态（收件台/摄入页的最近结果）
-data/ui_state.json
+# 浏览器自动化调试产物
+.playwright-mcp/
+report-after-reload.yml
 
 # 运行期产物：审校输出、报告生成物、锚点复核清单、模型调用流水
 outputs/
