@@ -116,7 +116,7 @@ def test_confirm_builds_real_page():
         "entities": [], "entity_type": {},
         "topics": [{"title": "达利电子", "type": "company", "aliases": [], "summary": "电感代工小厂",
                     "sections": {"公司概况": [f"达利电子是全球电感代工前五 [[{REPORT_NAME}#p1]]",
-                                             f"2025 年营收 12 亿元 [[{REPORT_NAME}#p2]]"]}}],
+                                             f"行业销量增速 12% [[{REPORT_NAME}#p2]]"]}}],
     })
     ret = page_proposals.build_page("达利电子", "company")
     check("建页返回条数", ret["entries"], 2)

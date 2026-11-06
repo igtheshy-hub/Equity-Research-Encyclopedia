@@ -31,3 +31,28 @@ def validate_all():
         if f"{p['slug']}.md" not in idx:
             problems.append(f"{p['path'].name}: 未收录进 index.md")
     return problems
+
+
+def validate_hints():
+    """全库校验的提示（非错误）：解析只会命中其中一页时提醒用户。
+
+    别名/标题在多页重复不报错——resolve_target 按 load_pages 顺序取先建的那页，
+    但用户应该知道 [[X]] 会跳到哪、另一页为什么收不到这条入链。
+    """
+    pages = wiki.load_pages()
+    seen = {}  # 规范名 → (首个显示名, [页面标题, ...])；页面去重（页内 aliases 可能重复）
+    hints = []
+    for p in pages:
+        title = str(p["meta"].get("title") or p["slug"])
+        for x in [title] + wiki.page_aliases(p["meta"]):
+            n = wiki._norm_name(x)
+            if not n:
+                continue
+            if n not in seen:
+                seen[n] = (x, [])
+            if title not in seen[n][1]:
+                seen[n][1].append(title)
+    for disp, titles in seen.values():
+        if len(titles) > 1:
+            hints.append(f"别名「{disp}」同时出现在页面 {'、'.join(titles)}，链接只会跳到先建的那页")
+    return hints
