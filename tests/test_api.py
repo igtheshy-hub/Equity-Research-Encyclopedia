@@ -45,6 +45,7 @@ def test_csrf_guard_covers_state_changing_endpoints():
         ("/api/upload", {}),
         ("/api/files/delete", {"files": ["x.pdf"]}),
         ("/api/audit/run", {}),
+        ("/api/audit/ai-review", {}),
         ("/api/audit/fix", {"actions": []}),
         ("/api/distill/apply", {"applies": []}),
         ("/api/distill/propose", {}),

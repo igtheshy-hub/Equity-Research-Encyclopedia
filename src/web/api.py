@@ -9,8 +9,10 @@ from flask import Blueprint, jsonify, make_response, request
 
 from .. import ask as ask_mod
 from .. import audit as audit_mod
+from .. import ai_review as ai_review_mod
 from .. import config, llm, wiki
 from .. import fix as fix_mod
+from .. import page_proposals
 from .. import purge as purge_mod
 from .. import report as report_mod
 from .. import sessions, tasks
@@ -397,6 +399,76 @@ def api_distill_apply():
     return jsonify({"results": results})
 
 
+# ---------- 待建页提案 ----------
+
+@api.get("/api/page-proposals/pending")
+def api_page_proposals_pending():
+    """只读查询，不改变任何状态（语义同蒸馏提案的 pending）。"""
+    return jsonify({
+        "items": page_proposals.pending_items(),
+        "threshold": page_proposals.threshold(),
+    })
+
+
+@api.post("/api/page-proposals/defer")
+def api_page_proposals_defer():
+    """稍后处理：只把提醒推迟一段时间（默认 24h），不丢提案。"""
+    if err := _require_same_origin():
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    name = str(data.get("name") or "").strip()
+    if not name or page_proposals.defer(name) is None:
+        return jsonify({"error": "提案不存在"}), 404
+    return jsonify({"ok": True})
+
+
+@api.post("/api/page-proposals/dismiss")
+def api_page_proposals_dismiss():
+    """不再提醒：只有用户明确点这个按钮才永久消失。"""
+    if err := _require_same_origin():
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    name = str(data.get("name") or "").strip()
+    if not name or page_proposals.dismiss(name) is None:
+        return jsonify({"error": "提案不存在"}), 404
+    return jsonify({"ok": True})
+
+
+@api.post("/api/page-proposals/confirm")
+def api_page_proposals_confirm():
+    """确认建页：逐项起 mini 摄入后台任务（类型与摄入互斥排队，可取消、有进度）。
+
+    成功标 done（不再重复出现）；失败回 pending 并附原因，处理后可重试。
+    """
+    if err := _require_same_origin():
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    items = [x for x in (data.get("items") or [])
+             if isinstance(x, dict) and str(x.get("name") or "").strip()]
+    if not items:
+        return jsonify({"error": "没有勾选任何建页建议"}), 400
+    results = []
+    for x in items:
+        name = str(x.get("name")).strip()
+        etype = str(x.get("entity_type") or "concept")
+        if page_proposals.mark_building(name) is None:
+            results.append({"ok": False, "name": name, "error": "提案不存在或已处理"})
+            continue
+
+        def run(t, name=name, etype=etype):
+            try:
+                ret = page_proposals.build_page(name, etype, task_id=t)
+                page_proposals.mark_done(name)
+                return ret
+            except Exception as e:
+                page_proposals.mark_pending(name, _safe_error(e, "建页失败"))
+                raise
+
+        tid = tasks.start("ingest", run, label=f"建页：{name}")
+        results.append({"ok": True, "name": name, "task_id": tid})
+    return jsonify({"results": results})
+
+
 # ---------- 上传与摄入链 ----------
 
 def _pipeline(names, focus=None):
@@ -558,13 +630,83 @@ def _ts_pretty(ts):
         return ""
 
 
+_TS_RE = re.compile(r"^\d{8}-\d{6}$")
+
+
+@api.get("/api/audit/reports")
+def api_audit_reports():
+    """审校报告清单（含 AI 初审版），供审校页动态陈列。
+
+    每次新报告跑完前端重取一次即可，不再依赖整页刷新；
+    摘要计数从 data/ 里的结构化结果读，读不到就不显示摘要。
+    """
+    items = []
+    for p in config.OUTPUTS_DIR.glob("audit-*.md"):
+        kind = "ai_review" if "-ai-" in p.name else "audit"
+        ts = p.name.removeprefix("audit-").removeprefix("ai-").removesuffix(".md")
+        entry = {"file": p.name, "kind": kind, "ts": ts, "ts_pretty": _ts_pretty(ts)}
+        dj = config.DATA_DIR / (("audit-ai-" if kind == "ai_review" else "audit-") + ts + ".json")
+        if dj.is_file():
+            try:
+                d = json.loads(dj.read_text(encoding="utf-8"))
+                entry["counts"] = d.get("counts") or d.get("sev_counts") or {}
+            except (OSError, ValueError):
+                pass
+        items.append(entry)
+    # 同一时间戳排在一起（审校在前、它的 AI 初审紧随其后），整体按时间倒序
+    items.sort(key=lambda x: (x["ts"], 1 if x["kind"] == "audit" else 0), reverse=True)
+    return jsonify({"items": items})
+
+
+@api.post("/api/audit/ai-review")
+def api_audit_ai_review():
+    """AI 初审：对指定（默认最新）审校结果按严重性排序并逐条给一句话说明。
+
+    只写 outputs/ 与 data/，不动 wiki；AI 的判断仅供参考，问题一条不删。
+    """
+    if err := _require_same_origin():
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    model, err = _model_arg(data)
+    if err:
+        return err
+    ts = str(data.get("ts") or "").strip()
+    # ts 要拼进文件名，格式不对就拒掉，不给路径穿越留口子
+    if ts and not _TS_RE.fullmatch(ts):
+        return jsonify({"error": "时间戳格式不对，应为 20261013-222015 这样的形式"}), 400
+
+    def run(tid):
+        r = ai_review_mod.run(ts=ts or None, task_id=tid)
+        return {"file": r["path"].name, "counts": r["sev_counts"],
+                "total": r["total"], "unjudged": r["unjudged"], "model": model}
+    tid = tasks.start("ai_review", run, label="AI 初审排序", model=model)
+    return jsonify({"task_id": tid, "model": model})
+
+
 @api.get("/api/audit/latest")
 def api_audit_latest():
-    files = sorted(config.DATA_DIR.glob("audit-*.json"))
+    # AI 初审产物叫 audit-ai-*.json，也命中 audit-* 通配，要排除，
+    # 否则「最新审校」会指到初审文件上（初审文件名排序在数字时间戳之后）
+    files = sorted(p for p in config.DATA_DIR.glob("audit-*.json") if "-ai-" not in p.name)
     if not files:
         return jsonify({"error": "还没有审校结果"}), 404
     data = json.loads(files[-1].read_text(encoding="utf-8"))
     data["ts_pretty"] = _ts_pretty(data.get("ts"))
+    # 已有 AI 初审版就一并返回，前端好显示入口；没有就不带这个字段
+    ai_md = config.OUTPUTS_DIR / f"audit-ai-{data.get('ts')}.md"
+    if ai_md.is_file():
+        data["ai_report"] = ai_md.name
+        try:
+            ai_json = json.loads(
+                (config.DATA_DIR / f"audit-ai-{data.get('ts')}.json").read_text(encoding="utf-8"))
+            data["ai_counts"] = ai_json.get("counts") or {}
+            # 修复向导用：AI 初判过的条目清单（已按严重性排序、每条带 sev/verdict/why），
+            # 前端优先按它生成修复选项；items 缺失（旧版初审文件）就不带，向导退回脚本报告
+            items = ai_json.get("items")
+            if isinstance(items, list) and items:
+                data["ai_items"] = items
+        except (OSError, ValueError):
+            pass
     data["pages"] = [{
         "slug": p["slug"], "type": p["type"],
         "title": str(p["meta"].get("title") or p["slug"]),
@@ -588,6 +730,47 @@ def api_audit_fix():
                       total=len(actions), label=f"按审校报告修复 {len(actions)} 项",
                       model=model)
     return jsonify({"task_id": tid, "model": model})
+
+
+# ---------- 图谱 ----------
+
+@api.get("/api/graph")
+def api_graph():
+    """知识图谱数据：节点=wiki 页面，边=双链引用（只画程序可验证的引用，不画语义关系）。
+
+    只读接口不要求 CSRF 头（与现有只读路由口径一致）。
+    节点 inbound 按「引用它的页面数」计（去重）；解析失败的双链丢弃并计数，
+    由前端注明「N 条无法解析的链接未显示」。
+    """
+    pages = wiki.load_pages()
+    id_of = {}
+    nodes = []
+    for p in pages:
+        key = f"{p['type']}/{p['slug']}"
+        id_of[(p["type"], p["slug"])] = key
+        nodes.append({
+            "id": key, "slug": p["slug"], "type": p["type"],
+            "title": str(p["meta"].get("title") or p["slug"]),
+            "statements": p["statements"],
+        })
+    edge_set = set()
+    unresolved = 0
+    for p in pages:
+        for link in wiki.wikilinks_of(p["body"]):
+            tgt = wiki.resolve_target(link, pages)
+            if tgt is None:
+                unresolved += 1
+                continue
+            if tgt == (p["type"], p["slug"]):  # 自引用不画
+                continue
+            edge_set.add((id_of[(p["type"], p["slug"])], id_of[tgt]))
+    links = [{"src": s, "dst": d} for s, d in sorted(edge_set)]
+    inbound = {}
+    for e in links:
+        inbound[e["dst"]] = inbound.get(e["dst"], 0) + 1
+    for n in nodes:
+        n["inbound"] = inbound.get(n["id"], 0)
+    return jsonify({"nodes": nodes, "links": links, "unresolved": unresolved})
 
 
 # ---------- 任务 ----------

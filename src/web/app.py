@@ -103,6 +103,8 @@ def show_page(ptype, slug):
         "meta": meta,
         "body_html": render_md(body),
         "statements": sum(1 for ln in body.splitlines() if ln.strip().startswith("- ")),
+        # 反链面板：渲染时现场计算（不缓存），tag 显示规范标题而非双链原文
+        "backlinks": wiki.inbound_links(ptype, slug),
     }
     return render_template("page.html", **ctx)
 
@@ -136,11 +138,11 @@ def files_page():
 
 @app.route("/find/<path:target>")
 def find(target):
-    for p in wiki.load_pages():
-        title = str(p["meta"].get("title") or p["slug"])
-        if target in (title, p["slug"]):
-            return redirect(url_for("show_page", ptype=p["type"], slug=p["slug"]))
-    abort(404)
+    # 解析顺序 title → slug → aliases（精确匹配），见 wiki.resolve_target
+    tgt = wiki.resolve_target(target)
+    if tgt is None:
+        abort(404)
+    return redirect(url_for("show_page", ptype=tgt[0], slug=tgt[1]))
 
 
 @app.route("/ask")
@@ -150,8 +152,8 @@ def ask_page():
 
 @app.route("/audit")
 def audit_list():
-    reports = sorted((p.name for p in config.OUTPUTS_DIR.glob("audit-*.md")), reverse=True)
-    return render_template("audit.html", reports=reports)
+    # 报告清单由前端调 /api/audit/reports 动态渲染（新报告跑完即出现，不用刷新整页）
+    return render_template("audit.html")
 
 
 @app.route("/outputs")

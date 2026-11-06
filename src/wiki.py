@@ -40,6 +40,93 @@ def wikilinks_of(text):
     return {m.group(1).strip() for m in WIKILINK_RE.finditer(text)}
 
 
+def _norm_name(s):
+    # 与 ingest._norm 同口径：空白与间隔号不参与比较，英文大小写不敏感
+    return re.sub(r"[\s·・]", "", str(s or "")).casefold()
+
+
+def page_aliases(meta):
+    """front matter 的 aliases 容错取值：字符串或列表都归一成列表。"""
+    aliases = meta.get("aliases") or []
+    if isinstance(aliases, str):
+        aliases = [aliases]
+    return [str(a) for a in aliases]
+
+
+def _name_maps(pages):
+    """一次性建 title/slug/alias 三个查找表；重名按 pages 顺序取第一个命中。"""
+    by_title, by_slug, by_alias = {}, {}, {}
+    for p in pages:
+        key = (p["type"], p["slug"])
+        by_title.setdefault(_norm_name(p["meta"].get("title") or p["slug"]), key)
+        by_slug.setdefault(_norm_name(p["slug"]), key)
+        for a in page_aliases(p["meta"]):
+            by_alias.setdefault(_norm_name(a), key)
+    return by_title, by_slug, by_alias
+
+
+def resolve_target(name, pages=None):
+    """把双链文本解析成 (type, slug)。匹配顺序：title → slug → aliases（大小写不敏感的精确匹配）。
+    找不到返回 None。pages 可传入已加载的 load_pages() 结果避免重复读盘。
+
+    一律精确匹配（整名相等），不做模糊/包含匹配，避免「村田」命中「TDK与村田」这类误跳。
+    别名解析只是容错：编译仍要求写 [[标题]]，模型偶发写别名、用户手写 [[300811]] 时能跳、不报错。
+    """
+    key = _norm_name(name)
+    if not key:
+        return None
+    if pages is None:
+        pages = load_pages()
+    by_title, by_slug, by_alias = _name_maps(pages)
+    return by_title.get(key) or by_slug.get(key) or by_alias.get(key)
+
+
+def inbound_links(target_type, target_slug, pages=None):
+    """算一页的反向链接：哪些页面引用了它、各引用几次。
+
+    返回按重要性排好序的 [{title, type, slug, count, inbound, statements}]：
+      1. 主排序：引用页自身的总入链数（枢纽优先——行业页引用你 > 边缘页引用你）；
+      2. 次排序：对本页的引用次数（×N 大者在前）；
+      3. 末级：引用页条目数（内容厚度）。
+    入链数按「引用它的页面数」计（去重）；count 是引用页正文里指向本页的双链出现次数；
+    自引用不计。展示时现场计算、不缓存，删除/改名后立刻正确。
+    """
+    if pages is None:
+        pages = load_pages()
+    cur = (target_type, target_slug)
+    by_title, by_slug, by_alias = _name_maps(pages)
+
+    def _resolve(name):
+        k = _norm_name(name)
+        if not k:
+            return None
+        return by_title.get(k) or by_slug.get(k) or by_alias.get(k)
+
+    inbound = {}   # (type, slug) → 引用它的页面数（去重）
+    refs = {}      # (type, slug) → 指向当前页的双链出现次数
+    stmts = {}
+    for p in pages:
+        key = (p["type"], p["slug"])
+        stmts[key] = p["statements"]
+        seen_targets = set()
+        for m in WIKILINK_RE.finditer(p["body"]):
+            tgt = _resolve(m.group(1))
+            if tgt is None or tgt == key:
+                continue
+            seen_targets.add(tgt)
+            if tgt == cur:
+                refs[key] = refs.get(key, 0) + 1
+        for tgt in seen_targets:
+            inbound[tgt] = inbound.get(tgt, 0) + 1
+    titles = {(p["type"], p["slug"]): str(p["meta"].get("title") or p["slug"]) for p in pages}
+    out = [{
+        "title": titles.get(key, key[1]), "type": key[0], "slug": key[1],
+        "count": n, "inbound": inbound.get(key, 0), "statements": stmts.get(key, 0),
+    } for key, n in refs.items()]
+    out.sort(key=lambda b: (-b["inbound"], -b["count"], -b["statements"]))
+    return out
+
+
 def parse_page(path):
     text = path.read_text(encoding="utf-8")
     m = FRONT_SPLIT_RE.match(text)

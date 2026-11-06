@@ -649,5 +649,11 @@ def apply_distill(proposal, chosen_lines=None):
         path, count = _apply_create(decision, topic, extra_sources, "会话中提取新建")
         ret = {"page": path.stem, "action": "create", "lines": count}
     wiki.rebuild_index_md(wiki.load_pages())
+    # 沉淀的新行也可能提到其他页面，一并补双链（幂等，无改动时零开销）
+    try:
+        from .linking import cross_link_all
+        cross_link_all()
+    except Exception:
+        pass
     wiki.append_log("ask", f"会话中提取新知识到 {ret['page']}（{ret['lines']} 条）：{question}")
     return ret

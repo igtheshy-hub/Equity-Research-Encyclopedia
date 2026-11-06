@@ -277,6 +277,81 @@ const extractDismiss = $("#extract-dismiss");
 if (extractDismiss) extractDismiss.addEventListener("click", () =>
   proposalAction("/api/proposals/dismiss", "已不再提醒；提案仍保留在会话里"));
 
+/* ---------- 待建页提案弹窗（复用蒸馏提案的勾选行子集 + 确认执行交互） ---------- */
+
+const TYPE_CN = { company: "公司", industry: "行业", concept: "概念" };
+let pageProposalItems = [];
+
+App.openPageProposalModal = function (items, note) {
+  const modal = $("#page-proposal-modal");
+  const body = $("#pp-body");
+  if (!modal || !body || !items.length) return;
+  pageProposalItems = items;
+  $("#pp-note").textContent = note || "摄入时发现这些实体被反复提到但还没有知识页，勾选确认后将定向摄入建页（句句带出处）。";
+  body.innerHTML = items.map((p, i) => `
+    <label class="extract-line pp-line" data-i="${i}">
+      <input type="checkbox" checked data-i="${i}">
+      <span style="flex:1;"><b>${App.escapeHtml(p.name)}</b>
+        <span class="muted">提及 ${App.escapeHtml(String(p.count))} 次 · 出处 ${App.escapeHtml(p.source_file || "—")}</span></span>
+      <select class="pp-type" title="页面类型（可改）">
+        ${["company", "industry", "concept"].map((t) =>
+          `<option value="${t}"${t === (p.entity_type || "concept") ? " selected" : ""}>${TYPE_CN[t]}</option>`).join("")}
+      </select>
+    </label>`).join("");
+  modal.hidden = false;
+  $("#pp-confirm").onclick = () => {
+    const chosen = [];
+    items.forEach((p, i) => {
+      const row = body.querySelector(`.pp-line[data-i="${i}"]`);
+      if (row && $("input:checked", row)) {
+        chosen.push({ name: p.name, entity_type: $("select.pp-type", row).value });
+      }
+    });
+    if (!chosen.length) { App.toast("没有勾选任何建页建议", "warn"); return; }
+    fetch("/api/page-proposals/confirm", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: chosen }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.error) { App.toast(d.error, "bad"); return; }
+        const ok = (d.results || []).filter((x) => x.ok).length;
+        pendingProposalChanged();
+        closeModal("page-proposal-modal");
+        App.toast(`已开始建页 ${ok} 个（后台定向摄入，进度见任务卡）`, "ok");
+      })
+      .catch((err) => App.toast("启动失败：" + err, "bad"));
+  };
+};
+
+/* 弹窗之外的状态变化（首页卡、审校区）注册在这里刷新 */
+App.onPageProposalsChanged = null;
+
+function pendingProposalChanged() {
+  if (App.onPageProposalsChanged) { try { App.onPageProposalsChanged(); } catch (e) { console.error(e); } }
+}
+
+function ppAction(path, okMsg) {
+  const items = pageProposalItems;
+  if (!items.length) { closeModal("page-proposal-modal"); return; }
+  Promise.all(items.map((p) => fetch(path, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: p.name }),
+  }))).then(() => {
+    pageProposalItems = [];
+    closeModal("page-proposal-modal");
+    App.toast(okMsg, "info");
+    pendingProposalChanged();
+  }).catch((err) => App.toast("操作失败：" + err, "bad"));
+}
+
+const ppLater = $("#pp-later");
+if (ppLater) ppLater.addEventListener("click", () =>
+  ppAction("/api/page-proposals/defer", "已稍后处理，24 小时后再提醒"));
+const ppDismiss = $("#pp-dismiss");
+if (ppDismiss) ppDismiss.addEventListener("click", () =>
+  ppAction("/api/page-proposals/dismiss", "已不再提醒这些建议"));
+
 /* 任一页面加载时检查未处理的沉淀提案（只读查询，不会因为刷新页面就被标记为已提醒） */
 fetch("/api/proposals/pending")
   .then((r) => r.json())
@@ -357,6 +432,9 @@ document.addEventListener("click", (e) => {
   const panel = $("#viewer-panel"), divider = $("#hdivider");
   if (panel) panel.hidden = true;
   if (divider) divider.hidden = true;
+  /* 复位 applyPaneWidth 写死的固定宽度，否则关掉后左边仍停在拖窄的宽度 */
+  const main = $(".page-main");
+  if (main) main.style.flex = "";
 });
 
 /* ---------- 表格过滤（知识库 / 日志共用） ---------- */

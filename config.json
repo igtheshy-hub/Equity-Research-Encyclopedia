@@ -31,6 +31,7 @@
     "classify": 0.0,
     "merge": 0.0,
     "audit": 0.1,
+  "ai_review": 0.1,
     "compile": 0.2,
     "filing": 0.0,
     "answer": 0.2,
@@ -47,6 +48,7 @@
   "ingest": {
     "compile_chunk_pages": 20,
     "min_chars_per_page": 50,
+    "page_proposal_threshold": 3,
     "filing_check_tol": 0.005,
     "task_timeout_s": 7200
   }

@@ -52,7 +52,6 @@ def validate_all():
         problems.append(f"{path.relative_to(config.ROOT).as_posix()}: {err}")
     files_info = _files_info()
     pages = wiki.load_pages()
-    titles = {str(p["meta"].get("title") or p["slug"]) for p in pages}
     for name, paths in sorted(duplicate_files().items()):
         where = "、".join(p.relative_to(config.ROOT).as_posix() for p in paths)
         problems.append(f"原文件同名多份：{name}（{where}），锚点无法区分，请改名后重新摄入")
@@ -76,10 +75,36 @@ def validate_all():
             elif not 1 <= wiki.loc_num(loc) <= info[1]:
                 problems.append(f"{name}: 锚点 {f}#{loc} 序号越界（该文件共 {info[1]} 单元）")
         for link in sorted(wiki.wikilinks_of(p["body"])):
-            if link not in titles:
+            # 别名也算有效目标（title → slug → aliases 精确匹配），只有完全解析不到才算死链
+            if wiki.resolve_target(link, pages) is None:
                 problems.append(f"{name}: wikilink 指向不存在的页面 [[{link}]]")
     idx = config.INDEX_MD.read_text(encoding="utf-8") if config.INDEX_MD.exists() else ""
     for p in pages:
         if f"{p['slug']}.md" not in idx:
             problems.append(f"{p['path'].name}: 未收录进 index.md")
     return problems
+
+
+def validate_hints():
+    """全库校验的提示（非错误）：解析只会命中其中一页时提醒用户。
+
+    别名/标题在多页重复不报错——resolve_target 按 load_pages 顺序取先建的那页，
+    但用户应该知道 [[X]] 会跳到哪、另一页为什么收不到这条入链。
+    """
+    pages = wiki.load_pages()
+    seen = {}  # 规范名 → (首个显示名, [页面标题, ...])；页面去重（页内 aliases 可能重复）
+    hints = []
+    for p in pages:
+        title = str(p["meta"].get("title") or p["slug"])
+        for x in [title] + wiki.page_aliases(p["meta"]):
+            n = wiki._norm_name(x)
+            if not n:
+                continue
+            if n not in seen:
+                seen[n] = (x, [])
+            if title not in seen[n][1]:
+                seen[n][1].append(title)
+    for disp, titles in seen.values():
+        if len(titles) > 1:
+            hints.append(f"别名「{disp}」同时出现在页面 {'、'.join(titles)}，链接只会跳到先建的那页")
+    return hints
