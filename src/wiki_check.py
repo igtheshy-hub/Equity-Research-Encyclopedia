@@ -129,11 +129,12 @@ def _expected_type(path):
 
 
 def content_problems(name, meta, body, expected_type=None, info=None, titles=None,
-                     check_wikilinks=True, unit_cache=None):
+                     check_wikilinks=True, unit_cache=None, pages=None):
     """对单页内容跑全部单页校验。path 未知时用 name 标识，expected_type 需显式给。
 
     程序批量写入时同一批页面可能互相引用、后写的页尚不存在，可按需跳过 wikilink 存在性检查，
-    由写盘后的 validate_all 兜底。
+    由写盘后的 validate_all 兜底。pages 可传入已加载页面列表，死链判定走 resolve_target
+    的别名解析（title → slug → aliases），不传时仅在需要时懒加载一次。
     """
     problems = []
     if expected_type and meta.get("type") != expected_type:
@@ -159,7 +160,12 @@ def content_problems(name, meta, body, expected_type=None, info=None, titles=Non
         if titles is None:
             titles = {str(p["meta"].get("title") or p["slug"]) for p in wiki.load_pages()}
         for link in sorted(wiki.wikilinks_of(body)):
-            if link not in titles:
+            if link in titles:
+                continue  # 标题直接命中，无需再解析
+            if pages is None:
+                pages = wiki.load_pages()
+            # 别名也算有效目标（resolve_target 精确匹配），只有完全解析不到才算死链
+            if wiki.resolve_target(link, pages) is None:
                 problems.append(f"{name}: wikilink 指向不存在的页面 [[{link}]]")
     return problems
 

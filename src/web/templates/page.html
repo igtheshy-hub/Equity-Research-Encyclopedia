@@ -23,6 +23,27 @@
       </details>
       {% endif %}
     </div>
+    <div class="meta-card backlinks-card">
+      <div><b>入链</b>{% if backlinks %} <span class="muted">（被 {{ backlinks | length }} 个页面引用）</span>{% endif %}</div>
+      {% if backlinks %}
+      <div class="sources">
+        {% for b in backlinks[:5] %}
+        <a class="src backlink-tag" href="{{ url_for('show_page', ptype=b.type, slug=b.slug) }}"
+           title="引用 {{ b.count }} 次 · 该页入链 {{ b.inbound }}">{{ b.title }}{% if b.count > 1 %}<span class="bl-times">×{{ b.count }}</span>{% endif %}</a>
+        {% endfor %}
+        {% if backlinks | length > 5 %}
+        <details><summary>展开（还有 {{ backlinks | length - 5 }} 个）</summary>
+          {% for b in backlinks[5:] %}
+          <a class="src backlink-tag" href="{{ url_for('show_page', ptype=b.type, slug=b.slug) }}"
+             title="引用 {{ b.count }} 次 · 该页入链 {{ b.inbound }}">{{ b.title }}{% if b.count > 1 %}<span class="bl-times">×{{ b.count }}</span>{% endif %}</a>
+          {% endfor %}
+        </details>
+        {% endif %}
+      </div>
+      {% else %}
+      <div class="muted">暂无其他页面引用此页</div>
+      {% endif %}
+    </div>
     <div class="page-body">{{ body_html | safe }}</div>
     <p class="hint">点击句尾角标，右侧打开原文对照（PDF 定位到页、Word 定位到段落），分隔条可拖宽。</p>
   </article>

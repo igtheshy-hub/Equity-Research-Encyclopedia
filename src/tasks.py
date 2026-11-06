@@ -13,7 +13,7 @@ _TASKS = {}
 _ORDER = []
 
 # 这些类型同一时间只允许一个在跑，后来的排队等待
-MUTEX_KINDS = {"classify", "ingest", "audit", "fix", "report", "fetch"}
+MUTEX_KINDS = {"classify", "ingest", "audit", "fix", "report", "ai_review", "fetch"}
 # 内存里最多保留这么多任务；超出的优先清掉已结束且最老的，不再只等页面确认
 MAX_TASKS = 200
 
@@ -22,6 +22,7 @@ KIND_LABELS = {
     "classify": "取名入库",
     "ingest": "摄入",
     "audit": "审校",
+    "ai_review": "AI 初审",
     "fix": "修复",
     "report": "报告",
     "fetch": "取数",

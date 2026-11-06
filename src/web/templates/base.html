@@ -43,6 +43,22 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="page-proposal-modal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <b>建议建页（完整性建议）</b>
+      <button class="icon-btn" data-close="page-proposal-modal" title="关闭">✕</button>
+    </div>
+    <p class="modal-note muted" id="pp-note"></p>
+    <div class="modal-body" id="pp-body"></div>
+    <div class="modal-foot">
+      <button class="ghost" id="pp-dismiss" title="以后都不再提醒这些建议">不再提醒</button>
+      <button class="ghost" id="pp-later" title="24 小时后再提醒，建议不会丢">稍后处理</button>
+      <button class="primary" id="pp-confirm">确认建页</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast-wrap"></div>
 <script>window.MODEL_IDS = {{ MODEL_IDS | tojson }};</script>
 <script src="{{ url_for('static', filename='app.js') }}" defer></script>

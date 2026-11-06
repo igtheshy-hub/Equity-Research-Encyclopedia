@@ -216,12 +216,26 @@ def cmd_audit(args):
 def cmd_validate(args):
     from src import validate
     problems = validate.validate_all()
+    hints = validate.validate_hints()
     if problems:
         print(f"发现 {len(problems)} 个问题：")
         for x in problems:
             print(f"  - {x}")
         return 1
     print("全库校验通过。")
+    for h in hints:
+        print(f"  [提示·非错误] {h}")
+    return 0
+
+
+def cmd_link(args):
+    from src.linking import cross_link_all
+    st = cross_link_all(dry_run=args.dry_run)
+    tag = "预览（未写盘）" if st["dry_run"] else "完成"
+    print(f"[双链] {tag}：{'将' if st['dry_run'] else ''}插入 {st['inserts']} 处，覆盖 {st['pages']} 页")
+    for s in st["samples"]:
+        print(f"  · {s['page']}：{s['before']}")
+        print(f"    → {s['after']}")
     return 0
 
 
@@ -274,6 +288,10 @@ def main():
 
     p = sub.add_parser("validate", help="全库格式校验")
     p.set_defaults(func=cmd_validate)
+
+    p = sub.add_parser("link", help="自动补双链：正文提到其他页面标题/别名处插入 [[双链]]（幂等，可重复跑）")
+    p.add_argument("--dry-run", action="store_true", help="只预览会改哪些行，不写盘")
+    p.set_defaults(func=cmd_link)
 
     p = sub.add_parser("serve", help="启动本地网页")
     p.set_defaults(func=cmd_serve)

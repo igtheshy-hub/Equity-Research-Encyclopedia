@@ -163,7 +163,7 @@ def build_sandbox(base: Path | None = None) -> Path:
     (config.REPORTS_DIR / "汽车").mkdir(parents=True, exist_ok=True)
     (config.FILINGS_DIR / "测试公司").mkdir(parents=True, exist_ok=True)
     (config.REPORTS_DIR / "汽车" / REPORT_NAME).write_bytes(build_pdf([
-        ["Test Research Report", "Auto Industry Outlook 2026", "Date: 2026-01-01"],
+        ["Test Research Report", "Auto Industry Outlook 2026", "Date: 2026-01-01", "Industry sales +12% YoY"],
         ["Industry volume growth 12% YoY", "Top player share 45%"],
     ]))
     (config.FILINGS_DIR / "测试公司" / FILING_NAME).write_bytes(build_pdf([
@@ -238,7 +238,7 @@ def build_sandbox(base: Path | None = None) -> Path:
     (config.EXTRACTS_DIR / (Path(REPORT_NAME).stem + ".units.json")).write_text(json.dumps({
         "file": REPORT_NAME, "unit": "page", "count": 2, "scanned": False,
         "units": [
-            {"n": 1, "text": "Test Research Report Auto Industry Outlook 2026 Date 2026-01-01"},
+            {"n": 1, "text": "Test Research Report Auto Industry Outlook 2026 Date 2026-01-01 Industry sales +12% YoY"},
             {"n": 2, "text": "Industry volume growth 12% YoY Top player share 45%"},
         ],
     }, ensure_ascii=False), encoding="utf-8")

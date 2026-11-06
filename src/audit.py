@@ -207,17 +207,15 @@ def run(task_id=None):
 
     non_source = [p for p in pages if p["type"] != "source"]
 
-    targets = {}
-    for p in pages:
-        targets[str(p["meta"].get("title") or p["slug"])] = p
-        targets[p["slug"]] = p
-    inlinks = {p["slug"]: [] for p in pages}
+    # 入链图经 resolve_target 解析（title → slug → aliases 精确匹配）：被别名引用也算有效入链
+    inlinks = set()
     for p in pages:
         for link in wiki.wikilinks_of(p["body"]):
-            tgt = targets.get(link)
-            if tgt is not None and tgt["slug"] != p["slug"]:
-                inlinks[tgt["slug"]].append(str(p["meta"].get("title") or p["slug"]))
-    orphans = [str(p["meta"].get("title") or p["slug"]) for p in non_source if not inlinks[p["slug"]]]
+            tgt = wiki.resolve_target(link, pages)
+            if tgt is not None and tgt != (p["type"], p["slug"]):
+                inlinks.add(tgt)
+    orphans = [str(p["meta"].get("title") or p["slug"])
+               for p in non_source if (p["type"], p["slug"]) not in inlinks]
 
     # 结构化合并建议，供网页端修复向导勾选方向
     merge_suggestions = []
@@ -342,6 +340,8 @@ def run(task_id=None):
             "锚点存疑": len(anchor_doubts),
         },
         "conflicts": conflicts,
+        # 时点差异也落盘：AI 初审要给每条问题排序说明，不能只在 markdown 里
+        "time_diffs": time_diffs,
         "stale": stale,
         "needs_review_pages": needs_review_pages,
         "missing_files": [p.relative_to(config.ROOT).as_posix() for p in missing_files],

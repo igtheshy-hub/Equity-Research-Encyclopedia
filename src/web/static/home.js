@@ -87,4 +87,50 @@ App.onTasks.push((tasks) => {
   if (!area) return;
   const mine = tasks.filter((t) => t.kind === "classify" || t.kind === "ingest");
   area.innerHTML = mine.map((t) => App.taskCardHTML(t)).join("");
+  renderProposalCard(area);
+  // 摄入刚完成（或刚开始跑）时刷新一次提案数：新报告可能带来新的建页建议
+  const hadIngest = tasks.some((t) => t.kind === "ingest");
+  if (hadIngest && !prevHadIngest) refreshProposalCount();
+  prevHadIngest = hadIngest;
 });
+
+/* 待建页提案：摄入完成卡片附「N 个建页建议」 */
+let ppCount = null;
+let prevHadIngest = false;
+
+function refreshProposalCount() {
+  fetch("/api/page-proposals/pending", { cache: "no-cache" })
+    .then((r) => r.json())
+    .then((d) => {
+      ppCount = (d.items || []).length;
+      renderProposalCard(document.getElementById("task-area"));
+    })
+    .catch(() => {});
+}
+
+function renderProposalCard(area) {
+  if (!area) return;
+  let card = document.getElementById("pp-card");
+  if (!ppCount) { if (card) card.remove(); return; }
+  if (!card) {
+    card = document.createElement("div");
+    card.id = "pp-card";
+    card.className = "task-card done";
+    area.appendChild(card);
+  }
+  card.innerHTML = `<div class="tc-top"><span class="tc-kind">建页建议</span>
+    <span class="tc-label">本次摄入后共有 ${ppCount} 个待建页建议（完整性建议，建不建由你拍板）</span>
+    <button class="sm primary" id="pp-open">查看建页建议</button></div>`;
+  card.querySelector("#pp-open").addEventListener("click", () => {
+    fetch("/api/page-proposals/pending", { cache: "no-cache" })
+      .then((r) => r.json())
+      .then((d) => {
+        if ((d.items || []).length) App.openPageProposalModal(d.items);
+        else App.toast("建页建议已处理完毕", "info");
+      })
+      .catch(() => {});
+  });
+}
+
+App.onPageProposalsChanged = refreshProposalCount;
+refreshProposalCount();
