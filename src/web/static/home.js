@@ -10,6 +10,73 @@ document.addEventListener("DOMContentLoaded", () => {
     if (saved && Array.from(modelSel.options).some((o) => o.value === saved)) modelSel.value = saved;
     modelSel.addEventListener("change", () => localStorage.setItem("askModel", modelSel.value));
   }
+  // 添加模型：白名单服务商 + 双协议探活，两个端点都通了才保存并立即出现在下拉里
+  const addBtn = document.getElementById("model-add-btn");
+  const addModal = document.getElementById("model-modal");
+  if (addBtn && addModal) {
+    const result = document.getElementById("model-add-result");
+    const submit = document.getElementById("model-add-submit");
+    const showResult = (html, cls) => {
+      result.hidden = false;
+      result.className = "model-add-result " + (cls || "");
+      result.innerHTML = html;
+    };
+    addBtn.addEventListener("click", () => {
+      result.hidden = true;
+      result.innerHTML = "";
+      addModal.hidden = false;
+      document.getElementById("model-id").focus();
+    });
+    addModal.addEventListener("click", (e) => {
+      if (e.target === addModal) addModal.hidden = true;
+    });
+    submit.addEventListener("click", () => {
+      const provider = document.getElementById("model-provider").value;
+      const modelId = (document.getElementById("model-id").value || "").trim();
+      const label = (document.getElementById("model-label").value || "").trim();
+      const apiKey = (document.getElementById("model-key").value || "").trim();
+      const anth = (document.getElementById("model-anthropic").value || "").trim();
+      if (!modelId) { showResult("请填写模型 ID", "bad"); return; }
+      submit.disabled = true;
+      submit.textContent = "正在测试两个端点…";
+      showResult("正在测试主流程与救火端点，最多约一分钟…", "");
+      fetch("/api/models", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({provider, model_id: modelId, label,
+                              api_key: apiKey, anthropic_model: anth}),
+      })
+        .then((r) => r.json().then((d) => ({status: r.status, body: d})))
+        .then(({status, body}) => {
+          if (status !== 200) {
+            const lines = [body.error || "添加失败"];
+            if (body.chat) lines.push(body.chat);
+            if (body.rescue) lines.push(body.rescue);
+            showResult(lines.map((x) => `<div>${App.escapeHtml(x)}</div>`).join(""), "bad");
+            return;
+          }
+          const m = body.model;
+          if (modelSel) {
+            const opt = document.createElement("option");
+            opt.value = m.id;
+            opt.textContent = m.label || m.id;
+            modelSel.appendChild(opt);
+            modelSel.value = m.id;
+          }
+          window.MODEL_IDS = (window.MODEL_IDS || []).concat([m.id]);
+          localStorage.setItem("askModel", m.id);
+          showResult(`已添加 ${App.escapeHtml(m.label || m.id)}；${App.escapeHtml(body.chat)}；${App.escapeHtml(body.rescue)}`, "ok");
+          addModal.hidden = true;
+          App.toast("模型已添加并选中：" + (m.label || m.id), "ok");
+        })
+        .catch((err) => showResult("请求失败：" + App.escapeHtml(err), "bad"))
+        .finally(() => {
+          submit.disabled = false;
+          submit.textContent = "测试并添加";
+        });
+    });
+  }
+
   if (form) {
     form.addEventListener("submit", (e) => {
       e.preventDefault();

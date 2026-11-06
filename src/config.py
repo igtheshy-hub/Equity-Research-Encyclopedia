@@ -19,10 +19,69 @@ CFG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 # 否则端点只会返回难懂的 401「key 格式不对」。
 _PROVIDER_KEY_ENV = {
     "open.bigmodel.cn": "ZHIPU_API_KEY",           # 智谱
+    "api.moonshot.cn": "MOONSHOT_API_KEY",         # Kimi / Moonshot
+    "api.minimax.cn": "MINIMAX_API_KEY",           # MiniMax（国内站）
+    "api.minimaxi.com": "MINIMAX_API_KEY",         # MiniMax（国际站）
+    "dashscope.aliyuncs.com": "DASHSCOPE_API_KEY",  # 通义千问
+}
+
+# 网页端允许添加的模型服务商白名单。chat 端点是主流程用的 OpenAI 兼容协议，
+# anthropic 端点是救火员 Claude 子进程用的 Anthropic 兼容协议；两家端点都来自
+# 各厂商官方文档，添加模型时两个端点会各发一条测试请求验证连通性。
+MODEL_PROVIDERS = {
+    "zhipu": {
+        "label": "智谱 GLM",
+        "chat_base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+        "anthropic_base_url": "https://open.bigmodel.cn/api/anthropic",
+        "key_env": "ZHIPU_API_KEY",
+    },
+    "deepseek": {
+        "label": "DeepSeek 官方",
+        "chat_base_url": "https://api.deepseek.com/chat/completions",
+        "anthropic_base_url": "https://api.deepseek.com/anthropic",
+        "key_env": "DEEPSEEK_API_KEY",
+    },
+    "moonshot": {
+        "label": "Kimi / Moonshot",
+        "chat_base_url": "https://api.moonshot.cn/v1/chat/completions",
+        "anthropic_base_url": "https://api.moonshot.cn/anthropic",
+        "key_env": "MOONSHOT_API_KEY",
+    },
+    "minimax": {
+        "label": "MiniMax",
+        "chat_base_url": "https://api.minimax.cn/v1/chat/completions",
+        "anthropic_base_url": "https://api.minimax.cn/anthropic",
+        "key_env": "MINIMAX_API_KEY",
+    },
+    "qwen": {
+        "label": "通义千问",
+        "chat_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "anthropic_base_url": "https://dashscope.aliyuncs.com/apps/anthropic",
+        "key_env": "DASHSCOPE_API_KEY",
+    },
 }
 
 _LLM = CFG["llm"]
-MODEL_PROFILES = _LLM["models"]
+
+
+def _custom_models_path():
+    # 用当前 ROOT 现算，测试里 redirect_config 改了 ROOT 也能跟着走
+    return Path(ROOT) / "data" / "custom_models.json"
+
+
+def _load_custom_models():
+    try:
+        raw = json.loads(_custom_models_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    models = raw.get("models") if isinstance(raw, dict) else None
+    return models if isinstance(models, dict) else {}
+
+
+CUSTOM_MODELS = _load_custom_models()
+# 内置模型优先，手工改出来的同名自定义模型不覆盖内置档案
+MODEL_PROFILES = dict(_LLM["models"])
+MODEL_PROFILES.update({k: v for k, v in CUSTOM_MODELS.items() if k not in MODEL_PROFILES})
 # 各模型可省略、从 llm 段继承的公共参数。注意：模型级写 "extra_body": {} 空对象
 # 也算已设置、会阻断继承（setdefault 语义），不想继承就在模型级显式写全内容。
 # DeepSeek 官方端点关闭思考用的是 thinking: {"type": "disabled"}，各模型在
@@ -76,8 +135,15 @@ def _resolve_api_key(base_url):
     return "LLM_API_KEY", os.getenv("LLM_API_KEY") or ""
 
 
+def _key_for_profile(prof):
+    """档案自带 key（网页添加模型时填的）优先，否则按端点主机名去 .env 找。"""
+    if prof.get("key"):
+        return "custom", str(prof["key"])
+    return _resolve_api_key(prof.get("base_url") or "")
+
+
 def _profile_has_key(pid):
-    return bool(_resolve_api_key(MODEL_PROFILES[pid]["base_url"])[1])
+    return bool(_key_for_profile(MODEL_PROFILES[pid])[1])
 
 
 def _resolve_default_model():
@@ -106,7 +172,7 @@ def model_profile(name=None):
     prof = {"id": pid, **MODEL_PROFILES[pid]}
     for k in _SHARED_LLM_KEYS:
         prof.setdefault(k, _LLM.get(k))
-    prof["key_env"], prof["key"] = _resolve_api_key(prof["base_url"])
+    prof["key_env"], prof["key"] = _key_for_profile(MODEL_PROFILES[pid])
     return prof
 
 
@@ -114,7 +180,7 @@ def model_choices():
     """网页下拉用的模型清单，顺序同 config.json，只列 key 已配置的模型。"""
     out = []
     for pid, p in MODEL_PROFILES.items():
-        if not _resolve_api_key(p["base_url"])[1]:
+        if not _key_for_profile(p)[1]:
             continue
         out.append({"id": pid, "label": p.get("label") or pid,
                     "provider": p.get("provider") or ""})
@@ -132,10 +198,72 @@ def rescue_settings(model_name=None):
     model = (anth.get("model") or "").strip()
     if not base_url or not model:
         return None
-    key_env, key = _resolve_api_key(base_url)
+    if prof.get("key"):
+        key_env, key = "custom", str(prof["key"])
+    else:
+        key_env, key = _resolve_api_key(base_url)
     if not key:
         return None
     return {"base_url": base_url, "model": model, "key_env": key_env, "key": key}
+
+
+def provider_choices():
+    """网页添加模型时的服务商下拉清单（只暴露名字，不暴露 key）。"""
+    return [{"id": pid, "label": p["label"]} for pid, p in MODEL_PROVIDERS.items()]
+
+
+def provider_key(provider_id):
+    """服务商对应的 .env key；用户没填 key 时用它兜底。"""
+    prov = MODEL_PROVIDERS.get(provider_id) or {}
+    for env_name in (prov.get("key_env"), "LLM_API_KEY"):
+        if env_name:
+            val = os.getenv(env_name) or ""
+            if val:
+                return val
+    return ""
+
+
+def add_custom_model(provider, model_id, api_key="", label="", anthropic_model=""):
+    """把一个网页添加的模型写进 data/custom_models.json 并立即生效。
+
+    只有白名单服务商能加；模型 id 与内置模型重名时拒绝，避免覆盖内置档案。
+    返回网页下拉用的 {id,label,provider}。
+    """
+    prov = MODEL_PROVIDERS.get(provider)
+    if not prov:
+        raise ValueError("不支持的服务商")
+    model_id = str(model_id or "").strip()
+    if not model_id:
+        raise ValueError("模型 ID 不能为空")
+    if model_id in _LLM["models"]:
+        raise ValueError("模型 ID 与内置模型重名，不能覆盖内置档案")
+    prof = {
+        "label": str(label or "").strip() or model_id,
+        "provider": prov["label"],
+        "base_url": prov["chat_base_url"],
+        "model": model_id,
+        "provider_id": provider,
+        "custom": True,
+        "anthropic": {
+            "base_url": prov["anthropic_base_url"],
+            "model": str(anthropic_model or "").strip() or model_id,
+        },
+    }
+    if api_key:
+        prof["key"] = str(api_key).strip()
+
+    data = {"models": _load_custom_models()}
+    data["models"][model_id] = prof
+    path = _custom_models_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        path.chmod(0o600)   # 文件里有明文 key，尽量只给当前用户读
+    except OSError:
+        pass
+    CUSTOM_MODELS[model_id] = prof
+    MODEL_PROFILES[model_id] = prof
+    return {"id": model_id, "label": prof["label"], "provider": prof["provider"]}
 
 
 # 默认模型的 key，selftest 等单模型场景直接取用

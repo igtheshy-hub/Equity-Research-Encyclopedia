@@ -235,13 +235,22 @@ def cmd_serve(args):
         print("请补齐后重启（可参考 README 的配置说明）。")
         return 1
     from src.web.app import app
-    from src import agent_rescue
+    from src import agent_rescue, industry_report
     try:
         agent_rescue.startup_sweep()
     except OSError as e:
         print(f"启动清扫救火残留文件失败（不影响服务）：{e}")
-    print("启动本地网页：http://127.0.0.1:5000 （Ctrl+C 停止）")
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    # 新进程刚起，内存任务表是空的：状态还在进行中的任务都是上次退出留下的
+    recovered = industry_report.recover_interrupted_jobs()
+    if recovered:
+        print(f"上次运行中断的任务 {len(recovered)} 个，已标为可续跑：{'、'.join(recovered)}")
+    from src.serve_reloader import IdleGatedReloader
+    IdleGatedReloader.register()
+    # 热重载换 worker 前会等任务表空闲（src/serve_reloader.py），救火员改代码不再杀进程
+    print("启动本地网页：http://127.0.0.1:5000 （热重载已开：改代码自动换 worker，"
+          "有任务在跑时等任务结束；Ctrl+C 停止）")
+    app.run(host="127.0.0.1", port=5000, debug=False,
+            use_reloader=True, reloader_type="kbidle")
     return 0
 
 

@@ -106,6 +106,7 @@ def start(kind, fn, total=1, label="", key=None, model=None, timeout_s=None):
             "current": 0,
             "percent": 0,
             "label": label,
+            "key": str(key) if key is not None else "",
             "detail": "",
             "result": None,
             "error": None,

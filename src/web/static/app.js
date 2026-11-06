@@ -174,6 +174,22 @@ App.doneText = function (t) {
   return "完成";
 };
 
+/* 救火进行中的绿色卡片：位置与生成进度卡相同，显示救火员在做什么和错误详情。
+   只有救火结束仍未修复时，才由页面换成红色失败框。 */
+App.rescueCardHTML = function (job) {
+  const r = job.rescue || {};
+  const agent = r.agent || "救火员";
+  const phase = r.phase ? `（${r.phase} 阶段）` : "";
+  const activity = r.activity || "正在读取失败现场，定位根因…";
+  return `<div class="task-card rescue-card" data-rescue-job="${App.escapeHtml(job.id || "")}">
+    <div class="tc-top"><span class="tc-kind rescue-kind">救火</span>
+      <span class="tc-label">${App.escapeHtml(agent)}正在修复${App.escapeHtml(phase)}：${App.escapeHtml(job.title || "")}</span></div>
+    <div class="bar rescue-bar"><i></i></div>
+    <div class="tc-detail">救火员：${App.escapeHtml(activity)}</div>
+    <details class="tc-details"><summary>错误详情</summary><pre>${App.escapeHtml(r.error || job.error || "")}</pre></details>
+  </div>`;
+};
+
 document.addEventListener("click", (e) => {
   const ack = e.target.closest(".tc-ack");
   if (ack) {

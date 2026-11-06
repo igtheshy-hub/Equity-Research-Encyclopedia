@@ -406,10 +406,62 @@ def test_quarter_scope_mismatch_allows_single_quarter_page():
     assert not ir._quarter_scope_mismatch("26Q3其他综合收益税后净额-0.74亿元", [page])
 
 
+def test_quarter_scope_mismatch_allows_explicit_quarter_labeling():
+    """页内「1-9月/累计」属别的指标时，页面自己把 3Q26 与数字同句标注的不算累计口径。"""
+    page = ("国家统计局数据显示，2026年1-9月，中国规模以上企业累计啤酒产量2894.7万千升，"
+            "同比下降6.0%。3Q26白酒板块营收及归母净利增速分别为-10.1%、-13.0%，降幅环比收窄"
+            "（2Q26白酒板块营收、归母净利增速分别为-17.1%、-21.4%）。")
+    line = ("按券商披露口径，白酒板块3Q26营收增速为-10.1%、归母净利增速为-13.0%，"
+            "较2Q26（营收-17.1%、归母净利-21.4%）降幅环比收窄")
+    assert not ir._quarter_scope_mismatch(line, [page])
+
+
+def test_quarter_scope_mismatch_keeps_cumulative_labeled_quarter():
+    """页面写的是「3Q26累计」，句子照抄也不能当成单季数。"""
+    page = ("2026年1-9月全国白酒产量同比下降。3Q26白酒板块累计营收增速-10.1%、"
+            "归母净利增速-13.0%。")
+    line = "白酒板块3Q26营收增速为-10.1%、归母净利增速为-13.0%"
+    assert ir._quarter_scope_mismatch(line, [page])
+
+
+def test_quarter_scope_mismatch_requires_number_in_quarter_sentence():
+    """季度标识与数字不同句时，页面没有把数字标成单季，照样报。"""
+    page = "3Q26板块景气分化。前三季度白酒板块营收增速为-10.1%、归母净利增速为-13.0%。"
+    line = "白酒板块3Q26营收增速为-10.1%、归母净利增速为-13.0%"
+    assert ir._quarter_scope_mismatch(line, [page])
+
+
 def test_gap_class_terms_only_parses_parentheses_lists():
     assert ir._gap_class_terms("分阵营（自主/合资/豪华/新势力）渗透率") == ["自主", "合资", "豪华", "新势力"]
     assert ir._gap_class_terms("分阵营渗透率") == []
     assert ir._gap_class_terms("销量（万辆）") == []
+
+
+def test_unanchored_nums_skips_table_refs_and_md_dates():
+    """「表16」指向本报告其他表、「10月19-29日」是观察窗口，都不是要挂锚点的数据。"""
+    assert ir._unanchored_nums("组合构建上，三条主线的权重切换服从表16的验证节点") == []
+    nums = ir._unanchored_nums("10月19-29日飞天茅台批价1685-1700元，普五752-765元，见图3")
+    assert set(nums) == {"1685", "1700", "752", "765"}
+
+
+def test_table_cell_md_date_not_treated_as_data(monkeypatch):
+    """单元格里的「10月19-29日」是批价观察窗口，原文写作 10.19-10.29，不算无锚点数字。"""
+    page = ("根据百荣酒价及茅粉鲁智深数据，10.19-10.29 飞天茅台批价 1685-1700 元。"
+            "10.19-10.29 普五批价 752-765元，国窖1573批价815-820元。")
+    monkeypatch.setattr(ir.wiki, "load_pages", lambda: [])
+    monkeypatch.setattr(ir.wiki_check, "file_paths", lambda: {"a.pdf": Path("a.pdf")})
+    monkeypatch.setattr(ir, "load_cached", lambda _p: {
+        "unit": "p", "units": [{"n": 7, "text": page}]})
+    md = ("| 环节 | 构成 | 要点 |\n"
+          "| --- | --- | --- |\n"
+          "| 下游 | 经销商网络与终端消费 | 10月19-29日飞天茅台批价1685-1700元、"
+          "普五752-765元、国窖1573批价815-820元[[a.pdf#p7]] |\n")
+    assert ir._table_checks(md) == []
+
+
+def test_anchor_checks_allow_table_ref_sentence():
+    md = "三条主线的权重切换服从表16的验证节点。\n"
+    assert ir._anchor_checks(md) == []
 
 
 def test_prediction_placeholder_only_when_cell_is_empty():

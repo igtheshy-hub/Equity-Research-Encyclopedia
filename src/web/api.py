@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
@@ -16,7 +17,7 @@ from .. import purge as purge_mod
 from .. import report as report_mod
 from .. import industry_report, report_distill
 from .. import sessions, tasks
-from .. import agent_rescue, fetcher
+from .. import agent_rescue, fetcher, model_probe
 from ..classify import classify_one, sanitize, unique_target
 from ..pdf_extract import SUPPORTED_SUFFIXES, raw_file_index
 from .render import anchor_pretty, render_md
@@ -693,6 +694,7 @@ def _job_brief(job):
         "id": job["id"], "title": job["title"], "status": job["status"],
         "status_label": f"{label}（救火中）" if rescuing else label,
         "rescue_active": rescuing,
+        "rescue": agent_rescue.rescue_state(job),
         "kind": job.get("kind") or "industry",
         "kind_label": industry_report.KIND_LABELS.get(job.get("kind"), "行业研报"),
         "error": job.get("error") or "",
@@ -719,6 +721,7 @@ def api_report_job(jid):
         return jsonify({"error": "报告任务不存在"}), 404
     out = dict(job)
     out["rescue_active"] = agent_rescue.rescue_active(job)
+    out["rescue"] = agent_rescue.rescue_state(job)
     label = industry_report.STATUS_LABELS.get(job["status"], job["status"])
     out["status_label"] = f"{label}（救火中）" if out["rescue_active"] else label
     out["kind"] = job.get("kind") or "industry"
@@ -843,6 +846,54 @@ def api_task_cancel(tid):
     if not ok:
         return jsonify({"error": "任务已结束或不存在，无法取消"}), 400
     return jsonify({"ok": True})
+
+
+# ---------- 模型接入 ----------
+
+@api.get("/api/models")
+def api_models():
+    return jsonify({"models": config.model_choices(),
+                    "providers": config.provider_choices()})
+
+
+@api.post("/api/models")
+def api_model_add():
+    """添加模型：先验两条协议，都通了才落盘，坏配置在添加时当场报出来。"""
+    if err := _require_same_origin():
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    provider = str(data.get("provider") or "").strip()
+    model_id = str(data.get("model_id") or "").strip()
+    label = str(data.get("label") or "").strip()
+    anthropic_model = str(data.get("anthropic_model") or "").strip()
+    api_key = str(data.get("api_key") or "").strip() or config.provider_key(provider)
+    if provider not in config.MODEL_PROVIDERS:
+        return jsonify({"error": "不支持的服务商，只能从下拉清单里选"}), 400
+    if not model_id:
+        return jsonify({"error": "模型 ID 不能为空"}), 400
+    if model_id in config.CFG["llm"]["models"]:
+        return jsonify({"error": "模型 ID 与内置模型重名，不能覆盖内置档案"}), 400
+    if not api_key:
+        return jsonify({"error": "请填写 API Key（.env 里也没有这家服务商的 key）"}), 400
+
+    prov = config.MODEL_PROVIDERS[provider]
+    rescue_model = anthropic_model or model_id
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fc = ex.submit(model_probe.probe_chat, prov["chat_base_url"], api_key, model_id)
+        fr = ex.submit(model_probe.probe_anthropic, prov["anthropic_base_url"],
+                       api_key, rescue_model)
+        chat_ok, chat_msg = fc.result()
+        rescue_ok, rescue_msg = fr.result()
+    if not (chat_ok and rescue_ok):
+        return jsonify({"error": "模型未通过连通测试，未保存",
+                        "chat": chat_msg, "rescue": rescue_msg}), 400
+    try:
+        added = config.add_custom_model(provider, model_id, api_key,
+                                        label=label, anthropic_model=rescue_model)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "model": added,
+                    "chat": chat_msg, "rescue": rescue_msg})
 
 
 @api.get("/api/health")

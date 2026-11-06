@@ -166,6 +166,24 @@ textarea {
 }
 .task-card.done { border-color: #bfe7d2; background: var(--ok-weak); }
 .task-card.error { border-color: #f0c4c4; background: var(--bad-weak); }
+.task-card.rescue-card { border-color: #bfe7d2; background: var(--ok-weak); }
+.rescue-kind { background: #d5f2e3; color: var(--ok); }
+.bar.rescue-bar i {
+  background: var(--ok); width: 30%;
+  animation: rescue-move 1.5s ease-in-out infinite;
+}
+@keyframes rescue-move {
+  0% { margin-left: -30%; }
+  50% { margin-left: 100%; }
+  100% { margin-left: -30%; }
+}
+.tc-details { margin-top: 8px; }
+.tc-details summary { cursor: pointer; font-size: 12px; color: var(--ink-2); user-select: none; }
+.tc-details pre {
+  white-space: pre-wrap; word-break: break-word; font-size: 12px;
+  margin: 6px 0 0; color: var(--ink-2); max-height: 180px; overflow: auto;
+}
+.rescue-note { font-size: 13px; margin-bottom: 8px; }
 .task-card, .meta-card, .kb-stats .stat { transition: transform .15s, box-shadow .15s; }
 .task-card:hover, .meta-card:hover, .kb-stats .stat:hover {
   transform: translateY(-1px);
@@ -351,6 +369,10 @@ body.split-ask .pane:last-child { border-radius: 0 var(--radius) var(--radius) 0
   background: var(--warn-weak); color: var(--warn); border-radius: 8px;
   padding: 6px 10px; font-size: 13px; margin-bottom: 8px;
 }
+.error-strip {
+  background: var(--bad-weak); color: var(--bad); border-radius: 8px;
+  padding: 6px 10px; font-size: 13px; margin-bottom: 8px;
+}
 .rescue-strip {
   background: var(--accent-weak); color: var(--accent); border-radius: 8px;
   padding: 6px 10px; font-size: 13px; margin-bottom: 8px;
@@ -394,6 +416,18 @@ body.split-ask .pane:last-child { border-radius: 0 var(--radius) var(--radius) 0
   display: flex; justify-content: flex-end; gap: 10px; padding: 12px 18px;
   border-top: 1px solid var(--line);
 }
+.model-add-btn { white-space: nowrap; }
+.model-field { display: block; margin: 10px 0; font-size: 14px; }
+.model-field select, .model-field input {
+  display: block; width: 100%; margin-top: 4px; padding: 7px 10px;
+  border: 1px solid var(--line); border-radius: 8px; font: inherit; background: var(--card);
+}
+.model-add-result {
+  margin-top: 10px; padding: 8px 10px; border-radius: 8px; font-size: 13px;
+  background: var(--accent-weak); color: var(--ink);
+}
+.model-add-result.ok { background: var(--ok-weak); color: var(--ok); }
+.model-add-result.bad { background: var(--bad-weak); color: var(--bad); }
 .extract-group { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 10px 0; }
 .eg-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
 .eg-summary { font-size: 13px; }

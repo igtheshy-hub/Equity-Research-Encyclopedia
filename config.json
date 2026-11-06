@@ -10,7 +10,11 @@
         "label": "GLM-5.3-Flash",
         "provider": "智谱",
         "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-        "model": "glm-5.3-flash"
+        "model": "glm-5.3-flash",
+        "anthropic": {
+          "base_url": "https://open.bigmodel.cn/api/anthropic",
+          "model": "glm-5.3-flash"
+        }
       },
       "glm-5.1": {
         "label": "GLM-5.1",

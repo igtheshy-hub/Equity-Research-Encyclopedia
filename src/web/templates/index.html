@@ -12,6 +12,7 @@
       <option value="{{ m.id }}"{% if m.id == DEFAULT_MODEL %} selected{% endif %}>{{ m.label }}</option>
       {% endfor %}
     </select>
+    <button type="button" id="model-add-btn" class="ghost model-add-btn" title="添加自己的模型">＋ 模型</button>
     <button type="submit" class="primary">提问</button>
   </form>
 </section>
@@ -42,5 +43,41 @@
   <p class="muted" id="upload-hint"></p>
   <div id="task-area" class="task-area"></div>
 </section>
+
+<div class="modal-backdrop" id="model-modal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <b>添加模型</b>
+      <button class="icon-btn" data-close="model-modal" title="关闭">✕</button>
+    </div>
+    <p class="modal-note muted">只支持白名单服务商。保存前会分别测试主流程 chat 端点与救火员 Anthropic 端点，两个都通了才会添加。</p>
+    <div class="modal-body">
+      <label class="model-field">服务商
+        <select id="model-provider">
+          {% for p in MODEL_PROVIDER_CHOICES %}
+          <option value="{{ p.id }}">{{ p.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="model-field">模型 ID
+        <input id="model-id" placeholder="例如 glm-5.3-flash、kimi-k2.5">
+      </label>
+      <label class="model-field">显示名称（可选）
+        <input id="model-label" placeholder="留空用模型 ID">
+      </label>
+      <label class="model-field">API Key
+        <input id="model-key" type="password" placeholder="留空则用 .env 里该服务商的 key">
+      </label>
+      <label class="model-field">救火模型名（可选）
+        <input id="model-anthropic" placeholder="留空与模型 ID 相同；部分服务商要求特定别名">
+      </label>
+      <div id="model-add-result" class="model-add-result" hidden></div>
+    </div>
+    <div class="modal-foot">
+      <button class="ghost" data-close="model-modal">取消</button>
+      <button class="primary" id="model-add-submit">测试并添加</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', filename='home.js') }}" defer></script>{% endblock %}

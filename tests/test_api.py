@@ -49,6 +49,7 @@ def test_csrf_guard_covers_state_changing_endpoints():
         ("/api/distill/apply", {"applies": []}),
         ("/api/distill/propose", {}),
         ("/api/conversations", {}),
+        ("/api/models", {}),
     ]
     for path, body in cases:
         r = c.post(path, json=body)                 # 不带同源头

@@ -79,6 +79,7 @@ def redirect_config(root: Path) -> Path:
     config.DATA_DIR = root / "data"
     config.EXTRACTS_DIR = config.DATA_DIR / "extracts"
     config.FIN_DIR = config.DATA_DIR / "fin"
+    config.REPORT_JOBS_DIR = config.DATA_DIR / "report_jobs"
     config.MANIFEST_PATH = config.DATA_DIR / "manifest.json"
     config.LLM_LOG_PATH = config.DATA_DIR / "llm_log.jsonl"
     config.OUTPUTS_DIR = root / "outputs"
@@ -89,7 +90,8 @@ def redirect_config(root: Path) -> Path:
         "source": config.WIKI_DIR / "sources",
     }
     for d in (config.INBOX_DIR, config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR,
-              *config.TYPE_DIRS.values(), config.OUTPUTS_DIR, config.EXTRACTS_DIR, config.FIN_DIR):
+              *config.TYPE_DIRS.values(), config.OUTPUTS_DIR, config.EXTRACTS_DIR, config.FIN_DIR,
+              config.REPORT_JOBS_DIR):
         d.mkdir(parents=True, exist_ok=True)
     return root
 

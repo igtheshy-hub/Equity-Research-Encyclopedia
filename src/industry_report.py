@@ -93,6 +93,32 @@ def list_jobs():
     return out
 
 
+def recover_interrupted_jobs():
+    """启动时把上一个进程留下的进行中任务标成出错，报告页可点继续续跑。
+
+    新进程刚起，内存任务表是空的，状态还在进行中的任务必然是上次退出
+    （崩溃、被杀、热重载等超上限）留下的。每节草稿已落盘，续跑从断点节重来。
+    返回被标记的任务 id 列表。
+    """
+    recovered = []
+    for p in sorted(config.REPORT_JOBS_DIR.glob("*.json")):
+        if p.name.endswith(".candidates.json"):
+            continue
+        try:
+            job = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if job.get("status") not in RUNNING_STATUSES:
+            continue
+        job.setdefault("id", p.stem)
+        job["status"] = "error"
+        job["error"] = "服务重启导致任务中断，点继续可续跑"
+        _log(job, "服务启动时发现上次运行中断，已标记为可续跑")
+        save_job(job)
+        recovered.append(str(job["id"]))
+    return recovered
+
+
 def delete_job(job_id):
     """删除一份研报任务与它的全部产物。进行中的任务不许删，免得后台阶段把文件写回来。"""
     job = load_job(job_id)
@@ -2181,6 +2207,21 @@ def _other_unit_hint(cached, nums):
 
 _SKIP_ANCHOR_PREFIX = ("#", "![", "|", ">")
 _DATE_RE = re.compile(r"(?:19|20)\d{2}\s*年(?:\s*\d{1,2}\s*月)?(?:\s*\d{1,2}\s*日)?")
+# 「10月19-29日」「10月19日至29日」这类月日区间是观察窗口不是数据（原文写作 10.19-10.29）
+_MD_DATE_RE = re.compile(
+    r"\d{1,2}\s*月\s*\d{1,2}\s*日(?:\s*[-—–~至]\s*(?:\d{1,2}\s*月\s*)?\d{1,2}\s*日?)?"
+    r"|\d{1,2}\s*月\s*\d{1,2}\s*[-—–~至]\s*\d{1,2}\s*日")
+# 「表16」「图3」指向本报告其他表图，不是要挂锚点的数据
+_TABLE_REF_RE = re.compile(r"(?<![0-9A-Za-z])(?:表|图)\s*\d+")
+
+
+def _data_terms(text):
+    """报告侧核验用的数字词条：先剥掉月日日期与表/图交叉引用再抽词。
+
+    年份已由 number_terms 的 skip_years 处理；观察窗口日期与表图编号不是数据，
+    不要求出现在所挂锚点的原文里。
+    """
+    return am.line_terms(_MD_DATE_RE.sub("", _TABLE_REF_RE.sub("", text)))
 
 
 def _unanchored_nums(line):
@@ -2198,6 +2239,8 @@ def _unanchored_nums(line):
         return []
     clean = re.sub(r"\*\*|`", "", s)
     clean = _DATE_RE.sub("", clean)
+    clean = _MD_DATE_RE.sub("", clean)
+    clean = _TABLE_REF_RE.sub("", clean)
     nums = [n for n, _u in am.number_terms(clean)]
     return nums if len(clean) >= 12 else []
 
@@ -2358,7 +2401,7 @@ def _table_checks(report_md):
                 if cell.strip() in _MISSING_CELLS:
                     problems.append(f"表格单元格缺失数据（{cell.strip()}）：{row.strip()[:50]}")
                     continue
-                terms = am.line_terms(cell)
+                terms = _data_terms(cell)
                 unit = (header_units.get(k) if aligned else "") or row_unit or cap_unit
                 if unit:
                     terms = [(n, u or unit) for n, u in terms]
@@ -2388,6 +2431,45 @@ _QUARTER_CLAIM_RE = re.compile(
 _CUMUL_WORD_RE = re.compile(r"累计|前三季度|年初至报告期末|上半年|全年")
 _CUMUL_PAGE_RE = re.compile(r"年初至报告期末|前三季度|本年累计|本期累计|1[—\-–]9月|1[—\-–]6月")
 _SINGLE_PAGE_RE = re.compile(r"本报告期|本季度|单季")
+_CN_QUARTER = {"一": "1", "二": "2", "三": "3", "四": "4"}
+# 季度标识整段掩掉再比数字，避免「3Q26」里的 26 被当裸数字凑数
+_QUARTER_TOKEN_RE = re.compile(
+    r"20[0-9]{2}\s*年?\s*Q\s*[1-4]"
+    r"|(?<![0-9A-Za-z])[1-4]Q\s*(?:20[0-9]{2}|[0-9]{2})"
+    r"|(?<![0-9A-Za-z])(?:20[0-9]{2}|[0-9]{2})Q[1-4](?![0-9])"
+    r"|(?<![0-9A-Za-z])Q\s*[1-4](?![0-9])"
+    r"|20[0-9]{2}\s*年\s*第?\s*[一二三四1-4]季度"
+    r"|(?<![一二三四五六七八九十0-9前去上])[一二三四]季度"
+    r"|(?<![0-9\-—–])[1-4]\s*季度")
+
+
+def _quarter_keys(text):
+    """文本里出现的季度标识，归一成（年或 None, 季度）集合。「前三季度」是累计，不算。"""
+    keys = set()
+    for m in re.finditer(r"(20[0-9]{2})\s*年?\s*Q\s*([1-4])(?![0-9])", text, re.I):
+        keys.add((m.group(1), m.group(2)))
+    for m in re.finditer(r"(?<![0-9A-Za-z])([1-4])Q\s*(20[0-9]{2})", text):
+        keys.add((m.group(2), m.group(1)))
+    for m in re.finditer(r"(?<![0-9A-Za-z])([1-4])Q\s*([0-9]{2})(?![0-9])", text):
+        keys.add((str(2000 + int(m.group(2))), m.group(1)))
+    for m in re.finditer(r"(?<![0-9A-Za-z])(20[0-9]{2}|[0-9]{2})Q([1-4])(?![0-9])", text):
+        y = m.group(1)
+        keys.add((y if len(y) == 4 else str(2000 + int(y)), m.group(2)))
+    for m in re.finditer(r"(?<![0-9A-Za-z])Q\s*([1-4])(?![0-9])", text):
+        keys.add((None, m.group(1)))
+    for m in re.finditer(r"(20[0-9]{2})\s*年\s*第?\s*([一二三四1-4])季度", text):
+        keys.add((m.group(1), _CN_QUARTER.get(m.group(2), m.group(2))))
+    for m in re.finditer(r"(?<![一二三四五六七八九十0-9前去上])([一二三四])季度", text):
+        keys.add((None, _CN_QUARTER[m.group(1)]))
+    for m in re.finditer(r"(?<![0-9\-—–])([1-4])\s*季度", text):
+        keys.add((None, m.group(1)))
+    return keys
+
+
+def _quarter_key_hit(line_keys, sent_keys):
+    """同季度即算命中；两边年份都有值时要求年份一致。"""
+    return any(lq == sq and (ly is None or sy is None or ly == sy)
+               for ly, lq in line_keys for sy, sq in sent_keys)
 
 
 def _quarter_scope_mismatch(line, texts):
@@ -2395,13 +2477,32 @@ def _quarter_scope_mismatch(line, texts):
 
     三季报利润表整页是「2026年前三季度（1-9月）」累计口径，数字对得上不代表
     期间对得上；宇通第 8 节就把累计的其他综合收益写成「26Q3」。（待修清单第 37 条）
+
+    页内别处的「1-9月/累计」可能只是别的指标（行业周报里的啤酒产量等），不能据此
+    把整页判成累计口径；页面自己把所写季度与数字同句标注的（研报摘要「3Q26白酒
+    板块营收增速-10.1%」），句子引的就是页面写明的单季数，不算不符。
     """
     if not _QUARTER_CLAIM_RE.search(line) or _CUMUL_WORD_RE.search(line):
         return False
     pages = [t for t in texts if t]
     if not pages:
         return False
-    return all(_CUMUL_PAGE_RE.search(t) and not _SINGLE_PAGE_RE.search(t) for t in pages)
+    if not all(_CUMUL_PAGE_RE.search(t) and not _SINGLE_PAGE_RE.search(t) for t in pages):
+        return False
+    line_keys = _quarter_keys(line)
+    if not line_keys:
+        return True
+    terms = am.line_terms(_QUARTER_TOKEN_RE.sub("□", wiki.ANCHOR_RE.sub("", line)))
+    for t in pages:
+        for sent in re.split(r"[。；！？]", t):
+            if _CUMUL_WORD_RE.search(sent) or _CUMUL_PAGE_RE.search(sent):
+                continue
+            if not _quarter_key_hit(line_keys, _quarter_keys(sent)):
+                continue
+            if any(am.unit_has_term(_QUARTER_TOKEN_RE.sub("□", sent), term, round_ok=True)
+                   for term in terms):
+                return False
+    return True
 
 
 def _anchor_checks(report_md):
@@ -2428,7 +2529,7 @@ def _anchor_checks(report_md):
         # 空的「（测算：）」没有依据，不能据此免核。依据可以写在括号中段
         # （「（对应总股本91.17亿股，测算：7772.41/91.17≈85.3元）」），不要求紧跟左括号
         derived = re.search(r"测算\s*[:：]\s*[^）)\s]", ln) is not None
-        terms = am.line_terms(wiki.ANCHOR_RE.sub("", ln))
+        terms = _data_terms(wiki.ANCHOR_RE.sub("", ln))
         if derived or not terms:
             continue
         covered = set()

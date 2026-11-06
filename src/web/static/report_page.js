@@ -110,13 +110,13 @@ function renderDetail(job) {
         <div class="report-title">${esc(job.title)}</div>
         <div class="muted">${esc(job.kind_label || "行业研报")} · ${esc(job.question || "")}</div>
       </div>
-      <span class="job-status ${status === "error" && !rescuing ? "bad" : status === "done" ? "ok" : "run"}">${esc(rescuing ? `正在${phaseLabel}（救火中）` : job.status_label || status)}</span>
+      <span class="job-status ${status === "error" && !rescuing ? "bad" : (status === "done" || rescuing) ? "ok" : "run"}">${esc(rescuing ? `正在${phaseLabel}（救火中）` : job.status_label || status)}</span>
     </div>
     ${linksHTML(job)}
     ${REPORT_RUNNING.has(status) || rescuing ? "" : `<div class="report-actions"><button class="ghost" data-act="delete-job">删除这份研报</button></div>`}
     ${status === "error" && job.error ? (rescuing
-      ? `<div class="rescue-strip">任务在${esc(phaseLabel)}阶段失败，救火员正在自动修复；结束后本页会自动更新，请稍候，先不要点继续或删除。<details><summary>错误详情</summary><pre>${esc(job.error)}</pre></details></div>`
-      : `<div class="warn-strip">${esc(job.error)}</div>
+      ? `<div class="rescue-note muted">任务在${esc(phaseLabel)}阶段失败，救火员正在自动修复，进度与错误详情见上方绿色卡片；结束后本页会自动更新，请稍候，先不要点继续或删除。</div>`
+      : `<div class="error-strip">${esc(job.error)}</div>
       <div class="report-actions">
         <button class="primary" data-act="continue">继续此阶段</button>
         <button class="ghost" data-act="fallback">改走内置底稿</button>
@@ -426,12 +426,23 @@ document.getElementById("job-refresh").addEventListener("click", () => {
   if (currentJobId) loadJob(currentJobId);
 });
 
-/* 进行中的任务卡（报告 / 补缺口） */
+/* 任务卡是否就是当前任务的失败卡：救火期间要把它换成绿色救火卡，先别亮红 */
+function isCurrentJobErrorTask(t, job) {
+  if (!job || t.kind !== "report" || t.status !== "error") return false;
+  if (t.key && job.id) return t.key === job.id;
+  return !!(job.error && t.error && t.error === job.error);
+}
+
+/* 进行中的任务卡（报告 / 补缺口）；救火进行中时，在原位置显示绿色救火卡 */
 App.onTasks.push((tasks) => {
   const area = document.getElementById("job-tasks");
   if (!area) return;
-  const mine = tasks.filter((t) => t.kind === "report" || t.kind === "fetch").slice(-6);
-  area.innerHTML = mine.map((t) => App.taskCardHTML(t)).join("");
+  const rescuing = !!(currentJob && currentJob.status === "error" && currentJob.rescue_active);
+  const mine = tasks.filter((t) => t.kind === "report" || t.kind === "fetch")
+    .filter((t) => !(rescuing && isCurrentJobErrorTask(t, currentJob)))
+    .slice(-6);
+  const rescue = rescuing ? App.rescueCardHTML(currentJob) : "";
+  area.innerHTML = rescue + mine.map((t) => App.taskCardHTML(t)).join("");
 });
 
 /* 阶段推进时自动刷新；error 且救火仍在跑也算进行中，救火结束后恢复失败态 */

@@ -21,6 +21,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -94,7 +95,7 @@ def _prompt(job_id: str, phase: str) -> str:
         f"救火任务：报告任务 {job_id} 在 {phase} 阶段失败，已自动派你处理。\n"
         f"先读 data/report_jobs/{job_id}.json 的 status、phase、error、stuck 和最后 30 条 log，"
         "再读 data/report_jobs/ 下该任务的 sectionN.md 失败草稿（如存在）与 raw 原文，定位根因。\n"
-        "按你的代理定义修：能改代码就改，改完重启网页服务、跑全量测试，"
+        "按你的代理定义修：能改代码就改，改完等网页服务热重载完成（/api/health 恢复 200）、跑全量测试，"
         f"再调 POST http://127.0.0.1:5000/api/report/{job_id}/continue 续跑，"
         "盯到 status 不在 running/queued。\n"
         "不写 wiki、不删文件、不装包、不碰 git；不放宽锚点核验、勾稽 R1–R4、交付闸门。\n"
@@ -231,3 +232,48 @@ def rescue_active(job) -> bool:
     except ValueError:
         pass
     return pid_alive(last.get("pid"))
+
+
+def _tail_activity(rel_path, limit=6000):
+    """救火日志最后一行，用于网页显示「救火员正在干什么」。"""
+    if not rel_path:
+        return ""
+    try:
+        p = config.ROOT / rel_path
+        with p.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - limit))
+            data = f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    data = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", data)   # 去终端颜色/光标控制符
+    lines = [ln.strip() for ln in data.splitlines() if ln.strip()]
+    return lines[-1][:200] if lines else ""
+
+
+def rescue_state(job) -> dict:
+    """给网页的救火快照：是否在救火、谁在救、正在做什么、错误详情。
+
+    救火结束后 active 变 False，前端据此把绿色救火卡换成红色失败框。
+    """
+    state = {
+        "active": False, "agent": "", "phase": "", "started_at": "",
+        "activity": "", "log": "", "error": str(job.get("error") or ""),
+        "attempts": 0,
+    }
+    if job.get("status") != "error":
+        return state
+    prior = job.get("auto_rescue") or []
+    if not prior:
+        return state
+    last = prior[-1]
+    state.update(agent=str(last.get("agent") or ""),
+                 phase=str(last.get("phase") or ""),
+                 started_at=str(last.get("at") or ""),
+                 log=str(last.get("log") or ""),
+                 attempts=len(prior))
+    state["active"] = rescue_active(job)
+    if state["active"]:
+        state["activity"] = _tail_activity(state["log"])
+    return state
