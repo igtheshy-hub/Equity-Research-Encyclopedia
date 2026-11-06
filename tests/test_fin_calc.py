@@ -109,6 +109,19 @@ def test_periods():
     check("单季同比", fin_calc.single_yoy(s, "2025FY", "归母净利润"), (35 - 26) / (30 - 22) - 1)
 
 
+def test_indicators_disclosed_roe_unit():
+    print("[派生指标] 披露 ROE 按单位换算")
+    s = {"2025FY": {"items": {
+        "营业收入": {"v": 640e9, "a": "[[t.pdf#p1]]"},
+        "净利润": {"v": 35e9, "a": "[[t.pdf#p1]]"},
+        "归母净利润": {"v": 35e9, "a": "[[t.pdf#p1]]"},
+        "所有者权益合计": {"v": 230e9, "a": "[[t.pdf#p1]]"},
+        "加权平均净资产收益率": {"v": 15.31, "a": "[[t.pdf#p1]]", "unit": "%"},
+    }}}
+    ind, _anc, _missing = fin_calc.compute_indicators(s, "2025FY")
+    check("披露 ROE 百分数转小数", ind.get("ROE(加权披露)"), 0.1531)
+
+
 def test_indicators():
     print("[派生指标]")
     s = STORE["periods"]
@@ -132,6 +145,7 @@ if __name__ == "__main__":
     test_normalize()
     test_reconciliation()
     test_periods()
+    test_indicators_disclosed_roe_unit()
     test_indicators()
     print()
     if FAILS:

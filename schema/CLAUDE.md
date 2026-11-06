@@ -4,7 +4,7 @@
 
 本项目为行业研究的 LLM Wiki 知识库。raw/ 存放原始资料（人工管理，智能体只读），wiki/ 存放编译后的知识页面（智能体维护），outputs/ 存放查询产出。
 
-本文件是操作细则总册：根 CLAUDE.md 定大方向（问答规则、写入纪律、流水线分工），会话工作流在 .claude/skills/（kb-ask 问答、finstmt-qa 财报问答、finstmt-ingest 财报摄取、company-report / industry-report 研报框架），程序实现在 src/。
+本文件是操作细则总册：根 CLAUDE.md 定大方向（问答规则、写入纪律、流水线分工），会话工作流在 .claude/skills/（kb-ask 问答、finstmt-qa 财报问答、finstmt-ingest 财报摄取、earnings-review 业绩点评、company-report / industry-report 研报框架），程序实现在 src/。
 
 ## Wiki 页面格式
 
@@ -72,7 +72,7 @@ frontmatter 除必填的 title / type / sources / updated 外，可加 aliases�
 
 ### 财报摄取（专用流程）
 
-- raw/filings/ 的财报不走通用编译提示词，ingest_one 自动分流到 src/filing.py 四段式流程（定位 → 抄录 → 计算 → 落库），完整规则见 .claude/skills/finstmt-ingest/SKILL.md
+- raw/filings/ 的财报不走通用编译提示词，ingest_one 自动分流到 .claude/skills/finstmt-ingest/scripts/filing_pipeline.py 四段式流程（定位 → 抄录 → 计算 → 落库），完整规则见 .claude/skills/finstmt-ingest/SKILL.md；src/filing.py 只是兼容入口
 - 公司页「经营与财务」节追加结构化行：【数据】报告期 合并 科目 = 数值 [[锚点]]（报表原值，金额单位元、百分数带 %、每股收益带 元/股，按科目披露单位显示）、【指标】报告期 指标名(口径) = 数值 [[锚点]]（代码机械计算的派生值，多口径并存）、【管理层】「原话」——语境 [[锚点]]、【数据】报告期 目标 数据名（口径） = 数值 单位 [[锚点]]（带目标清单摄入时按清单补抄的字典外数据，仅当次摄入产生）；判断类内容一律不在摄取层产出
 - 勾稽校验（R1—R4，容差 config.ingest.filing_check_tol）任一失败整份挂起：不入 manifest、不上 wiki，错误清单打印交人工
 - 结构化存储 data/fin/<公司slug>.json：periods 按报告期（如 2025FY）存科目原值、母公司口径、管理层引述与派生指标；每个科目存 `{v, a, unit, statement, listed}`，unit 区分「元 / % / 元/股 / 股」等，金额统一换算成元，百分数保留披露的百分点原值（15.31 表示 15.31%），每股收益不按万元缩放；后续报告期的同比/单季/TTM/平均口径从该文件取上年数据，缺则指标进缺失清单不阻塞
@@ -101,7 +101,7 @@ frontmatter 除必填的 title / type / sources / updated 外，可加 aliases�
 - 页面没有的信息必须回答「知识库中没有该信息」，禁止用模型自身知识补全
 - 会话提取：答案中跨页面综合的新知识由模型提案（只算不写），网页端弹窗征求确认、可勾选行子集，写入时 history 记「会话中提取」/「会话中提取新建」，已提取过的行不再重复呈现；命令行 y/N 确认
 - 提案提醒语义：GET /api/proposals/pending 是只读查询，刷新或切页不会把提案标记为已提醒；「稍后处理」只推迟 24 小时（proposal_snoozed_until），「不再提醒」才写 proposal_dismissed=true；关闭弹窗既不推迟也不丢弃，下次仍会出现
-- 财报分析注入：意图判别同时输出领域（finstmt/general），涉及报表数据、比率、盈利、现金流、偿债、周转、地雷、审计意见等的问题判为 finstmt，在问答、深查、报告三处提示词注入财报分析纪律（先盘数据再判断、指标必带口径与报告期、阈值注明张明辉出处并提示 A 股适用限度、地雷六特征逐项过数、缺数明说、结论分层），流程见 .claude/skills/finstmt-qa/SKILL.md
+- 财报分析注入：意图判别同时输出领域（finstmt/general），涉及报表数据、比率、盈利、现金流、偿债、周转、地雷、审计意见等的问题判为 finstmt，在问答、深查、报告三处提示词注入财报分析纪律（先盘数据再判断、指标必带口径与报告期、阈值注明张明辉出处并提示 A 股适用限度、地雷六特征逐项过数、缺数明说、结论分层）。注入内容现读 .claude/skills/finstmt-qa/SKILL.md 的 `<!-- ASK-RUNTIME:START/END -->` 段，改技能即改问答纪律；业绩点评类问题另注入 .claude/skills/earnings-review/references/report-structure.md 的 `<!-- QA-FRAMEWORK:START/END -->` 段，可比公司框架仍取 industry-report 的 comps-analysis.md
 - 【观点】沉淀：财报分析判断属主观观点，只能经会话提取产生（模型提案时以【观点】前缀标行，格式【观点】报告期 判断句），用户确认后写入公司页「分析观点」节；摄取层永不产出观点行
 - 新知识回流的条目同样必须带 raw 来源锚点，无锚点的新知识不写入 wiki
 - 会话持久化：问答会话与消息流存 data/conversations.json，重启不丢

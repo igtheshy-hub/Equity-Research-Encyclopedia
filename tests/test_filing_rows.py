@@ -94,6 +94,27 @@ def test_scope_falls_back_to_claimed_page_when_value_nowhere():
     assert filing._mechanical_scopes(units, rows) == ["合并"]
 
 
+def test_scope_uses_value_position_when_item_absent():
+    """权益变动表行只有数字没有行标：期初未分配利润在页上核不到科目名时，
+    按数值位置归属，不能继承上一页的母公司口径（茅台 2025 年报 R3 挂起的根因）。"""
+    units = [
+        {"n": 66, "text": "母公司现金流量表\n经营活动产生的现金流量净额 1 2"},
+        {"n": 68, "text": "合并所有者权益变动表\n2025年度\n"
+                          "一、上年年末余额 1,256,197,800.00 182,787,415,205.05 "
+                          "233,105,984,399.47 8,905,330,721.13 242,011,315,120.60"},
+        {"n": 70, "text": "母公司所有者权益变动表\n2025年度\n"
+                          "一、上年年末余额 1,256,197,800.00 115,219,987,975.81 "
+                          "164,486,282,337.92"},
+    ]
+    rows = [
+        {"statement": "所有者权益变动表", "scope": "合并", "item": "期初未分配利润",
+         "value": 182787415205.05, "unit": "元", "page": 68},
+        {"statement": "所有者权益变动表", "scope": "合并", "item": "期初未分配利润",
+         "value": 115219987975.81, "unit": "元", "page": 70},
+    ]
+    assert filing._mechanical_scopes(units, rows) == ["合并", "母公司"]
+
+
 def test_scope_matches_item_with_colon_prefix():
     """科目名带「加：」前缀时也要能在页上定位：冒号隔开不算找不到，
     否则合并与母公司的期初余额会按页首继承互换归属（宇通 2025 年报 R2 挂起的根因）。"""
@@ -137,6 +158,18 @@ def test_scope_marks_bare_company_header_as_parent():
          "value": 7872302158.31, "unit": "元", "page": 145},
     ]
     assert filing._mechanical_scopes(units, rows) == ["合并", "母公司", "母公司"]
+
+
+def test_equity_movement_positive_sign_flipped_when_negative_on_page():
+    """提取盈余公积在未分配利润列是减项；模型抄成盈余公积列的正数时，
+    同页原行能核到负数就翻回，否则 R3 靠容差勉强通过、入库值是错符号的。"""
+    page = ("合并所有者权益变动表\n"
+            "1．提取盈余公积 1,706,238,132.67 -1,706,238,132.67\n")
+    rows = [{"statement": "所有者权益变动表", "scope": "合并", "item": "提取盈余公积",
+             "value": 1706238132.67, "unit": "元", "page": 1}]
+    cons, _parent, _dropped = filing._normalize_rows(
+        Path("x.pdf"), rows, None, {1: page})
+    assert cons["提取盈余公积"]["v"] == -1706238132.67
 
 
 def test_primary_statement_beats_key_financial_data_for_same_item():

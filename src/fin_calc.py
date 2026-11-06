@@ -1,7 +1,8 @@
 """财报计算器：单位归一、科目归一、勾稽校验、报告期运算与派生指标。
 
 口径依据 .claude/skills/finstmt-ingest/references/财报摄取-03-多口径指标字典.md；科目依据 schema/filing_items.json。
-所有计算纯机械，不做任何判断。勾稽覆盖 R1—R4；R4 的补充资料起点净利润由 src/filing.py
+所有计算纯机械，不做任何判断。勾稽覆盖 R1—R4；R4 的补充资料起点净利润由
+.claude/skills/finstmt-ingest/scripts/filing_pipeline.py
 从补充资料页机械解析后传入，取不到时跳过。
 """
 import json
@@ -310,7 +311,7 @@ def compute_indicators(store, pk):
     wroe = _v(pd_, "加权平均净资产收益率")
     # 只看披露单位：单位为 % 时 15.31 表示 15.31%，除以 100 存成 0.1531。
     # 不再用 abs>1.5 猜测——那会把以小数披露（0.1531）的 ROE 误缩小、把高比例误放大。
-    if wroe is not None and is_percent_unit(item_unit(pd_, "加权平均净资产收益率")):
+    if wroe is not None and is_percent_unit(item_unit(pd_, "", "加权平均净资产收益率")):
         wroe = wroe / 100
     put("ROE(加权披露)", wroe, "加权平均净资产收益率")
     eq, eq_p = _v(pd_, "所有者权益合计"), _v(pd_, "归属于母公司所有者权益合计") or _v(pd_, "所有者权益合计")

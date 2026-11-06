@@ -1000,15 +1000,9 @@ OUTLINE_PROMPT = """你是中文卖方行业研报的主笔，现在只定大纲
 4. 输出 markdown：第一行 "# 大纲：{TITLE}"，其后每节 "## 一、标题" 形式，节内用短横线列论点/数据/图表建议/取料页
 5. 不写正文，不写套话"""
 
-GAPS_PROMPT = """你在给研报大纲列数据缺口。报告主题：{TITLE}
-
-大纲：
-{OUTLINE}
-
-知识库已有页面：{PAGES}
-
-可用的免登录取数源（source / params），source 必须原样使用下面的英文 id：
-- stats_series：国家统计局，params {{"keyword": "中文指标名，多个用分号", "region": "全国或省市", "freq": "auto / 月 / 季 / 年，只填一个", "periods": 期数}}
+# 技能来源表缺失时的兜底：与 .claude/skills/data-sources/references/sources.md 的
+# STRUCTURED 块逐行对应，改一边要同步另一边
+GAPS_SOURCES_FALLBACK = """- stats_series：国家统计局，params {{"keyword": "中文指标名，多个用分号", "region": "全国或省市", "freq": "auto / 月 / 季 / 年，只填一个", "periods": 期数}}
 - akshare_series：AKShare 宏观序列，params {{"series": "以下之一：{SERIES}", "periods": 期数}}
 - eastmoney_reports：东财研报下载，params {{"qtype": "只填数字：0=个股，1=行业，2=策略", "industry": "行业", "stock_code": "代码", "broker": "券商可空", "limit": 份数}}
 - cninfo_announce：巨潮 A 股公告（港股不覆盖），params {{"query": "检索词", "code": "A股代码可空", "category": "分类代码可空", "days": 天数, "limit": 份数}}
@@ -1024,7 +1018,18 @@ GAPS_PROMPT = """你在给研报大纲列数据缺口。报告主题：{TITLE}
 - dbnomics_series：DBnomics，params {{"series": "provider/dataset/series", "periods": 期数}}
 - worldbank_series：World Bank，params {{"indicator": "指标代码", "countries": "CHN", "periods": 期数}}
 - caam_article：中汽协行业要闻文字稿，params {{"keyword": "标题关键词", "category": "行业要闻 / 协会动态，只填一个", "limit": 篇数}}；产销数据文章正文是图片，不要用它取销量，改用 cpca_sales
-- web_search：网络检索兜底，params {{"query": "检索式", "limit": 份数}}
+- web_search：网络检索兜底，params {{"query": "检索式", "limit": 份数}}"""
+
+
+GAPS_PROMPT = """你在给研报大纲列数据缺口。报告主题：{TITLE}
+
+大纲：
+{OUTLINE}
+
+知识库已有页面：{PAGES}
+
+可用的免登录取数源（source / params），source 必须原样使用下面的英文 id：
+{SOURCES}
 枚举参数只填一个值：数字型只填数字本身（charttype 填 6，不要填 6新能源），词表型只填一个词（freq 填 月，不要把整串选项抄进去）。
 先配专用源；专用源明确取不到的再用 web_search，不要直接放弃。港股公司的年报、中报、季报用 annual_report / periodic_report 专用源（按报告名过滤），只有专用源取不到才用 hkex_announce 的 annual / interim / quarterly 类别补，不要用 hkex_announce 加 all。
 
@@ -1155,6 +1160,7 @@ def _phase_outline(job_id, tid):
 def _extract_gaps(job, outline, page_titles):
     titles = "、".join(page_titles) or "（无）"
     prompt = (GAPS_PROMPT
+              .replace("{SOURCES}", fetcher.gaps_sources_text() or GAPS_SOURCES_FALLBACK)
               .replace("{TITLE}", job["title"])
               .replace("{OUTLINE}", outline[:9000])
               .replace("{PAGES}", titles)

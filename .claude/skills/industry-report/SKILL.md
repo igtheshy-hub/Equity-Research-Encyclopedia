@@ -14,7 +14,7 @@ description: 生成中文 A 股行业研报的完整流程：选样板研报、�
 
 本技能自带四份参考文件，会话内按需读取；网页管线按字数上限截取，不整份塞进提示词。
 
-- `references/report-structure.md` —— 定大纲与写业绩点评类段落时读，提供页面组织、表格与图表规范
+- `references/report-structure.md` —— 定大纲时读，提供页面组织、表格与图表规范；业绩点评问答的框架已拆到 earnings-review 技能，网页问答不再读本文件的问答段
 - `references/sector-overview.md` —— 定行业全景大纲时读，检查市场、结构、竞争、估值四块有没有漏
 - `references/competitive-analysis.md` —— 写竞争格局节时读，提供竞对分组、定位图与横向对比表
 - `references/comps-analysis.md` —— 写盈利与估值节时读，提供可比公司表、倍数选择与统计口径

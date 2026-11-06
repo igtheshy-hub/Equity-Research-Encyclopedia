@@ -398,6 +398,46 @@ def test_sample_chain_ingest_false_skips_ingest_inbox(monkeypatch):
     assert res["items"][0]["file"] == "x.pdf"
 
 
+def test_skill_source_table_covers_gap_sources():
+    rows = fetcher._sources_block("STRUCTURED")
+    ids = [r["id"] for r in rows]
+    assert len(ids) == 17 and len(set(ids)) == 17
+    assert {"stats_series", "cninfo_announce", "annual_report", "web_search"} <= set(ids)
+    text = fetcher.gaps_sources_text()
+    for r in rows:
+        assert f"- {r['id']}：{r['name']}，{r['doc']}" in text
+    assert "{{" in text  # 提示词用 replace 填充，双花括号是字面量
+
+
+def test_remember_web_sources_appends_to_skill_table(tmp_path, monkeypatch):
+    skill = tmp_path / "sources.md"
+    skill.write_text(
+        "# t\n\n<!-- SOURCES:WEB:START -->\n"
+        '{"title": "旧源", "url": "https://a.example.com/x", "added": "2026-01-01"}\n'
+        "<!-- SOURCES:WEB:END -->\n", encoding="utf-8")
+    monkeypatch.setattr(fetcher, "SKILL_SOURCES_PATH", skill)
+    fetcher._remember_web_sources([
+        {"title": "旧源", "url": "https://a.example.com/x"},
+        {"title": "新源", "url": "https://b.example.com/y"},
+        {"title": "字典页", "url": "https://www.zdic.net/hans/x"},
+    ])
+    raw = skill.read_text(encoding="utf-8")
+    rows = fetcher._sources_block("WEB")
+    assert [r["url"] for r in rows] == ["https://a.example.com/x", "https://b.example.com/y"]
+    assert raw.count("https://b.example.com/y") == 1
+    assert "zdic.net" not in raw
+
+
+def test_known_web_sources_falls_back_to_json(tmp_path, monkeypatch):
+    missing = tmp_path / "missing.md"
+    js = tmp_path / "web_sources.json"
+    js.write_text('{"sources": [{"title": "t", "url": "https://c.example.com"}]}',
+                  encoding="utf-8")
+    monkeypatch.setattr(fetcher, "SKILL_SOURCES_PATH", missing)
+    monkeypatch.setattr(fetcher, "WEB_SOURCES_PATH", js)
+    assert fetcher.known_web_sources() == [{"title": "t", "url": "https://c.example.com"}]
+
+
 def test_page_source_specs_now_five_with_cascade_metadata():
     specs = {s["id"]: s for s in fetcher.source_specs(only=fetcher.MANUAL_SOURCE_IDS)}
     assert list(specs) == list(fetcher.MANUAL_SOURCE_IDS)

@@ -2099,6 +2099,7 @@ def ingest_inbox(file_names, tid=None, targets=None, force_kind=None):
 BING_SEARCH_URL = "https://cn.bing.com/search"
 SOGOU_SEARCH_URL = "https://www.sogou.com/web"
 WEB_SOURCES_PATH = config.DATA_DIR / "web_sources.json"
+SKILL_SOURCES_PATH = config.SKILLS_DIR / "data-sources" / "references" / "sources.md"
 LESSONS_PATH = config.DATA_DIR / "fetch_lessons.json"
 
 # 字典、诗词、笔画类站点专吃中文长查询，正文没有一条产业数据，检索命中了也不能用
@@ -2112,7 +2113,38 @@ _STOP_KEYS = {"数据", "统计", "情况", "分析", "报告", "最新", "多�
               "怎么样", "中国", "行业", "市场"}
 
 
+def _sources_block(name):
+    """读 data-sources 技能 sources.md 里的机器可读块，一行一个 JSON。
+
+    返回 None 表示文件或块不存在，调用方据此回退旧清单；返回 [] 表示块存在但为空。
+    """
+    try:
+        raw = SKILL_SOURCES_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = re.search(rf"<!-- SOURCES:{name}:START -->(.*?)<!-- SOURCES:{name}:END -->",
+                  raw, re.S)
+    if not m:
+        return None
+    rows = []
+    for line in m.group(1).splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
 def known_web_sources():
+    """已登记的外部网页来源：首选 data-sources 技能的来源表，读不到回退 data/web_sources.json。"""
+    rows = _sources_block("WEB")
+    if rows is not None:
+        return [s for s in rows if s.get("url")]
     try:
         data = json.loads(WEB_SOURCES_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -2121,18 +2153,49 @@ def known_web_sources():
     return [s for s in items or [] if isinstance(s, dict) and s.get("url")]
 
 
-def _remember_web_sources(items):
-    """把检索到并抓取成功的来源记进 data/web_sources.json，下次检索可优先复用。"""
-    sources = known_web_sources()
-    known = {s["url"] for s in sources}
-    for it in items:
-        if it.get("url") and it["url"] not in known and not _junk_url(it["url"]):
-            sources.append({"title": it.get("title") or "", "url": it["url"],
-                            "added": config.today_str()})
-            known.add(it["url"])
+def _write_web_sources_json(sources):
     WEB_SOURCES_PATH.parent.mkdir(parents=True, exist_ok=True)
     WEB_SOURCES_PATH.write_text(json.dumps({"sources": sources}, ensure_ascii=False, indent=2),
                                 encoding="utf-8")
+
+
+def _remember_web_sources(items):
+    """把检索到并抓取成功的来源追加进 data-sources 技能的来源表，下次检索优先复用。"""
+    sources = known_web_sources()
+    known = {s["url"] for s in sources}
+    added = []
+    for it in items:
+        if it.get("url") and it["url"] not in known and not _junk_url(it["url"]):
+            row = {"title": it.get("title") or "", "url": it["url"],
+                   "added": config.today_str()}
+            sources.append(row)
+            added.append(row)
+            known.add(it["url"])
+    if not added:
+        return
+    try:
+        raw = SKILL_SOURCES_PATH.read_text(encoding="utf-8")
+        m = re.search(r"<!-- SOURCES:WEB:START -->(.*?)<!-- SOURCES:WEB:END -->", raw, re.S)
+    except OSError:
+        m = None
+    if m is None:
+        # 技能表缺失时仍写旧清单，新来源不至于丢
+        _write_web_sources_json(sources)
+        return
+    body = m.group(1).rstrip("\n")
+    if body:
+        body += "\n"
+    body += "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in added)
+    SKILL_SOURCES_PATH.write_text(raw[:m.start(1)] + body + raw[m.end(1):], encoding="utf-8")
+
+
+def gaps_sources_text():
+    """GAPS_PROMPT 的源枚举，由来源表 STRUCTURED 块生成；块缺失返回空串，由调用方兜底。"""
+    rows = _sources_block("STRUCTURED")
+    if not rows:
+        return ""
+    return "\n".join(f"- {r['id']}：{r['name']}，{r['doc']}"
+                     for r in rows if r.get("id") and r.get("name") and r.get("doc"))
 
 
 def _load_lessons():
@@ -3018,7 +3081,8 @@ def source_specs(only=None):
         {
             "id": "web_search", "label": "网络检索·外部来源兜底",
             "desc": "专用源取不到时用。免登录检索网页，正文摘录落快照 DOCX 并自动摄入；"
-                    "已抓过的来源记入 data/web_sources.json，同类检索优先复用。",
+                    "已抓过的来源记入 data-sources 技能 references/sources.md 的网页来源块，"
+                    "同类检索优先复用。",
             "params": [
                 {"name": "query", "label": "检索词", "type": "text", "default": "", "required": True},
                 {"name": "limit", "label": "来源数", "type": "number", "default": 3},

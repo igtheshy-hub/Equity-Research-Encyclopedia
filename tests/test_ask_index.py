@@ -120,6 +120,26 @@ def test_anchor_retry():
     check("answer 调用两次", fake.tasks.count("answer"), 2)
 
 
+def test_fin_block_reads_skill_and_matches_embedded():
+    assert ask_mod._fin_block().strip() == ask_mod.FIN_ANALYSIS_BLOCK.strip()
+
+
+def test_fin_block_reads_marker_and_falls_back_when_missing(tmp_path, monkeypatch):
+    skill = tmp_path / "SKILL.md"
+    skill.write_text("前言\n<!-- ASK-RUNTIME:START -->\n新纪律\n<!-- ASK-RUNTIME:END -->\n",
+                     encoding="utf-8")
+    monkeypatch.setattr(ask_mod, "FIN_SKILL_PATH", skill)
+    assert ask_mod._fin_block() == "\n新纪律\n"
+    monkeypatch.setattr(ask_mod, "FIN_SKILL_PATH", tmp_path / "missing.md")
+    assert ask_mod._fin_block() == ask_mod.FIN_ANALYSIS_BLOCK
+
+
+def test_method_block_earnings_comes_from_earnings_review_skill():
+    text = ask_mod._method_block("earnings")
+    assert "业绩点评类问题按以下顺序组织答案" in text
+    assert ask_mod._method_block("none") == ""
+
+
 if __name__ == "__main__":
     test_use_index_route()
     test_fallback_route()
@@ -127,6 +147,8 @@ if __name__ == "__main__":
     test_fallback_unanswerable()
     test_use_index_unanswerable()
     test_anchor_retry()
+    test_fin_block_reads_skill_and_matches_embedded()
+    test_method_block_earnings_comes_from_earnings_review_skill()
     print()
     if FAILS:
         print(f"FAILED {len(FAILS)}: {'、'.join(FAILS)}")

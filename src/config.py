@@ -281,6 +281,7 @@ WIKI_DIR = ROOT / "wiki"
 INDEX_MD = WIKI_DIR / "index.md"
 LOG_MD = WIKI_DIR / "log.md"
 SCHEMA_DIR = ROOT / "schema"
+SKILLS_DIR = ROOT / ".claude" / "skills"
 OUTPUTS_DIR = ROOT / "outputs"
 
 DATA_DIR = ROOT / "data"

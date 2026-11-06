@@ -1,6 +1,6 @@
 # 研报结构与版式规范
 
-本文件供 industry-report 定大纲时参考，也供网页问答的业绩点评类问题借用组织顺序。原 earnings-analysis 的 report-structure，2026-11-04 并入，删去美股专用格式，按 A 股与港股披露习惯改写。
+本文件供 industry-report 定大纲时参考。原 earnings-analysis 的 report-structure，2026-11-04 并入，删去美股专用格式，按 A 股与港股披露习惯改写。下方问答框架段自 2026-11-06 起不再被程序读取，业绩点评问答改读 earnings-review 技能的同类标记段；两处内容如需修改，以 earnings-review 为准。
 
 <!-- QA-FRAMEWORK:START -->
 ## 问答速用框架（业绩点评）

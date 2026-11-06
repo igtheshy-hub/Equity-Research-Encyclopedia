@@ -67,13 +67,22 @@ def cmd_selftest(args):
         print(f"  [提示] 没装 matplotlib：行业研报不出图（{e}）")
     print("== 技能目录 ==")
     for d in ("md-to-docx", "data-sources", "macro-data", "industry-report",
-              "company-report", "kb-ask", "finstmt-qa", "finstmt-ingest"):
+              "company-report", "kb-ask", "finstmt-qa", "finstmt-ingest",
+              "earnings-review"):
         p = config.ROOT / ".claude" / "skills" / d / "SKILL.md"
         if p.exists():
             print(f"  [好] {d}")
         else:
             ok = False
             print(f"  [缺] .claude/skills/{d}/SKILL.md")
+    # 财报摄取的实现脚本住在技能目录里，src/filing.py 只是指向它的兼容入口
+    pipeline = (config.ROOT / ".claude" / "skills" / "finstmt-ingest"
+                / "scripts" / "filing_pipeline.py")
+    if pipeline.exists():
+        print("  [好] finstmt-ingest/scripts/filing_pipeline.py")
+    else:
+        ok = False
+        print("  [缺] .claude/skills/finstmt-ingest/scripts/filing_pipeline.py")
     if not ok:
         print("\nselftest 未通过（见上），修好后重跑。")
         return 1
@@ -249,8 +258,10 @@ def cmd_serve(args):
     # 热重载换 worker 前会等任务表空闲（src/serve_reloader.py），救火员改代码不再杀进程
     print("启动本地网页：http://127.0.0.1:5000 （热重载已开：改代码自动换 worker，"
           "有任务在跑时等任务结束；Ctrl+C 停止）")
+    # werkzeug 默认只监听 py/pyc；技能 md 要显式作为 extra_files 传进去才触发换 worker
+    skill_docs = sorted(str(p) for p in config.SKILLS_DIR.rglob("*.md"))
     app.run(host="127.0.0.1", port=5000, debug=False,
-            use_reloader=True, reloader_type="kbidle")
+            use_reloader=True, reloader_type="kbidle", extra_files=skill_docs)
     return 0
 
 

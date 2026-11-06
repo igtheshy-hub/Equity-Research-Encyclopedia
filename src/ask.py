@@ -164,14 +164,31 @@ def _history_block(history):
     return "\n".join(lines) + "\n\n"
 
 
-# 业绩点评与可比公司两个问答框架，取自研报技能的 references，只注入标记段，不加载全文
-QA_REFERENCES_DIR = config.ROOT / ".claude" / "skills" / "industry-report" / "references"
+# 业绩点评与可比公司两个问答框架，只注入 skill references 里的标记段，不加载全文
+QA_REFERENCES_DIR = config.SKILLS_DIR / "industry-report" / "references"
 QA_FRAMEWORK_FILES = {
-    "earnings": QA_REFERENCES_DIR / "report-structure.md",
+    "earnings": config.SKILLS_DIR / "earnings-review" / "references" / "report-structure.md",
     "comps": QA_REFERENCES_DIR / "comps-analysis.md",
 }
 QA_FRAMEWORK_RE = re.compile(r"<!-- QA-FRAMEWORK:START -->(.*?)<!-- QA-FRAMEWORK:END -->", re.S)
-_QA_FRAMEWORK_CACHE = {}
+
+# 财报纪律现读 finstmt-qa 技能的 ASK-RUNTIME 段；代码常量只作技能缺失时的兜底
+FIN_SKILL_PATH = config.SKILLS_DIR / "finstmt-qa" / "SKILL.md"
+FIN_SKILL_RE = re.compile(r"<!-- ASK-RUNTIME:START -->(.*?)<!-- ASK-RUNTIME:END -->", re.S)
+
+
+def _fin_block():
+    """财报分析纪律。每次现读技能文件，技能缺失或标记为空时回退内嵌常量。"""
+    try:
+        raw = FIN_SKILL_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return FIN_ANALYSIS_BLOCK
+    hit = FIN_SKILL_RE.search(raw)
+    text = (hit.group(1) if hit else raw).strip()
+    if not text:
+        return FIN_ANALYSIS_BLOCK
+    return "\n" + text + "\n"
+
 
 _EARNINGS_KEYS = ("业绩点评", "财报点评", "季报点评", "中报点评", "年报点评", "业绩快报",
                   "业绩预告", "三季报", "半年报", "一季报", "超预期", "不及预期",
@@ -210,15 +227,12 @@ def _method_block(method):
     for name in ("earnings", "comps"):
         if method not in (name, "both"):
             continue
-        text = _QA_FRAMEWORK_CACHE.get(name)
-        if text is None:
-            try:
-                raw = QA_FRAMEWORK_FILES[name].read_text(encoding="utf-8")
-                hit = QA_FRAMEWORK_RE.search(raw)
-                text = hit.group(1).strip() if hit else ""
-            except OSError:
-                text = ""
-            _QA_FRAMEWORK_CACHE[name] = text
+        try:
+            raw = QA_FRAMEWORK_FILES[name].read_text(encoding="utf-8")
+            hit = QA_FRAMEWORK_RE.search(raw)
+            text = hit.group(1).strip() if hit else ""
+        except OSError:
+            text = ""
         if text:
             parts.append(text)
     if not parts:
@@ -549,7 +563,7 @@ def deep_ask(question, history=None, files=None):
     if not pieces:
         result["answer_md"] = "没有从 raw 文件提取到可用于回答的文字（可能均为扫描版或文件已移走）。"
         return result
-    fin = FIN_ANALYSIS_BLOCK if domain == "finstmt" else ""
+    fin = _fin_block() if domain == "finstmt" else ""
     messages = [{"role": "user", "content": DEEP_ANSWER_PROMPT
                  .replace("{FIN}", fin)
                  .replace("{METHOD}", _method_block(method))
@@ -620,7 +634,7 @@ def ask(question, history=None, propose=True):
         head = f"### {p['meta'].get('title', p['slug'])}（slug: {p['slug']}）"
         chunks.append("\n".join(x for x in (head, legend, p["body"]) if x))
     pages_text = "\n\n".join(chunks)
-    fin = FIN_ANALYSIS_BLOCK if domain == "finstmt" else ""
+    fin = _fin_block() if domain == "finstmt" else ""
     messages = [{"role": "user", "content": ANSWER_PROMPT
                  .replace("{FIN}", fin)
                  .replace("{METHOD}", _method_block(method))

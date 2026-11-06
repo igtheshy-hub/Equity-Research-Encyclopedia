@@ -1,6 +1,6 @@
 from . import config, llm, source_priority, wiki
-from .ask import (FIN_ANALYSIS_BLOCK, REPORT_PAGE_HARD, REPORT_PAGE_SOFT,
-                  _allowed_from_pages, _select_pages, _violations, strip_glitch)
+from .ask import (REPORT_PAGE_HARD, REPORT_PAGE_SOFT, _allowed_from_pages,
+                  _fin_block, _select_pages, _violations, strip_glitch)
 from .classify import sanitize
 from .ingest import load_manifest
 
@@ -46,7 +46,7 @@ def generate(title, question, task_id=None, domain="general"):
         chunks.append("\n".join(x for x in (head, legend, p["body"]) if x))
     pages_text = "\n\n".join(chunks)
     _tick(task_id, 25, f"已选 {len(sel_pages)} 页，正在撰写")
-    fin = FIN_ANALYSIS_BLOCK if domain == "finstmt" else ""
+    fin = _fin_block() if domain == "finstmt" else ""
     messages = [{"role": "user", "content": REPORT_PROMPT
                  .replace("{FIN}", fin)
                  .replace("{PAGES}", pages_text)
