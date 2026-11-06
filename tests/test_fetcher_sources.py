@@ -457,3 +457,103 @@ def test_page_source_specs_now_five_with_cascade_metadata():
     assert region["options_depends"]["fields"] == ["keyword"]
     freq = next(p for p in stats["params"] if p["name"] == "freq")
     assert freq["options_depends"]["fields"] == ["keyword", "region"]
+
+
+def test_cninfo_pickers_match_spaced_sec_name():
+    period = [{"announcementTitle": "2026年半年度报告", "secName": "五 粮 液"}]
+    assert fetcher._pick_periodic(period, "五粮液", ("半年度报告", "半年报"))
+    annual = [{"announcementTitle": "2025年年度报告", "secName": "五 粮 液"}]
+    assert fetcher._pick_cninfo_annual(annual, "五粮液")
+
+
+def test_fetch_cninfo_annual_prefers_stock_search(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(fetcher, "cninfo_stock",
+                        lambda code="", name="": {"code": "000858", "orgId": "gssz0000858"})
+
+    def fake_search(query, **kw):
+        calls.append((query, kw))
+        if kw.get("stock"):
+            return [{"announcementTitle": "2025年年度报告", "secName": "五 粮 液",
+                     "adjunctUrl": "https://example.test/a.pdf"}]
+        return [{"announcementTitle": "G 五粮液2005年年度报告", "secName": "五 粮 液",
+                 "adjunctUrl": "https://example.test/b.pdf"}]
+
+    monkeypatch.setattr(fetcher, "_cninfo_search", fake_search)
+    monkeypatch.setattr(fetcher, "_download_pdf", lambda url, stem: Path("x.pdf"))
+    res = fetcher.fetch_cninfo_annual("五粮液")
+    assert calls[0][1].get("stock") == "000858,gssz0000858"
+    assert res["items"][0]["title"] == "2025年年度报告"
+
+
+def test_fetch_cninfo_annual_rejects_stale_fulltext(monkeypatch):
+    monkeypatch.setattr(fetcher, "cninfo_stock", lambda code="", name="": None)
+    monkeypatch.setattr(fetcher, "_cninfo_search", lambda *a, **k: [
+        {"announcementTitle": "G 五粮液2005年年度报告", "secName": "五 粮 液",
+         "adjunctUrl": "https://example.test/b.pdf"}])
+    with pytest.raises(fetcher.FetchError, match="2005"):
+        fetcher.fetch_cninfo_annual("五粮液")
+
+
+def test_fetch_cninfo_periodic_prefers_stock_search(monkeypatch):
+    calls = []
+    monkeypatch.setattr(fetcher, "cninfo_stock",
+                        lambda code="", name="": {"code": "000858", "orgId": "gssz0000858"})
+
+    def fake_search(query, **kw):
+        calls.append((query, kw))
+        if kw.get("stock"):
+            return [{"announcementTitle": "2026年半年度报告", "secName": "五 粮 液",
+                     "adjunctUrl": "https://example.test/a.pdf"}]
+        return []
+
+    monkeypatch.setattr(fetcher, "_cninfo_search", fake_search)
+    monkeypatch.setattr(fetcher, "_download_pdf", lambda url, stem: Path("x.pdf"))
+    res = fetcher.fetch_cninfo_periodic("五粮液", kind="interim", code="000858.SZ")
+    assert calls[0][1].get("stock") == "000858,gssz0000858"
+    assert res["items"][0]["title"] == "2026年半年度报告"
+
+
+def test_fetch_cninfo_periodic_maps_quarterly_to_latest_a_quarter(monkeypatch):
+    q = fetcher._latest_a_quarter()
+    title = {"q1": "2026年第一季度报告", "q3": "2026年第三季度报告"}[q]
+    cats = []
+    monkeypatch.setattr(fetcher, "cninfo_stock",
+                        lambda code="", name="": {"code": "000858", "orgId": "gssz0000858"})
+
+    def fake_search(query, **kw):
+        cats.append(kw.get("category"))
+        return [{"announcementTitle": title, "secName": "五 粮 液",
+                 "adjunctUrl": "https://example.test/q.pdf"}]
+
+    monkeypatch.setattr(fetcher, "_cninfo_search", fake_search)
+    monkeypatch.setattr(fetcher, "_download_pdf", lambda url, stem: Path("q.pdf"))
+    res = fetcher.fetch_cninfo_periodic("五粮液", kind="quarterly", code="000858")
+    assert cats[0] == fetcher.CNINFO_PERIODIC[q][0]
+    assert res["items"][0]["category"] == fetcher.CNINFO_PERIODIC[q][2]
+
+
+def test_csindex_valuation_matches_by_index_code(monkeypatch):
+    def fake_get(path, params=None):
+        if "index-basic-info" in path:
+            return {"indexShortNameCn": "中证白酒", "indexFullNameCn": "中证白酒指数"}
+        if "indexValuation" in path:
+            return {"tradeDate": "20261106", "indexValuations": [
+                {"indexCode": "399997", "indexName": "中证白酒指数",
+                 "pe": 21.6, "pb": 5.1, "dp": 4.45}]}
+        raise fetcher.FetchError("接口不可用")
+
+    monkeypatch.setattr(fetcher, "_csindex_get", fake_get)
+    res = fetcher.fetch_csindex_snapshot("399997")
+    index = {r["指标"]: r["数值"] for r in res["rows"]}
+    assert index["市盈率 PE"] == 21.6
+    assert index["股息率"] == 4.45
+
+def test_dynamic_shell_detects_js_placeholder_page():
+    shell = ("首页 酒价格 今日酒价 白酒价格倒挂 茅台年份酒 品牌大全 登录 注册 "
+             "最新价 - 加载中......")
+    assert fetcher._dynamic_shell(shell)
+    loaded = "贵州茅台 最新价 1427 元，总市值 17908 亿元，市盈率 19.4 倍"
+    assert not fetcher._dynamic_shell(loaded)
+    assert not fetcher._dynamic_shell("白酒行业深度调整，正文没有占位符")

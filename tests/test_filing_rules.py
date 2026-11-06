@@ -261,12 +261,45 @@ def test_target_ingest():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_notice_without_period():
+    print("[公告类材料定位]")
+
+    class Notice:
+        name = "五粮液_2025年度利润分配公告_20251106.pdf"
+
+    class Real:
+        name = "五粮液财报_20260430.pdf"
+
+    units = [{"n": 1, "text": "2025年度利润分配公告"}]
+    orig = filing.llm.chat
+    try:
+        filing.llm.chat = lambda *a, **k: {
+            "period_type": "", "period_end": "", "company": "五粮液",
+            "sections": {"key": [], "bs": [], "is": [], "cf": []}}
+        try:
+            filing._locate(Notice(), units)
+            check("公告转文本编译", False, True)
+        except filing.UnsupportedFiling:
+            check("公告转文本编译", True, True)
+        filing.llm.chat = lambda *a, **k: {
+            "period_type": "", "period_end": "", "company": "五粮液",
+            "sections": {"bs": [1], "is": [1], "cf": [1]}}
+        try:
+            filing._locate(Real(), units)
+            check("真财报缺报告期仍报错", False, True)
+        except ValueError:
+            check("真财报缺报告期仍报错", True, True)
+    finally:
+        filing.llm.chat = orig
+
+
 if __name__ == "__main__":
     test_supp_net_profit()
     test_management_lines()
     test_hk_statements()
     test_targets()
     test_target_ingest()
+    test_notice_without_period()
     print()
     if FAILS:
         print(f"FAILED {len(FAILS)}: {'、'.join(FAILS)}")

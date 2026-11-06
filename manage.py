@@ -258,10 +258,10 @@ def cmd_serve(args):
     # 热重载换 worker 前会等任务表空闲（src/serve_reloader.py），救火员改代码不再杀进程
     print("启动本地网页：http://127.0.0.1:5000 （热重载已开：改代码自动换 worker，"
           "有任务在跑时等任务结束；Ctrl+C 停止）")
-    # werkzeug 默认只监听 py/pyc；技能 md 要显式作为 extra_files 传进去才触发换 worker
-    skill_docs = sorted(str(p) for p in config.SKILLS_DIR.rglob("*.md"))
+    # 只监听 py/pyc。技能 md 运行时每次现读，不靠重启生效；把 .claude/skills 加进
+    # extra_files 会让取数回写 sources.md 在阶段切换空窗触发热重载（待修清单第 66 条）。
     app.run(host="127.0.0.1", port=5000, debug=False,
-            use_reloader=True, reloader_type="kbidle", extra_files=skill_docs)
+            use_reloader=True, reloader_type="kbidle")
     return 0
 
 

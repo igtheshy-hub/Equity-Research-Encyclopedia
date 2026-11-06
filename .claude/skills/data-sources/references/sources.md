@@ -169,4 +169,24 @@
 {"title": "散飞行情下跌; 今日 名酒行情价格 2026 . 11 .06", "url": "http://mp.weixin.qq.com/s?src=11&timestamp=1793960842&ver=7072&signature=W*P2jWJdhcvjxGyW3hdol*Yne7mUz2pp1AC6fLBjfBW8uNCMjhy4Nh-p5rFKIaVy*BFieu14ax-Vfhl*pblXDma7LR1V29ulZiVJDTS9yszUYcq3kU5WgssXtFejq-8n&new=1", "added": "2026-11-06"}
 {"title": "贵州茅台 深度研究:营收1333亿守住正增长, 估值 却落进近十年极...", "url": "http://mp.weixin.qq.com/s?src=11&timestamp=1793973005&ver=7072&signature=xxK3pdRcwX0k-h2tCDelYMefJ-P4WuPQfeDxoxXFWYUJN8SHwNBVIMP0yjq7HVJe28rqMD-8zef9A0*9rlxZk0e4EhjVZPzfpiypmcsUPSpoVHmlZ2eLAQOrZYCsRsqJ&new=1", "added": "2026-11-06"}
 {"title": "茅台酒今日 行情 价格 一览( 2026年10月 31日) 飞天散瓶 原箱 批价 ...", "url": "http://mp.weixin.qq.com/s?src=11&timestamp=1793973105&ver=7072&signature=P7rm*V*bxQUbZeSj6tvs8KXRBCWiHFG1u7eDahPLRv9Y8ZxjK6zA-QNirFpdEo4Cfn6HjUBaBSq92fDoIn8hAbXCEha2m5wvx48RYbqmwRwD*oJz79xYZlMA0BhxfGuT&new=1", "added": "2026-11-06"}
+{"title": "五粮液 ( 000858 )_股票行情,行情首页_中财网", "url": "https://quote.cfi.cn/quote.aspx?stockid=380&lm=same_hy&client=pc", "added": "2026-11-06"}
+{"title": "五粮液 （ 000858 ）股票股价,行情,新闻,财报数据_新浪财经_新浪网", "url": "https://finance.sina.com.cn/realstock/company/sz000858/5g.shtml", "added": "2026-11-06"}
+{"title": "五粮液 ( 000858 )估值分析_数据中心_东方财富网", "url": "https://data.eastmoney.com/gzfx/detail/000858.html", "added": "2026-11-06"}
+{"title": "五粮液 （SZ 000858 ）股票股价_股价行情_财报_数据报告 - 雪球", "url": "https://xueqiu.com/S/SZ000858/news?page=58", "added": "2026-11-06"}
+{"title": "五粮液 （ 000858 ）_股票行情_证券之星", "url": "http://stock.quote.stockstar.com/realtime_000858.shtml?t=5&frm=360", "added": "2026-11-06"}
+{"title": "贵州茅台 市盈率（ PE ）(600519.SH)- 小乐财报", "url": "https://leetab.com/stock/sh600519/pe", "added": "2026-11-06"}
+{"title": "TOP3: 五粮液 (000858)今日( 2026年 10月30日)主力净流入...", "url": "http://mp.weixin.qq.com/s?src=11&timestamp=1793980659&ver=7072&signature=zMZX90pbnwyRrQFnJ-NK5nSJJdYPQL3P21MR1ifVYmAAWPVKREbIySwA3vp6Jj3ZrQBJSciKLwSu7MPMmPdDjsIEMHSW-gjGUPCdXd1cmKxdjVO8YBdSZX-Hqi9EoV4*&new=1", "added": "2026-11-06"}
+{"title": "五粮液 (SZ 000858 )股票股价_股价行情_财报_ 数据 报告 - 雪球", "url": "https://xueqiu.com/S/SZ000858", "added": "2026-11-07"}
+{"title": "TOP3: 五粮液 (000858)今日( 2026年 10月30日)主力净流入...", "url": "http://mp.weixin.qq.com/s?src=11&timestamp=1793981880&ver=7072&signature=zMZX90pbnwyRrQFnJ-NK5nSJJdYPQL3P21MR1ifVYmAAWPVKREbIySwA3vp6Jj3ZQ-4nHh7XBbQLJUSVsozRarKTXfQpoTVZ2OPGbbWGyreWENeIp0RPGUXoFdgD8whN&new=1", "added": "2026-11-07"}
+{"title": "泸州老窖 ( 000568 ) 估值 分析_数据中心_东方财富网", "url": "http://data.eastmoney.com/gzfx/detail/000568.html", "added": "2026-11-07"}
+{"title": "泸州老窖 ( 000568 ) 最新价格 _行情_走势图—东方财富网", "url": "http://quote.eastmoney.com/concept/sz000568.html?from=classic", "added": "2026-11-07"}
+{"title": "泸州老窖 ( 000568 )_股票行情,行情首页_中财网", "url": "http://quote.cfi.cn/(X(1)S(garseyvgtj1np04501gbik55))/quote_000568.html", "added": "2026-11-07"}
+{"title": "山西汾酒 ( 600809 ) 估值 分析_数据中心_东方财富网", "url": "https://data.eastmoney.com/gzfx/detail/600809.html", "added": "2026-11-07"}
+{"title": "山西汾酒 ( SH600809 )股票股价_股价行情_财报_数据报告 - 雪球", "url": "https://xueqiu.com/S/SH600809", "added": "2026-11-07"}
+{"title": "山西汾酒 ( 600809 )_股票行情,行情首页_中财网", "url": "http://www.eye.net.cn/quote.aspx?zqlb=0&stockcode=600809&lx=%e8%af%84%e8%ae%ba", "added": "2026-11-07"}
+{"title": "古井贡酒 ( 000596 ) 估值 分析_数据中心_东方财富网", "url": "https://data.eastmoney.com/gzfx/detail/000596.html", "added": "2026-11-07"}
+{"title": "古井贡酒 (SZ 000596 )股票股价_股价行情_财报_数据报告 - 雪球", "url": "https://xueqiu.com/S/SZ000596", "added": "2026-11-07"}
+{"title": "2026年10月 25 日 市面常见 白酒价格 全览: 茅台 至剑南春等品牌价...", "url": "http://mp.weixin.qq.com/s?src=11&timestamp=1793983743&ver=7072&signature=d4EGQe-q4y-pOsXjC7l8icKhCfKJ0GwznaU1Ej-1dtgDuruxV1wHMQ9V-EFYA43piW*ruVgmpcE2kBcRQ7dc5rtBlloaiinxe*VLYebPZdivaKErS2t31Y*Z6IsyrhgW&new=1", "added": "2026-11-07"}
+{"title": "酒排名 - 白酒选购与 今日酒价 ,帮你买对少花冤枉钱", "url": "https://www.jiupaiming.com/", "added": "2026-11-07"}
+{"title": "中国10年期国债 到期 收益率 与沪深300指数 - value500投资导航", "url": "http://value500.com/10Bond.html", "added": "2026-11-07"}
 <!-- SOURCES:WEB:END -->

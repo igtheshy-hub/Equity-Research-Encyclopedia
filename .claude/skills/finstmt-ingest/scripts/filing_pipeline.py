@@ -156,6 +156,15 @@ def _locate(path, units, targets=None):
         if by_month and ptype != by_month:
             ptype = by_month
     if not ptype or not year:
+        # 公告类材料（利润分配、差错更正等）没有报告期，也没有三张正表；
+        # 不能当财报结构化，转文本编译入 source 页，否则整份拒收、缺口永远补不上
+        secs = out.get("sections") or {}
+        has_stmt = any(_valid_pages(secs.get(k) or [], count) for k in ("bs", "is", "cf"))
+        head = " ".join(str(u.get("text") or "")[:200] for u in units[:2])
+        looks_notice = any(w in path.name or w in head
+                           for w in ("公告", "说明书", "报告书", "预案"))
+        if not has_stmt and looks_notice:
+            raise UnsupportedFiling("公告类材料无报告期与四表，按文本编译")
         raise ValueError(f"定位失败：识别不出报告期（period_end={period_end!r}）")
     company = str(out.get("company") or "").strip()
     if not company:

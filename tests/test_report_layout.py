@@ -540,3 +540,62 @@ def test_table_quarter_header_flags_cumulative_source(monkeypatch):
     assert any("期间口径" in x for x in probs)
     ok = md.replace("26Q3", "前三季度").replace("单季经营", "前三季度经营")
     assert not [x for x in ir._table_checks(ok) if "期间口径" in x]
+
+
+def test_report_terms_drop_generic_words():
+    keys = ir._terms("五粮液公司研究报告")
+    assert "五粮" in keys and "粮液" in keys
+    assert not ({"公司", "研究", "报告"} & keys)
+
+def test_unmarked_ratio_needs_calc_tag(monkeypatch):
+    """毛利率由报表科目相除得到，原文没有该百分数时必须标测算。"""
+    page = "营业总收入 40,528,509,770.23 营业成本 9,101,956,953.59"
+    monkeypatch.setattr(ir.wiki_check, "file_paths", lambda: {"a.pdf": Path("a.pdf")})
+    monkeypatch.setattr(ir, "load_cached", lambda p: {"units": [{"n": 56, "text": page}]})
+    bad = "2025年公司毛利率为77.54%[[a.pdf#p56]]。"
+    assert any("未标测算" in x for x in ir._ratio_calc_checks(bad))
+    ok = "2025年公司毛利率为77.54%（测算：1减91.02/405.29）[[a.pdf#p56]]。"
+    assert ir._ratio_calc_checks(ok) == []
+    monkeypatch.setattr(ir, "load_cached", lambda p: {
+        "units": [{"n": 56, "text": "毛利率 77.54%"}]})
+    assert ir._ratio_calc_checks(bad) == []
+
+
+def test_calc_formula_recomputed():
+    """测算算式要按式子重算，结果值与算式对不上报硬伤。"""
+    bad = "毛利率为78.54%（测算：1减9101956953.59/40528509770.23）[[a.pdf#p56]]。"
+    got = ir._calc_formula_checks(bad)
+    assert got and "对不上" in got[0]
+    ok = "毛利率为77.54%（测算：1减9101956953.59/40528509770.23）[[a.pdf#p56]]。"
+    assert ir._calc_formula_checks(ok) == []
+    # 自含等号的式子按等号右边核
+    assert ir._calc_formula_checks(
+        "EPS 3.335元（测算：97.11×4/3/38.82=3.335）[[a.pdf#p1]]。") == []
+    # 带文字假设、区间、多段口径说明的式子跳过，不误判
+    assert ir._calc_formula_checks(
+        "营收约378亿元（测算：前三季度 328.58 亿元加第四季度约 50 亿元）[[a.pdf#p1]]。") == []
+    assert ir._calc_formula_checks(
+        "PE区间15.9至19.4倍（测算：表8区间）[[a.pdf#p1]]。") == []
+
+def test_rule_root_cause_appends_debt(monkeypatch, tmp_path):
+    """规则类根因落文件；落点越界按个案处理；同任务同问题不重复记。"""
+    job = {"id": "abc123"}
+    findings = [{"kind": "程序", "problem": "比率类指标未标测算", "outcome": "已修复"},
+                {"kind": "模型", "problem": "某句表述", "outcome": "已修复"}]
+    monkeypatch.setattr(ir, "_log", lambda job, msg: None)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "待修清单.md").write_text("# 待修清单\n", encoding="utf-8")
+    monkeypatch.setattr(ir.config, "ROOT", tmp_path)
+    monkeypatch.setattr(ir.llm, "chat", lambda *a, **k: {"items": [
+        {"i": 1, "root_cause": "规则", "hint": "WRITE_PROMPT"}]})
+    rules = ir._classify_root_causes(job, findings)
+    assert len(rules) == 1 and findings[0]["root_cause"] == "规则"
+    assert findings[1].get("root_cause") is None  # 模型类不进根因分类
+    assert ir._append_rule_debt(job, rules) == 1
+    text = (tmp_path / "docs" / "待修清单.md").read_text(encoding="utf-8")
+    assert "规则类根因" in text and "WRITE_PROMPT" in text and "abc123" in text
+    assert ir._append_rule_debt(job, rules) == 0
+    monkeypatch.setattr(ir.llm, "chat", lambda *a, **k: {"items": [
+        {"i": 1, "root_cause": "规则", "hint": "随手写个落点"}]})
+    assert ir._classify_root_causes(job, findings) == []
+    assert findings[0]["root_cause"] == "个案"

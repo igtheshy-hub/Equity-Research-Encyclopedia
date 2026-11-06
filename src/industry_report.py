@@ -200,6 +200,10 @@ def _start(job_id, fn, label):
         job = load_job(job_id)
         if not job:
             raise RuntimeError("报告任务不存在")
+        # 阶段一开始就落盘，服务重启时 recover_interrupted_jobs 才能按 phase 续跑，
+        # 不会因为 phase 为空退回大纲（待修清单第 64 条）。
+        job["phase"] = fn.__name__
+        save_job(job)
         try:
             with llm.use_model(job.get("model")):
                 fn(job_id, tid)
@@ -299,8 +303,14 @@ def _industry_of(title, question):
     return min(cands, key=len)
 
 
+_GENERIC_TERMS = {"公司", "研究", "报告", "分析", "深度"}
+
+
 def _terms(text):
-    return ask_mod._question_keys(text)
+    """选页关键词：去掉「公司/研究/报告」这类通用二元词，避免无关页靠它们入选。"""
+    keys = set(ask_mod._question_keys(text))
+    picked = {k for k in keys if k and k not in _GENERIC_TERMS}
+    return picked or keys
 
 
 def _sample_candidates(job):
@@ -1425,9 +1435,10 @@ WRITE_PROMPT = """你是中文卖方研报的主笔，正在写《{TITLE}》的�
 9. 输出本节 markdown：第一行 "## 本节标题"，正文分段，可用 markdown 表格
 10. 不写其他节的内容，不写封面、目录、注释表
 11. 每个表格上方必须有题注「**表N 标题**」，正文只写表格；不写图题、图N占位、「图表位说明」，实际图表由系统在文末以附图N生成
-12. 表格里的每个数字也要能追溯到本节文字或表格题注里的锚点；找不到出处的数字不要放进表格；表格里不写来源文件名列，来源用行内锚点或表下「数据来源」行。摘要节的预测表只引用带锚点的券商预测并写明机构与报告日期；本报告自拟的三年预测统一放在第六节测算表，其他节引用时须与该表一致，同一报告内同名指标的预测值不得出现两套
-13. 公司财务数据的来源优先级：财报（年报、半年报、季报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
+12. 表格里的每个数字也要能追溯到本节文字或表格题注里的锚点；找不到出处的数字不要放进表格；表格里不写来源文件名列，来源用行内锚点或表下「数据来源」行。摘要节的预测表只引用带锚点的券商预测并写明机构与报告日期；本报告自拟的三年预测统一放在第六节测算表，其他节引用时须与该表一致，同一报告内同名指标的预测值不得出现两套；其他节引用自拟预测值写成「数值（测算：见第六节）」，只裸写数值不加标注会被按无出处数字拦截
+13. 公司财务数据的来源优先级：财报（年报、半年报、季报）> 公告/招股书 > 券商研报 > 其他材料。同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并写明差异与各自报告期。同一年度年报已披露分产品、分渠道、分区域的收入、毛利率或销量时，结构分析必须用年报口径，券商研报的同类拆分只能作更正前对照并注明，不得替代年报口径。行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测
 14. 表格里不同年份、不同报告期、不同口径的数字不得混在同一行或同一列冒充同期值。各期分列时列标题写明年份与报告期（如「2025年」「2026年前三季度」）；只有一列数据时，行名或单元格内写明年份。历史期数据必须标明年份，不能与最新期并排后让读者误以为是当期值
+15. 表格每一列只能源自同一份材料或同一页，不同来源的数字分列或分行，不得把另一来源的值补进本列冒充同列数据。ROE 优先用财报首页披露的加权平均净资产收益率，自算的期末或平均口径只能作补充并写「测算：」；同一行同一指标的各期必须同口径，不得前期用加权、当期换平均，也不得单季与累计混排
 {EXTRA}"""
 
 RESCUE_PROMPT = """本节已经过多轮自检仍未通过，现在切到独立救火角色。先判断根因，再重写本节。
@@ -1475,7 +1486,7 @@ REVIEW_PROMPT = """你是研报审稿人，只找硬伤，不改写全文。
 本段引用的锚点原文（判断数字与口径是否有据，先看这里）：
 {EVIDENCE}
 
-检查：数字与锚点是否对得上、口径是否写明、结论有没有超出材料、有无空话套话。判断口径与数字时以锚点原文为准，原文本身没写的年份拆分或统计范围，不能要求报告补写，也不能据此判硬伤。读表格时先数清列头再把数值逐列对齐，不能把上一年的同比安到本年列；同比、环比、分位这类口径先按原文基期数字算一遍，算下来与报告一致就不是硬伤。只有章节在「全文章节」里确实不存在才算缺章节。
+检查：数字与锚点是否对得上、口径是否写明、结论有没有超出材料、有无空话套话。判断口径与数字时以锚点原文为准，原文本身没写的年份拆分或统计范围，不能要求报告补写，也不能据此判硬伤。读表格时先数清列头再把数值逐列对齐，不能把上一年的同比安到本年列；同比、环比、分位这类口径先按原文基期数字算一遍，算下来与报告一致就不是硬伤。分产品、分渠道、分区域的收入与毛利率，若同一年度年报已披露而报告改用券商研报的更正前口径，报硬伤。表格同一列混入不同来源的数字、同一行同一指标各期口径不一致（前期加权当期平均、单季与累计混排、ROE 不用财报首页披露的加权值）报硬伤。只有章节在「全文章节」里确实不存在才算缺章节。
 只输出 JSON：{{"issues": [{{"level": "硬伤|建议", "where": "节名或原句", "problem": "一句话"}}]}}，最多 10 条。"""
 
 REPAIR_PROMPT = """按下面列出的硬伤，给最小改动的替换对，不改写全文。
@@ -1484,6 +1495,7 @@ REPAIR_PROMPT = """按下面列出的硬伤，给最小改动的替换对，不�
 - old 必须从报告里逐字复制，能唯一定位到一处；new 是改好的同一片段
 - 不改结构、不删节、不新造数字；涉及锚点的，只能换成报告里已出现过的真实锚点
 - 数据缺失或口径对不上的表述，改法是删掉残缺部分或改成泛称，不是编造数值
+- 引用本报告其他节自拟测算值（如第六节盈利预测表里标「测算」的数）时，写成「数值（测算：见第六节）」或去掉数值只作定性表述；裸写数值不加标注会被锚点核验按无出处数字拦下，也不许为它错挂不含该数字的材料锚点
 - 每条问题都附了报告原句与锚点原文。口径缺失、期间不明、两处表述冲突，先核对原文再改：
   - 原文写明期间、范围、统计对象的，把该口径补进句子
   - 原文本身只给区间或合并口径的，按原文口径改写，不替原文拆分年份或补它没写的范围
@@ -1528,6 +1540,96 @@ ORDER_PROMPT = """你是审校记录排版员。审校处置条目列在下面�
 
 报告全文：
 {REPORT}"""
+
+ROOT_CAUSE_PROMPT = """你是研报流水线的规则管理员。下面是一次审校中已经修好的程序类问题。
+逐条判断根因属于哪一类：
+- 规则：写作或检查规则缺失、含糊、落点不对，不改规则下次同类报告还会犯。
+  例如提示词少一条写法约束、检查器漏一类数字、取数规则没写清优先级。
+- 个案：本份报告特有的取错数、抄错数、挂错页，规则本身没问题，记了也不会复发。
+规则类必须从给定落点里选一个，写进 hint；个案类 hint 写一句错误性质即可。
+
+只输出 JSON：{{"items": [{{"i": 1, "root_cause": "规则", "hint": "WRITE_PROMPT"}}]}}
+
+可选落点：
+{LOCS}
+
+问题清单：
+{ITEMS}"""
+
+ROOT_CAUSE_LOCATIONS = (
+    "WRITE_PROMPT", "REPAIR_PROMPT", "REVIEW_PROMPT", "OUTLINE_PROMPT",
+    "_anchor_checks", "_table_checks", "_ratio_calc_checks", "_calc_formula_checks",
+    "_delivery_problems", "_cross_section_issues", "_auto_fix_anchors",
+    "src/fetcher.py", ".claude/skills/finstmt-ingest", ".claude/agents",
+)
+DEBT_HEAD = "## 规则类根因（审校自动记录）"
+
+
+def _classify_root_causes(job, findings):
+    """给已修复的程序类问题标根因：规则类回流待修清单，个案类只留在审校记录里。
+
+    根因判定是模型自评，程序只校验字段合法性；不合格一律按个案处理并记日志，
+    不自动改提示词或检查器（待修清单第 73 条）。
+    """
+    targets = [f for f in findings
+               if f.get("kind") == "程序" and f.get("outcome") == "已修复"]
+    if not targets:
+        return []
+    listing = "\n".join(f"{i}. {f['problem'][:200]}" for i, f in enumerate(targets, 1))
+    try:
+        out = llm.chat([{"role": "user", "content": ROOT_CAUSE_PROMPT
+                         .replace("{LOCS}", "、".join(ROOT_CAUSE_LOCATIONS))
+                         .replace("{ITEMS}", listing)}],
+                       task="review", response_json=True)
+        items = [x for x in (out.get("items") or []) if isinstance(x, dict)]
+    except llm.LLMError as e:
+        _log(job, f"根因分类调用失败（全部按个案处理）：{e}")
+        items = []
+    by_i = {}
+    for it in items:
+        try:
+            by_i[int(it.get("i"))] = it
+        except (TypeError, ValueError):
+            continue
+    rules, bad = [], 0
+    for i, f in enumerate(targets, 1):
+        it = by_i.get(i) or {}
+        rc = str(it.get("root_cause") or "").strip()
+        hint = str(it.get("hint") or "").strip()
+        if rc == "规则" and any(loc in hint for loc in ROOT_CAUSE_LOCATIONS):
+            f["root_cause"], f["rule_hint"] = "规则", hint
+            rules.append(f)
+        else:
+            if rc == "规则" or (rc and rc != "个案"):
+                bad += 1
+            f["root_cause"], f["rule_hint"] = "个案", ""
+    if bad:
+        _log(job, f"根因分类 {bad} 条不合格（落点为空或取值越界），已按个案处理")
+    return rules
+
+
+def _append_rule_debt(job, rules):
+    """规则类根因追加到 docs/待修清单.md，只追加不覆盖，同一任务同一问题不重复记。"""
+    if not rules:
+        return 0
+    path = config.ROOT / "docs" / "待修清单.md"
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    today = date.today().isoformat()
+    lines = []
+    for f in rules:
+        key = f["problem"][:80]
+        if f"任务 {job['id']}：{key}" in text:
+            continue
+        lines.append(f"- {today} 任务 {job['id']}：{key}"
+                     f" → 建议落点 {f.get('rule_hint') or '未给出'}")
+    if not lines:
+        return 0
+    if DEBT_HEAD not in text:
+        text = text.rstrip() + "\n\n" + DEBT_HEAD + "\n\n只追加不覆盖，改不改由主线裁决。\n"
+    text = text.rstrip() + "\n" + "\n".join(lines) + "\n"
+    path.write_text(text, encoding="utf-8")
+    _log(job, f"规则类根因 {len(lines)} 条已追加到 docs/待修清单.md")
+    return len(lines)
 
 
 def _parse_outline(md):
@@ -2511,6 +2613,188 @@ def _quarter_scope_mismatch(line, texts):
     return True
 
 
+_RATIO_HINT_RE = re.compile(
+    r"毛利率|净利率|销售费用率|管理费用率|财务费用率|研发费用率|"
+    r"税金及附加(?:占|/)|加权平均净资产收益率|加权ROE|ROE|获现比|股息率")
+_PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_CALC_TAG_RE = re.compile(r"测算\s*[:：]")
+
+
+def _ratio_calc_checks(report_md):
+    """比率类指标要么能在锚点原文里直接读到，要么标「测算」。
+
+    毛利率、净利率、费用率、ROE 由报表科目相除得到，报告常直接挂利润表页
+    锚点，但原文只有营业收入与营业成本，翻页找不到该百分数（待修清单第 71 条）。
+    表格行由 _table_checks 管，这里只看正文。
+    """
+    paths = wiki_check.file_paths()
+    extra = _anchor_extra_text()
+    caches = {}
+    problems = []
+    for ln in report_md.splitlines():
+        s = ln.strip()
+        if s.startswith("|") or re.fullmatch(r"\*\*[^*]+\*\*", s):
+            continue
+        if _CALC_TAG_RE.search(s) or not _RATIO_HINT_RE.search(s):
+            continue
+        anchors = wiki.ANCHOR_RE.findall(s)
+        if not anchors:
+            continue
+        texts = []
+        for fname, loc in anchors:
+            path = paths.get(fname)
+            if not path:
+                continue
+            if fname not in caches:
+                caches[fname] = load_cached(path)
+            cached = caches[fname]
+            unit = next((u for u in (cached or {}).get("units") or []
+                         if u["n"] == wiki.loc_num(loc)), None)
+            text = (unit or {}).get("text") or ""
+            text += "\n" + _extra_for(extra, fname, loc)
+            if text.strip():
+                texts.append(text)
+        if not texts:
+            continue  # 锚点缺失或无法加载由 _anchor_checks 单独报
+        missing = [f"{p}%" for p in _PCT_RE.findall(s)
+                   if not any(am.unit_has_term(t, (p, "%"), round_ok=True) for t in texts)]
+        if missing:
+            problems.append("比率类指标未标测算且锚点原文无该百分数（"
+                            + "、".join(missing[:3]) + "）：" + s[:50])
+    return problems
+
+
+_CALC_UNIT_RE = re.compile(r"个百分点|亿元|万元|亿股|万股|亿|元|股|倍")
+_CALC_LABEL_RE = re.compile(
+    r"经营活动现金流量净额|经营现金流净额|经营现金流|营业成本|营业收入|"
+    r"归母净利润|净利润|资本开支|总股本")
+_CALC_CJK_RE = re.compile(r"[一-鿿]")
+_CALC_TRANS = str.maketrans({"减": "-", "加": "+", "乘": "*", "除": "/",
+                             "×": "*", "−": "-", "–": "-", "—": "-",
+                             "（": "(", "）": ")", "％": "%"})
+_STATED_RE = re.compile(
+    r"([+\-−–]?\d[\d,]*(?:\.\d+)?)\s*(个百分点|亿元|万元|%|倍|元)?\s*$")
+
+
+def _eval_calc(s):
+    """只认四则运算与百分号后缀的小型求值器，遇到不支持的结构返回 None。"""
+    s = s.replace(",", "").replace(" ", "")
+    pos = [0]
+
+    def expr():
+        v = term()
+        while v is not None and pos[0] < len(s) and s[pos[0]] in "+-":
+            op = s[pos[0]]
+            pos[0] += 1
+            r = term()
+            if r is None:
+                return None
+            v = v + r if op == "+" else v - r
+        return v
+
+    def term():
+        v = factor()
+        while v is not None and pos[0] < len(s) and s[pos[0]] in "*/":
+            op = s[pos[0]]
+            pos[0] += 1
+            r = factor()
+            if r is None or (op == "/" and r == 0):
+                return None
+            v = v * r if op == "*" else v / r
+        return v
+
+    def factor():
+        if pos[0] >= len(s):
+            return None
+        if s[pos[0]] in "+-":
+            op = s[pos[0]]
+            pos[0] += 1
+            v = factor()
+            if v is None:
+                return None
+            return v if op == "+" else -v
+        if s[pos[0]] == "(":
+            pos[0] += 1
+            v = expr()
+            if v is None or pos[0] >= len(s) or s[pos[0]] != ")":
+                return None
+            pos[0] += 1
+        else:
+            m = re.match(r"\d+(?:\.\d+)?", s[pos[0]:])
+            if not m:
+                return None
+            v = float(m.group(0))
+            pos[0] += len(m.group(0))
+        if pos[0] < len(s) and s[pos[0]] == "%":
+            v /= 100.0
+            pos[0] += 1
+        return v
+
+    v = expr()
+    return v if v is not None and pos[0] == len(s) else None
+
+
+def _calc_formula_checks(report_md):
+    """标了「测算：」的简单算式，按式子重算一遍，与句中的结果值对不上就报硬伤。
+
+    只核两三个数、四则运算、结果紧贴括号的式子；带文字假设（加第四季度约 50
+    亿元）、区间、多段口径说明的跳过。容差取结果末位的三倍，避免四舍五入争议
+    （待修清单第 69 条）。
+    """
+    problems = []
+    for ln in report_md.splitlines():
+        for m in _CALC_TAG_RE.finditer(ln):
+            start = m.start()
+            op = max(ln.rfind("（", 0, start), ln.rfind("(", 0, start))
+            if op >= 0 and not ln[op + 1:start].strip("（( "):
+                depth, end = 1, len(ln)
+                for i in range(start, len(ln)):
+                    if ln[i] in "（(":
+                        depth += 1
+                    elif ln[i] in "）)":
+                        depth -= 1
+                        if depth == 0:
+                            end = i
+                            break
+                payload, before = ln[start:end], ln[:op]
+            else:
+                payload, before = ln[start:], ln[:start]
+            payload = wiki.ANCHOR_RE.sub("", payload)
+            head = re.split(r"[，；;]", payload)[0]
+            head = re.sub(r"^\s*测算\s*[:：]", "", head)
+            stated_raw = None
+            if "=" in head:
+                head, rhs = head.split("=", 1)
+                sm = re.fullmatch(r"\s*([+\-−–]?\d[\d,]*(?:\.\d+)?)\s*", rhs)
+                if sm:
+                    stated_raw = sm.group(1)
+            else:
+                sm = _STATED_RE.search(before)
+                if sm:
+                    stated_raw = sm.group(1)
+            if not stated_raw:
+                continue
+            expr = _CALC_UNIT_RE.sub("", head)
+            expr = _CALC_LABEL_RE.sub("", expr)
+            expr = expr.translate(_CALC_TRANS)
+            if _CALC_CJK_RE.search(expr) or not re.fullmatch(r"[\d.,+\-*/()% ]+", expr):
+                continue
+            if len(re.findall(r"\d+(?:\.\d+)?", expr)) < 2 or not re.search(r"[+\-*/]", expr):
+                continue
+            computed = _eval_calc(expr)
+            if computed is None:
+                continue
+            stated = float(stated_raw.replace(",", ""))
+            decimals = len(stated_raw.split(".")[1]) if "." in stated_raw else 0
+            tol = 3 * (0.5 * 10 ** -decimals + 1e-9)
+            if not any(abs(c - stated) <= tol for c in
+                       (computed, computed * 100, -computed, -computed * 100)):
+                problems.append(
+                    f"测算算式与结果对不上（{expr.strip()} = {computed:.6g}，"
+                    f"文中写 {stated_raw}）：{ln.strip()[:50]}")
+    return problems
+
+
 def _anchor_checks(report_md):
     """逐个数字核锚点：本句每个数字至少要有一个所挂锚点的原文能覆盖。
 
@@ -2572,6 +2856,8 @@ def _anchor_checks(report_md):
                 f"锚点疑似挂错：本句数字（{'、'.join(missing[:3])}）不在所挂锚点的原文里{hint}"
                 f"：{ln.strip()[:60]}")
     problems.extend(_table_checks(report_md))
+    problems.extend(_ratio_calc_checks(report_md))
+    problems.extend(_calc_formula_checks(report_md))
     return problems
 
 
@@ -3364,8 +3650,15 @@ def _phase_review(job_id, tid):
     fp_n = [f for f in findings if f.get("outcome") == "误报"]
     left_n = [f for f in findings if f.get("outcome") not in ("已修复", "误报")]
     n_prog = sum(1 for f in findings if f["kind"] == "程序")
+    try:
+        rules = _classify_root_causes(job, findings)
+        debt_n = _append_rule_debt(job, rules)
+    except Exception as e:  # 根因记录不能拖垮审校
+        _log(job, f"根因分类与落文件失败（不影响审校结果）：{e}")
+        rules, debt_n = [], 0
     summary = (f"审校闭环：发现 {len(findings)} 条（程序 {n_prog}、模型 {len(findings) - n_prog}），"
                f"修复 {len(fixed_n)} 条，误报排除 {len(fp_n)} 条，遗留 {len(left_n)} 条"
+               + (f"，规则类根因 {len(rules)} 条（已记待修清单 {debt_n} 条）" if rules else "")
                + (f"，数据缺失 {len(missing)} 项需手动补充" if missing else "")
                + (f"（遗留已逐条注明原因，待人工定夺）" if left_n else ""))
     note = _sample_top3_note(job)
@@ -3459,6 +3752,14 @@ def continue_job(job_id):
         return job
     if status == "error":
         phase = job.get("phase")
+        if not phase and job.get("report_path"):
+            # 旧任务没有 phase：报告里已有正文就当断在成文，避免退回去重跑大纲
+            rp = config.ROOT / job["report_path"]
+            try:
+                if rp.exists() and _parse_report_sections(rp.read_text(encoding="utf-8")):
+                    phase = "_phase_write"
+            except OSError:
+                pass
         mapping = {
             "_phase_outline": (_phase_outline, "outlining", "大纲"),
             "_phase_write": (_phase_write, "writing", "成文"),

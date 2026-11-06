@@ -782,6 +782,11 @@ def _clean_title(s):
     return re.sub(r"<[^>]+>", "", str(s or "")).strip()
 
 
+def _squash(s):
+    """巨潮的 secName 有「五 粮 液」这种逐字带空格的写法，公司名比对前先压掉空白。"""
+    return re.sub(r"\s+", "", str(s or ""))
+
+
 _CNINFO_STOCKS = None
 
 
@@ -901,12 +906,13 @@ def _annual_year(title):
 
 def _pick_cninfo_annual(items, company, year=None):
     picked = []
+    comp = _squash(company)
     for it in items:
         title = _clean_title(it.get("announcementTitle"))
         sec = _clean_title(it.get("secName"))
         if "年度报告" not in title or "摘要" in title or "英文" in title:
             continue
-        if company not in sec and company not in title:
+        if comp not in _squash(sec) and comp not in _squash(title):
             continue
         y = _annual_year(title)
         if year and y != int(year):
@@ -920,13 +926,27 @@ def fetch_cninfo_annual(company, year=None, limit=1):
     company = str(company or "").strip()
     if not company:
         raise FetchError("取年报需要公司名")
-    items = _cninfo_search(f"{company} 年度报告", page_size=30, category="category_ndbg_szsh")
-    picked = _pick_cninfo_annual(items, company, year)
+    # 先按股票代码检索：全文检索依赖标题含公司名，现代年报标题只有「2025年年度报告」，
+    # 五粮液这类公司名不进标题的会只捞到 2005 年的旧公告（待修清单第 63 条）。
+    picked = []
+    stock = cninfo_stock(name=company)
+    if stock:
+        sid = f"{stock.get('code')},{stock.get('orgId')}"
+        items = _cninfo_search("", page_size=30, category="category_ndbg_szsh", stock=sid)
+        picked = _pick_cninfo_annual(items, company, year)
+    if not picked:
+        items = _cninfo_search(f"{company} 年度报告", page_size=30, category="category_ndbg_szsh")
+        picked = _pick_cninfo_annual(items, company, year)
     if not picked:
         items = _cninfo_search(f"{company} 年度报告", page_size=30)
         picked = _pick_cninfo_annual(items, company, year)
     if not picked:
         raise FetchError(f"巨潮没有搜到「{company}」的年度报告（可能是港股，改走 HKEXnews）")
+    if not year:
+        newest = _annual_year(_clean_title(picked[0].get("announcementTitle")))
+        if newest and newest < datetime.now().year - 2:
+            raise FetchError(f"巨潮最新只检索到 {newest} 年年报，早于近两年，"
+                             "不能当最近一年内的定期报告；确认要旧报告请显式指定年份")
     downloaded, skipped = [], []
     for it in picked[:max(1, int(limit or 1))]:
         title = _clean_title(it.get("announcementTitle"))
@@ -962,13 +982,20 @@ CNINFO_PERIODIC = {
 }
 
 
+def _latest_a_quarter():
+    """A 股当前已到披露期的最近一季：1 到 4 月看上年三季报，5 到 10 月看一季报，11 月起看三季报。"""
+    month = datetime.now().month
+    return "q3" if (month <= 4 or month >= 11) else "q1"
+
+
 def _pick_periodic(items, company, patterns):
     """只留正式全文：公司对得上、标题含报告名、跳过摘要英文更正稿。"""
     picked = []
+    comp = _squash(company)
     for it in items:
         title = _clean_title(it.get("announcementTitle"))
         sec = _clean_title(it.get("secName"))
-        if company not in sec and company not in title:
+        if comp not in _squash(sec) and comp not in _squash(title):
             continue
         if not any(p in title for p in patterns):
             continue
@@ -981,24 +1008,28 @@ def _pick_periodic(items, company, patterns):
 def fetch_cninfo_periodic(company, kind="interim", days=400, limit=1, code=""):
     """取 A 股半年报或季报。只留正式全文，跳过摘要、英文版与更正稿。
 
-    关键词全文检索按相关度排序，常只捞到摘要捞不到全文（宇通 2026 半年报全文
-    就被漏掉）；筛不出全文时改按股票代码拉该公司时间窗内的公告再筛标题。"""
+    优先按股票代码检索：全文检索依赖标题含公司名，且常只捞到摘要捞不到全文
+    （宇通 2026 半年报全文就被漏掉）；代码检索取不到再退回全文检索。"""
     company = str(company or "").strip()
-    kind = _enum_or_raise(str(kind or "interim").lower(), CNINFO_PERIODIC,
+    kind = str(kind or "interim").lower()
+    if kind == "quarterly":
+        kind = _latest_a_quarter()
+    kind = _enum_or_raise(kind, CNINFO_PERIODIC,
                           "A 股定期报告类型", hint=f"未知定期报告类型：{kind}")
     if not company:
         raise FetchError("取定期报告需要公司名")
     category, patterns, label = CNINFO_PERIODIC[kind]
     begin = datetime.now() - timedelta(days=int(days or 400))
     se_date = f"{begin:%Y-%m-%d}~{datetime.now():%Y-%m-%d}"
-    items = _cninfo_search(company, page_size=50, category=category, se_date=se_date)
-    picked = _pick_periodic(items, company, patterns)
+    picked = []
+    stock = cninfo_stock(code=str(code or "").strip().split(".")[0]) or cninfo_stock(name=company)
+    if stock:
+        sid = f"{stock.get('code')},{stock.get('orgId')}"
+        items = _cninfo_search("", page_size=50, category=category, stock=sid, se_date=se_date)
+        picked = _pick_periodic(items, company, patterns)
     if not picked:
-        stock = cninfo_stock(code=str(code or "").strip()) or cninfo_stock(name=company)
-        if stock:
-            sid = f"{stock.get('code')},{stock.get('orgId')}"
-            items = _cninfo_search("", page_size=50, category=category, stock=sid, se_date=se_date)
-            picked = _pick_periodic(items, company, patterns)
+        items = _cninfo_search(company, page_size=50, category=category, se_date=se_date)
+        picked = _pick_periodic(items, company, patterns)
     if not picked:
         # 时间窗内筛不出时退回无窗口检索，宁可取到旧一期全文也不空手（旧行为）
         items = _cninfo_search(company, page_size=50, category=category)
@@ -1625,8 +1656,14 @@ def fetch_csindex_snapshot(code):
         pass
     try:
         val = _csindex_get("/data-service/indexValuation", params={"indexCode": code}) or {}
-        hit = next((x for x in val.get("indexValuations") or []
-                    if str(x.get("indexName") or "") == name), None)
+        vals = val.get("indexValuations") or []
+        # 估值接口的 indexName 未必等于简称，先按代码认，再按简称/全称认，单行直接取
+        hit = next((x for x in vals if str(x.get("indexCode") or "") == code), None)
+        if not hit:
+            names = {name, str(basic.get("indexFullNameCn") or "")}
+            hit = next((x for x in vals if str(x.get("indexName") or "") in names), None)
+        if not hit and len(vals) == 1:
+            hit = vals[0]
         if hit:
             stamp = str(val.get("tradeDate") or "")
             add("市盈率 PE", hit.get("pe"), "倍", name, stamp)
@@ -2111,6 +2148,17 @@ _DATA_HINT = re.compile(
     r"价格|均价|营收|收入|利润|毛利|净利|保有量|装机|渗透率|金额|数量|排名|多少")
 _STOP_KEYS = {"数据", "统计", "情况", "分析", "报告", "最新", "多少", "是什么",
               "怎么样", "中国", "行业", "市场"}
+# 动态渲染页抓到的是导航与占位符，数据由 JS 异步加载，不能当正文摘录（待修清单第 68 条）
+_DYNAMIC_SHELL_RE = re.compile(
+    r"加载中(?:\.{2,}|…)|最新价\s*[-—]\s*(?:\s|$)|数据加载失败|请稍后重试")
+
+
+def _dynamic_shell(text):
+    """页面壳判定：有占位符且摘录里没有任何带单位的数值，视为正文未加载。"""
+    t = str(text or "")
+    if not _DYNAMIC_SHELL_RE.search(t):
+        return False
+    return not re.search(r"\d[\d,]*(?:\.\d+)?\s*(?:亿元|万元|元|%|倍|万|亿)", t)
 
 
 def _sources_block(name):
@@ -2633,11 +2681,14 @@ def fetch_web_gap(query, limit=3, tid=None, targets=None):
     seen_urls = {r["url"] for r in reg}
     items = reg + [it for it in res["items"] if it["url"] not in seen_urls]
     tasks.update(tid, detail=f"待抓来源 {len(items)} 个，按相关性与数字密度筛正文")
-    ranked, dropped_old = [], []
+    ranked, dropped_old, dropped_shell = [], [], []
     for it in items:
         excerpt, pub = _page_excerpt(it["url"], query, require_number=want_num,
                                      title=it.get("title") or "")
         if not excerpt:
+            continue
+        if _dynamic_shell(excerpt):
+            dropped_shell.append(it["url"])
             continue
         # 检索词点了年份就按那年 1 月 1 日卡，没点年份只收近两年；旧文放进快照会把旧数据
         # 顶到「最新」位置，成文拿旧数当当前值
@@ -2668,7 +2719,9 @@ def fetch_web_gap(query, limit=3, tid=None, targets=None):
                      "检索词": query, "摘录": excerpt})
     if not rows:
         reason = ("抓到的网页都早于检索词年份下限 %s" % earliest.isoformat() if dropped_old
-                  else ("数据类缺口没有抓到带数字的正文" if want_num else "没有抓到相关正文"))
+                  else (f"抓到的网页是动态渲染页，正文未加载（{len(dropped_shell)} 个）"
+                        if dropped_shell
+                        else ("数据类缺口没有抓到带数字的正文" if want_num else "没有抓到相关正文")))
         _remember_lesson(query, False, [], reason)
         raise FetchError(reason + "，停回缺口关卡，换检索词或上传材料")
     tasks.update(tid, detail="网页摘录落快照")
