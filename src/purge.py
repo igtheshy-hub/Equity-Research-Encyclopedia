@@ -17,7 +17,8 @@ from . import config, tasks, wiki
 from .ingest import MANIFEST_LOCK, load_manifest, save_manifest, sha256_of
 from .pdf_extract import find_raw_file, raw_file_groups
 
-KIND_LABELS = {"report": "研报", "filing": "财报", "policy": "政策文件"}
+KIND_LABELS = {"report": "研报", "filing": "财报", "policy": "政策文件", "other": "其他材料",
+               "snapshot": "快照"}
 CACHE_SUFFIXES = (".units.json", ".entries.json", ".filing.json")
 
 
@@ -148,7 +149,8 @@ def _drop_page(p, title, stats, removed, why):
 
 
 def _prune_empty_dirs(d):
-    stops = {config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR, config.RAW_DIR}
+    stops = {config.REPORTS_DIR, config.SNAPSHOT_DIR, config.FILINGS_DIR, config.POLICIES_DIR,
+             config.OTHERS_DIR, config.RAW_DIR}
     while d not in stops and d.is_dir() and not any(d.iterdir()):
         d.rmdir()
         d = d.parent

@@ -15,7 +15,7 @@
 
 ## 目录结构
 
-- `raw/` 原始资料层（人工管理，程序只在归类改名与原文件页删除时动它）：`inbox/` 收件台、`reports/` 卖方研报按行业分目录、`reports/数据快照/` 网页与 API 取数的 DOCX 快照、`filings/` 上市公司财报按公司分目录、`policies/` 监管政策文件。支持 PDF 与 Word（.docx）
+- `raw/` 原始资料层（人工管理，程序只在归类改名与原文件页删除时动它）：`inbox/` 收件台、`reports/` 卖方研报按行业分目录、`snapshots/` 网页与 API 取数的 DOCX 快照、`filings/` 上市公司财报按公司分目录、`policies/` 监管政策文件、`others/` 其他材料（会议纪要、新闻稿等，走通用编译）。支持 PDF 与 Word（.docx）
 - `wiki/` 维基知识层（程序维护）：`index.md` 总索引、`log.md` 操作日志、`companies/` 公司页、`industries/` 行业页、`concepts/` 概念页、`sources/` 来源摘要页（每份材料一页，摄入时自动生成）
 - `.claude/` 会话配置层：根 `CLAUDE.md`、`skills/` 十个技能、`agents/` 资料员/撰稿人/审稿人、`hooks/page_check.py` 写页校验钩子
 - `schema/CLAUDE.md` 知识库操作规范（格式、锚点语法、各环节规则）

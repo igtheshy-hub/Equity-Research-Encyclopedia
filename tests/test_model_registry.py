@@ -49,6 +49,7 @@ def test_add_custom_model_persists_and_resolves(monkeypatch):
     check("救火端点按服务商填", prof["anthropic"]["base_url"],
           "https://api.moonshot.cn/anthropic")
     check("救火模型名默认同模型", prof["anthropic"]["model"], "kimi-k2.5")
+    check("Kimi 不写 extra_body（维持继承）", "extra_body" in prof, False)
 
     full = config.model_profile("kimi-k2.5")
     check("档案带 key", full["key"], "sk-test")
@@ -120,6 +121,23 @@ def test_api_model_add_success(monkeypatch):
     check("返回模型", (body.get("model") or {}).get("id"), "qwen3-coder-plus")
     check("已进档案", "qwen3-coder-plus" in config.MODEL_PROFILES, True)
     check("自定义模型文件落盘", (config.ROOT / "data" / "custom_models.json").exists(), True)
+    prof = config.MODEL_PROFILES["qwen3-coder-plus"]
+    check("通义显式关思考", prof.get("extra_body"), {"enable_thinking": False})
+
+
+def test_add_custom_model_extra_body_by_provider(monkeypatch):
+    print("模型接入：自定义模型按服务商写 extra_body")
+    monkeypatch.setattr(config, "MODEL_PROFILES", dict(config.MODEL_PROFILES))
+    monkeypatch.setattr(config, "CUSTOM_MODELS", dict(config.CUSTOM_MODELS))
+    config.add_custom_model("minimax", "minimax-m3.1", api_key="sk-test")
+    prof = config.MODEL_PROFILES["minimax-m3.1"]
+    check("MiniMax 空 extra_body 阻断继承", prof.get("extra_body"), {})
+    config.add_custom_model("qwen", "qwen3-max", api_key="sk-test")
+    check("通义 enable_thinking",
+          config.MODEL_PROFILES["qwen3-max"].get("extra_body"),
+          {"enable_thinking": False})
+    config.add_custom_model("moonshot", "kimi-k2.6", api_key="sk-test")
+    check("Kimi 维持继承", "extra_body" in config.MODEL_PROFILES["kimi-k2.6"], False)
 
 
 def test_report_api_exposes_rescue_state(monkeypatch):

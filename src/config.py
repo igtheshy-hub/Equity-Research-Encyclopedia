@@ -88,6 +88,14 @@ MODEL_PROFILES.update({k: v for k, v in CUSTOM_MODELS.items() if k not in MODEL_
 # config.json 里按自家 API 文档显式配置，不依赖继承。
 _SHARED_LLM_KEYS = ("max_tokens", "read_timeout_s", "max_retries", "extra_body")
 
+# 网页添加的自定义模型按服务商显式写各自的 extra_body，不统一继承 llm 段的
+# thinking 开关：通义用 enable_thinking=false 关思考，MiniMax 不认 thinking 字段
+# （空对象阻断继承），Kimi 维持现状继续继承。
+_PROVIDER_EXTRA_BODY = {
+    "qwen": {"enable_thinking": False},
+    "minimax": {},
+}
+
 # config.json 必填项（问题 21：以前少了某项要跑到一半才崩，这里启动就查出来）
 # 路径：顶层段 → 段内必填键
 REQUIRED_CONFIG = {
@@ -251,6 +259,8 @@ def add_custom_model(provider, model_id, api_key="", label="", anthropic_model="
     }
     if api_key:
         prof["key"] = str(api_key).strip()
+    if provider in _PROVIDER_EXTRA_BODY:
+        prof["extra_body"] = dict(_PROVIDER_EXTRA_BODY[provider])
 
     data = {"models": _load_custom_models()}
     data["models"][model_id] = prof
@@ -273,9 +283,11 @@ LLM_API_KEY_ENV, LLM_API_KEY = _DEFAULT_PROFILE["key_env"], _DEFAULT_PROFILE["ke
 RAW_DIR = ROOT / "raw"
 INBOX_DIR = RAW_DIR / "inbox"
 REPORTS_DIR = RAW_DIR / "reports"
-SNAPSHOT_DIR = REPORTS_DIR / "数据快照"
+SNAPSHOT_DIR = RAW_DIR / "snapshots"
+LEGACY_SNAPSHOT_DIR = REPORTS_DIR / "数据快照"  # 过渡兼容：历史快照仍在 reports 下，数据清空后删
 FILINGS_DIR = RAW_DIR / "filings"
 POLICIES_DIR = RAW_DIR / "policies"
+OTHERS_DIR = RAW_DIR / "others"
 
 WIKI_DIR = ROOT / "wiki"
 INDEX_MD = WIKI_DIR / "index.md"
@@ -307,8 +319,9 @@ SECTION_ENUMS = {
 
 def ensure_dirs():
     """新克隆的仓库里 wiki/、data/、outputs/ 都是空的（运行数据不入库），启动时补齐目录。"""
-    for d in (INBOX_DIR, REPORTS_DIR, SNAPSHOT_DIR, FILINGS_DIR, POLICIES_DIR, *TYPE_DIRS.values(),
-              OUTPUTS_DIR, OUTPUTS_DIR / "charts", DATA_DIR, EXTRACTS_DIR, FIN_DIR, REPORT_JOBS_DIR):
+    for d in (INBOX_DIR, REPORTS_DIR, SNAPSHOT_DIR, FILINGS_DIR, POLICIES_DIR, OTHERS_DIR,
+              *TYPE_DIRS.values(), OUTPUTS_DIR, OUTPUTS_DIR / "charts", DATA_DIR, EXTRACTS_DIR,
+              FIN_DIR, REPORT_JOBS_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

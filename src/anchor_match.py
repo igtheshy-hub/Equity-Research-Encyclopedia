@@ -257,13 +257,15 @@ def _round_tol(n, target):
     return abs(target) / abs(raw) * step
 
 
-def unit_has_term(text, term, bare_ok=False, round_ok=False):
+def unit_has_term(text, term, bare_ok=False, round_ok=False, scales=None):
     """源单元里要有同量级的数字。带单位的数字按换算值比，避免 10 万被 10% 或 20 家命中。
 
     表格抽取常把数字和单位分到不同单元格，源里只有裸数字时，再按原始数值比一次；
     bare_ok=True 时反向也放行（报告单元格只写裸数字、单位在表头，源里是「78 万辆」）。
     round_ok=True 时（报告侧核验）容忍写作四舍五入：报告按两位小数写的数，原值落在
     该精度半个单位内算命中，摄入侧保持精确比对不变。
+    scales 限定裸数字允许的换算倍数：页面已声明「千元/万元」时只认该级，避免千元按万元
+    顶替通过（待修清单 78）。
     """
     n, unit = term
     target = term_value(n, unit)
@@ -288,7 +290,7 @@ def unit_has_term(text, term, bare_ok=False, round_ok=False):
             return True
         # 财报正文常以千元列示、知识行换算成元，源里只有裸数字时允许千/万元级差
         if not pu and abs(target) >= 1000:
-            for scale in (1e3, 1e4, 1e6, 1e8):
+            for scale in (scales or (1e3, 1e4, 1e6, 1e8)):
                 scaled = pv * scale
                 if abs(scaled - target) <= max(abs(scaled), abs(target)) * 0.002:
                     return True

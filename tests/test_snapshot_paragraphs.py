@@ -6,11 +6,14 @@ from docx import Document
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from src import snapshot  # noqa: E402
+from src import config, snapshot  # noqa: E402
 
 
-def test_snapshot_builds_from_paragraphs_only(tmp_path):
-    out = tmp_path / "中汽协_行业要闻摘录.docx"
+def test_snapshot_builds_from_paragraphs_only(tmp_path, monkeypatch):
+    snapdir = tmp_path / "snapshots"
+    snapdir.mkdir()
+    monkeypatch.setattr(config, "SNAPSHOT_DIR", snapdir)
+    out = snapdir / "中汽协_行业要闻摘录.docx"
     snapshot.build({
         "out": str(out),
         "title": "行业要闻摘录",

@@ -9,7 +9,7 @@ from src import classify, config, ingest  # noqa: E402
 
 def _dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ROOT", tmp_path)
-    for name in ("REPORTS_DIR", "FILINGS_DIR", "POLICIES_DIR", "INBOX_DIR"):
+    for name in ("REPORTS_DIR", "FILINGS_DIR", "POLICIES_DIR", "OTHERS_DIR", "INBOX_DIR"):
         d = tmp_path / name.lower()
         d.mkdir()
         monkeypatch.setattr(config, name, d)
@@ -115,7 +115,7 @@ def test_make_snapshot_reuses_identical_snapshot(tmp_path, monkeypatch):
     from src import fetcher
 
     reports, _filings, _policies, _inbox = _dirs(tmp_path, monkeypatch)
-    snapdir = reports / "数据快照"
+    snapdir = tmp_path / "snapshots"
     snapdir.mkdir()
     monkeypatch.setattr(config, "SNAPSHOT_DIR", snapdir)
 

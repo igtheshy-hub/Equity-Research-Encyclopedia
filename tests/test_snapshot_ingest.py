@@ -24,7 +24,9 @@ def check(label, got, want):
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="snapshot-test-"))
     config.EXTRACTS_DIR = tmp / "extracts"
-    out = tmp / "国家统计局_乘用车销量快照_20261028.docx"
+    config.SNAPSHOT_DIR = tmp / "snapshots"
+    config.SNAPSHOT_DIR.mkdir()
+    out = config.SNAPSHOT_DIR / "国家统计局_乘用车销量快照_20261028.docx"
 
     spec = {
         "out": str(out),

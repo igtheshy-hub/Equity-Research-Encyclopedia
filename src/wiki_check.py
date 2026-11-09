@@ -14,7 +14,24 @@ from .pdf_extract import load_cached, raw_file_index
 LINE_PK_RE = re.compile(r"^【(数据|指标|观点)】(\d{4}(?:FY|H1|Q1|Q3)) ")
 PERSONAL_VIEW_RE = re.compile(r"^【个人观点】")
 
+# 财务报表单位声明（「财务报表及附注的单位为：千元」「人民幣千元」），用于收紧裸数字换算
+_UNIT_DECL_RE = re.compile(r"(?:单位[为是为：:]*\s*(?:人民币)?|(?:人民幣|人民币)\s*)(百万元|千元|万元|亿元|元)")
+_UNIT_FACTORS = {"百万元": 1e6, "千元": 1e3, "万元": 1e4, "亿元": 1e8, "元": 1.0}
+
 DIR_TYPE = {d.name: t for t, d in config.TYPE_DIRS.items()}
+
+
+def _declared_factor(cached, n):
+    """锚页或前两页声明的报表单位换算倍数；没有声明返回 None。
+
+    按锚页、前一页、前两页的顺序找：表前一页可能放主要会计数据（单位：万元），
+    不能盖过报表页自己的千元声明（待修清单 78）。"""
+    by_n = {u.get("n"): u.get("text") or "" for u in cached.get("units") or []}
+    for page in (n, n - 1, n - 2):
+        m = _UNIT_DECL_RE.search(by_n.get(page, ""))
+        if m:
+            return _UNIT_FACTORS.get(m.group(1))
+    return None
 
 
 def _management_problems(name, ln):
@@ -113,7 +130,10 @@ def _number_anchor_problems(name, body, info, unit_cache):
             if not cached:
                 continue
             unit = next((u for u in cached["units"] if u["n"] == wiki.loc_num(loc)), None)
-            if unit is None or any(am.unit_has_term(unit.get("text") or "", t) for t in terms):
+            factor = _declared_factor(cached, wiki.loc_num(loc))
+            scales = (factor,) if factor else None
+            if unit is None or any(am.unit_has_term(unit.get("text") or "", t, scales=scales)
+                                   for t in terms):
                 continue
             nums = "、".join(n for n, _u in terms[:3])
             problems.append(f"{name}: 锚点 {f}#{loc} 的原文里找不到数字（{nums}）")

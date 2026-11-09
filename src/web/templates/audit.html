@@ -6,6 +6,11 @@
   <div class="page-head">
     <h1>审校</h1>
     <span class="muted" id="last-audit-time">上次审校时间：—</span>
+    <select id="model-select" class="model-select" title="选择审校用的大模型" aria-label="选择审校用的大模型">
+      {% for m in MODEL_CHOICES %}
+      <option value="{{ m.id }}"{% if m.id == DEFAULT_MODEL %} selected{% endif %}>{{ m.label }}</option>
+      {% endfor %}
+    </select>
     <button class="primary" id="audit-btn">执行审校</button>
   </div>
   <p class="muted">对全库跑健康检查：矛盾（附双方原文与锚点）、过期（超 90 天未更新）、未摄入（raw/ 有文件未入库）、内容缺口（模型建议的补全点，不是错误）、孤立（无引用页面与合并建议）。审校在后台运行，可随意切换页面。</p>

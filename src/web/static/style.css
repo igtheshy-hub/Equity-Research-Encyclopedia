@@ -78,10 +78,6 @@ main {
   animation: rise .22s ease-out;
 }
 @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-footer {
-  text-align: center; color: var(--ink-2); font-size: 12px;
-  padding: 18px 0 26px;
-}
 .narrow { max-width: 900px; margin: 0 auto; }
 .page-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
 .page-head h1 { margin: 0; }

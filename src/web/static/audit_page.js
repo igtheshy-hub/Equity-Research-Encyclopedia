@@ -230,8 +230,6 @@ function openWizard(d) {
     });
   }
 
-  const merges = d.merge_suggestions || [];
-  const pages = d.pages || [];
   if (merges.length) {
     parts.push(`<h3>合并建议（选择合并方向，或跳过）</h3>`);
     merges.forEach((m, i) => {

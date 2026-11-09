@@ -7,7 +7,7 @@
 - 研报、公告与年报下载进 raw/inbox，取名与摄入复用 pipeline 的取名/摄入双线（借同名互斥锁）。
 - 年报按公司名或代码取最近一期：A 股走巨潮 category_ndbg_szsh，港股走 HKEXnews 的 prefix.do +
   titleSearchServlet.do（t1code=40000），下载后自动入库。
-- 结构化数字落成快照 DOCX（raw/reports/数据快照/），再直接摄入，锚点为块号。
+- 结构化数字落成快照 DOCX（raw/snapshots/），再直接摄入，锚点为块号。
 - 2026-10-29 逐站实测：东财 report/list 的 qType 0=个股、1=行业、2=策略；巨潮公告分类代码取自
   new-notice.js；港交所分类取自 tierone_c.json / tiertwo_c.json；统计局搜索支持「地区 + 指标」
   检索；乘联会 data.cpcadata.com/api/chartlist 按 charttype 1-6 返回不同表（1/3 含两年同月对比与
@@ -2706,16 +2706,26 @@ def fetch_web_gap(query, limit=3, tid=None, targets=None):
         score = sum(2 for k in _query_keys(query) if k in low)
         score += min(len(re.findall(r"\d[\d,]*(?:\.\d+)?", excerpt)), 20)
         score += 6 if pub and pub >= recent else 0
-        ranked.append((score, it, excerpt, pub))
+        # 站点把发布日期刷成抓取当天的旧文：正文里连检索年份都没出现，降权并在快照里标注，
+        # 免得摄入把旧年数据当本年（待修清单 80）
+        body_year = _excerpt_year(excerpt)
+        suspect = bool(pub and (datetime.now().date() - pub).days <= 2
+                       and (body_year is None or body_year < earliest.year))
+        if suspect:
+            score -= 8
+        ranked.append((score, it, excerpt, pub, suspect))
     ranked.sort(key=lambda x: x[0], reverse=True)
     if dropped_old:
         tasks.update(tid, detail=f"剔除以发布日早于 {earliest.isoformat()} 的网页 "
                                  f"{len(dropped_old)} 个")
     rows, used = [], []
-    for _, it, excerpt, pub in ranked[:limit]:
+    for _, it, excerpt, pub, suspect in ranked[:limit]:
         used.append(it)
+        pub_label = pub.isoformat() if pub else "未标注"
+        if suspect:
+            pub_label += f"（正文未写{earliest.year}年，日期存疑）"
         rows.append({"来源": it["title"], "网址": it["url"],
-                     "发布日期": pub.isoformat() if pub else "未标注",
+                     "发布日期": pub_label,
                      "检索词": query, "摘录": excerpt})
     if not rows:
         reason = ("抓到的网页都早于检索词年份下限 %s" % earliest.isoformat() if dropped_old
@@ -2768,6 +2778,9 @@ def sample_download_chain(industry, limit=3, tid=None, subject=None, skip_orgs=N
     query = str(subject or industry).strip()
     if not query:
         raise FetchError("样板下载需要行业名或公司名，如 乘用车、吉利汽车")
+    # 公司研报传了 subject：按个股研报口径检索（qtype=0 + 证券代码），
+    # 用行业口径查个股名必然扑空（待修清单第 76 条）
+    qtype, stock_code = (0, query) if subject else (1, "")
     limit = max(1, min(int(limit or 3), 5))
     skip = {str(o) for o in (skip_orgs or []) if o}
     notes, pool = [], []
@@ -2794,7 +2807,8 @@ def sample_download_chain(industry, limit=3, tid=None, subject=None, skip_orgs=N
             notes.append(f"{b['org']}：库内已有样板，跳过下载")
             continue
         try:
-            one = fetch_eastmoney_reports(query, b["org"], limit=need, months=36, brokers_only=True)
+            one = fetch_eastmoney_reports(query, b["org"], limit=need, months=36,
+                                          brokers_only=True, qtype=qtype, stock_code=stock_code)
         except FetchError as e:
             notes.append(f"{b['org']}（第{b['rank']}）：{e}，按榜单名次顺延")
             continue
@@ -2804,13 +2818,15 @@ def sample_download_chain(industry, limit=3, tid=None, subject=None, skip_orgs=N
     if 0 < len(items) < limit:
         try:
             more = fetch_eastmoney_reports(query, None, limit=limit - len(items),
-                                           months=36, brokers_only=True)
+                                           months=36, brokers_only=True,
+                                           qtype=qtype, stock_code=stock_code)
             items += more["items"]
             notes.append("榜单券商取不满，按东财热度补足")
         except FetchError as e:
             notes.append(str(e))
     elif not items:
-        res = fetch_eastmoney_reports(query, None, limit=limit, months=36, brokers_only=True)
+        res = fetch_eastmoney_reports(query, None, limit=limit, months=36, brokers_only=True,
+                                      qtype=qtype, stock_code=stock_code)
         items = res["items"]
         if res.get("skipped"):
             notes.append("跳过：" + "；".join(f"{s['title']}（{s['error']}）" for s in res["skipped"]))

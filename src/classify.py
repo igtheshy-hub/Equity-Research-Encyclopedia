@@ -10,19 +10,20 @@ from .pdf_extract import SUPPORTED_SUFFIXES, first_text, raw_file_groups
 
 UNSAFE = re.compile(r'[\s\[\]#|/\\:*?"<>\x00-\x1f]')
 
-PROMPT = """你是行业资料归档员。下面是一份 PDF 文件开头几页提取出的文字。判断这份文件属于哪一类，并给出归档信息。
+PROMPT = """你是行业资料归档员。下面是一份 PDF 或 Word 文件开头提取出的文字。判断这份文件属于哪一类，并给出归档信息。
 
 只输出 JSON，不要解释，格式如下：
 {
-  "kind": "report（卖方研报）/ filing（公司财报）/ policy（监管政策文件）三选一",
+  "kind": "report（卖方研报）/ filing（公司财报）/ policy（监管政策文件）/ other（其他材料）四选一。只有确实不属于前三类的文件才选 other，如会议纪要、新闻稿、访谈、培训材料、数据说明等",
   "broker": "出具方，研报填券商或机构名，识别不出填空字符串",
-  "topic": "主题：研报填行业或公司名，财报填公司名，政策填政策主题，尽量短",
+  "topic": "主题：研报填行业或公司名，财报填公司名，政策填政策主题，其他材料填内容主题，尽量短",
+  "period": "财报的报告期，写成 2025年年报、2026年半年报、2026年一季报、2026年三季报 的形式（年份按报告所属期，不是发布日）；非财报填空字符串",
   "industry": "研报所属行业（公司研报填该公司所处行业），非研报填空字符串",
   "date": "文件中的报告日期或发布日期，格式 YYYYMMDD，识别不出填空字符串",
   "reason": "一句话判断依据"
 }
 
-文件名由程序拼接（券商_主题+类型词_日期，保留原始扩展名），你不用拼，把字段给准即可。
+文件名由程序拼接（研报为 券商_主题+类型词_日期；财报为 公司_报告期_日期，如 比亚迪_2025年年报_20260330.pdf；保留原始扩展名），你不用拼，把字段给准即可。
 broker、topic、industry 一律用中文规范名（如 国泰君安、白酒、贵州茅台），英文材料也译成中文；证券代码等专有缩写可保留英文。
 
 --- 文件文字开始 ---
@@ -52,7 +53,8 @@ def find_duplicate(path, include_inbox=False):
         size = p.stat().st_size
     except OSError:
         return None
-    dirs = [config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR]
+    dirs = [config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR, config.SNAPSHOT_DIR,
+            config.OTHERS_DIR]
     if include_inbox:
         dirs.append(config.INBOX_DIR)
     target = os.path.normcase(str(p.resolve()))
@@ -98,26 +100,35 @@ def valid_date8(s):
 
 
 def build_filename(cls, original_stem, suffix=".pdf"):
-    kind_word = {"report": "研报", "filing": "财报", "policy": "政策文件"}[cls["kind"]]
-    parts = []
-    if sanitize(cls.get("broker")):
-        parts.append(sanitize(cls["broker"]))
+    kind_word = {"report": "研报", "filing": "财报", "policy": "政策文件", "other": "其他材料"}[cls["kind"]]
     topic = sanitize(cls.get("topic"))
-    parts.append(f"{topic}{kind_word}" if topic else kind_word)
+    if not topic and cls["kind"] == "other":  # 其他材料给不出主题时沿用原文件名
+        topic = sanitize(original_stem)
     date = sanitize(cls.get("date"))
-    if valid_date8(date):
-        parts.append(date)
-    elif date:
-        # 日期格式对但日历上不存在（如 20260300）——不写进文件名，另记一条提示
-        cls["_bad_date"] = date
-    name = "_".join(parts) + suffix
+    if not valid_date8(date):
+        if date:
+            # 日期格式对但日历上不存在（如 20260300）——不写进文件名，另记一条提示
+            cls["_bad_date"] = date
+        date = ""
+    period = sanitize(cls.get("period"))
+    if cls["kind"] == "filing" and period:
+        # 财报细命名：公司_报告期_日期（如 比亚迪_2025年年报_20260330.pdf），不再拼「财报」类型词
+        name = "_".join(x for x in (topic, period, date) if x) + suffix
+    else:
+        parts = []
+        if sanitize(cls.get("broker")):
+            parts.append(sanitize(cls["broker"]))
+        parts.append(f"{topic}{kind_word}" if topic else kind_word)
+        if date:
+            parts.append(date)
+        name = "_".join(parts) + suffix
     if name == suffix or set(name[:-len(suffix)]) <= {"_"}:
         name = f"未归类_{sanitize(original_stem) or '文件'}{suffix}"
     return name
 
 
 def unique_target(directory, filename):
-    """保证文件名在整个 raw（研报/财报/政策/收件台）里唯一，而不只是目标子目录。
+    """保证文件名在整个 raw（研报/财报/政策/其他材料/收件台）里唯一，而不只是目标子目录。
 
     知识条目的锚点只写文件名，同名两份会让审校、深查、删除都指错对象。
     """
@@ -141,6 +152,8 @@ def target_directory(cls):
     if cls["kind"] == "filing":
         sub = sanitize(cls.get("topic")) or "未分类公司"
         return config.FILINGS_DIR / sub
+    if cls["kind"] == "other":
+        return config.OTHERS_DIR
     return config.POLICIES_DIR
 
 
@@ -166,9 +179,9 @@ def classify_one(path, force_kind=None):
         task="classify",
         response_json=True,
     )
-    if force_kind in ("report", "filing", "policy"):
+    if force_kind in ("report", "filing", "policy", "other"):
         cls["kind"] = force_kind  # 取数源已知文件类型（如年报），不受模型误判影响
-    if cls.get("kind") not in ("report", "filing", "policy"):
+    if cls.get("kind") not in ("report", "filing", "policy", "other"):
         return {"ok": False, "file": path.name, "error": f"LLM 返回的 kind 不合法: {cls.get('kind')!r}，文件留在收件台"}
     filename = build_filename(cls, path.stem, path.suffix.lower())
     directory = target_directory(cls)

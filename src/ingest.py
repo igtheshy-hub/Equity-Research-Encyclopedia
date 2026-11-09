@@ -19,6 +19,7 @@ COMPILE_PROMPT = """你是行业知识编辑，把一份材料的逐单元文本
 - 只用给定材料，禁止编造，材料里没有的信息不写
 - 每条知识一句话，句尾必须带锚点 {ANCHOR_EXAMPLE}
 - 保留原文关键数字（金额、增速、比率、评级、目标价等），不改口径
+- 同一指标在同一材料里有多组数值时先对年份：只取正文明确写出年份、或按月份连续成序列的那一组；只有「8月」这类不带年份的孤立数值，不写成「20XX年8月」条目，宁可不写
 - 营销表述、免责声明、分析师介绍一律丢弃
 - 材料的检索词、来源地址、取数时点、引用提示等元信息不是知识，不写成条目；材料明确说没有的数据，也不写「未给出」条目
 - 主题划分：公司给 type=company，行业给 type=industry，估值方法/政策术语等给 type=concept
@@ -68,7 +69,8 @@ MERGE_PROMPT = """现有知识库索引如下（每行：slug | 类型 | 别名�
 
 
 def iter_raw_files():
-    for d in (config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR):
+    for d in (config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR, config.OTHERS_DIR,
+              config.SNAPSHOT_DIR):
         for suf in SUPPORTED_SUFFIXES:
             for p in sorted(d.rglob("*" + suf)):
                 # 下划线开头的目录是隔离区（如 _rejected：摄入失败的下载件），不进摄入与审校检查
@@ -83,7 +85,11 @@ iter_pdfs = iter_raw_files
 
 def source_kind(path):
     rel = path.relative_to(config.RAW_DIR).as_posix()
-    for kind, prefix in (("report", "reports/"), ("filing", "filings/"), ("policy", "policies/")):
+    legacy = config.LEGACY_SNAPSHOT_DIR.relative_to(config.RAW_DIR).as_posix() + "/"
+    if rel.startswith("snapshots/") or rel.startswith(legacy):
+        return "snapshot"
+    for kind, prefix in (("report", "reports/"), ("filing", "filings/"),
+                         ("policy", "policies/"), ("other", "others/")):
         if rel.startswith(prefix):
             return kind
     return "unknown"
@@ -489,9 +495,20 @@ def _unique_page_path(type_, slug):
         return path
 
 
+def _slug_base(title):
+    """标题带括号注释时截到括号前：原铝（电解铝）→原铝。
+
+    不截会把全角括号带进 slug，文件名白名单拒收后落成「未命名-哈希」页
+    （待修清单第 74 条）。
+    """
+    t = str(title or "").strip()
+    head = re.split(r"[（(]", t, maxsplit=1)[0].strip()
+    return sanitize(head or t)
+
+
 def _apply_create(decision, topic, extra_sources, note_prefix):
     type_ = decision["type"]
-    slug = sanitize(topic["title"]) or sanitize(decision.get("slug") or "") or "未命名"
+    slug = _slug_base(topic["title"]) or sanitize(decision.get("slug") or "") or "未命名"
     # slug 必须能安全地映射成 wiki 下的文件名（问题 2 的白名单），不合格就退到哈希名
     path = _unique_page_path(type_, slug)
     count = sum(len(v) for v in topic["sections"].values())

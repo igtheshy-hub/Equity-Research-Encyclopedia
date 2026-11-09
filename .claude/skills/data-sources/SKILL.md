@@ -7,7 +7,7 @@ description: 取料固定源清单：研报、公告财报、宏观数据、政�
 
 ## 用法
 
-1. 动手取料前先查库：读 wiki/index.md 找相关页，用 Glob 搜 raw/ 文件名（含 raw/reports/数据快照/），库里已有能用的直接复用并报告出处，不重复下载；确有缺口才按下表外出取数
+1. 动手取料前先查库：读 wiki/index.md 找相关页，用 Glob 搜 raw/ 文件名（含 raw/snapshots/），库里已有能用的直接复用并报告出处，不重复下载；确有缺口才按下表外出取数
 2. 取料先按需求类型查下表对应分类，用 Playwright MCP 打开抓取；下载的 PDF 等文件一律存 raw/inbox/ 走收件台，不直接进正式目录
 3. 宏观数字（GDP/CPI/PMI/社融/利率等结构化序列）优先走 macro-data 技能的 API 模板（AKShare、统计局新 API），本表的统计局/央行页面用于发布公告与新闻稿
 4. 慧博只用免登录榜单（新财富排名、热度排行），不登录、不下载正文（2026-10-29 实测登录后详情页仍无 PDF 直链，登录功能已移除）；研报下载走东财研报中心免登录入口。发现报告的深度报告要积分，遇付费内容如实报告，不硬闯。新财富前 3 券商在东财取不到且顺延也补不齐时，提醒用户可自行在慧博终端下载缺的券商研报 PDF，从网页上传或放 raw/inbox 摄入
@@ -58,8 +58,8 @@ description: 取料固定源清单：研报、公告财报、宏观数据、政�
 任何要进报告的网页或 API 数据，取到后都不能只活在当次报告里，要落成快照进知识库，下次写报告直接引用锚点。有原件的存原件，没有原件的建快照。
 
 1. 写 spec JSON，字段见 `src/snapshot.py` 文件头注释（out、title、org、url、fetched_at、rows、note）
-2. `python -m src.snapshot spec.json` 生成 DOCX，out 写 `raw/reports/数据快照/<机构>_<主题>快照_<取数日期>.docx`，如 `国家统计局_宏观数据快照_20261024.docx`
-3. 快照不进 raw/inbox、不走 `manage.py sort`。sort 只有研报、财报、政策三类，快照走进去会被拼成「研报」字样或丢掉机构名。落盘后交主线直接 `python manage.py ingest --all`
+2. `python -m src.snapshot spec.json` 生成 DOCX，out 写 `raw/snapshots/<机构>_<主题>快照_<取数日期>.docx`，如 `国家统计局_宏观数据快照_20261024.docx`。快照既不是研报也不是财报，独立成 raw/snapshots/ 一类，`snapshot.build` 会拒绝写到该目录之外
+3. 快照不进 raw/inbox、不走 `manage.py sort`。sort 只有研报、财报、政策、其他材料四类，没有快照类，快照走进去会被拼成「研报」字样或丢掉机构名。落盘后交主线直接 `python manage.py ingest --all`
 
 快照正文必须写全来源机构、来源网址、取数时点。估值快照的取数时点写到收盘日，正文注明跨期不可直接比较。网址确实拿不到时写「未记录」，不许编。
 

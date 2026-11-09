@@ -622,7 +622,8 @@ def api_files_delete():
 def _ingest_pick(names):
     """网页勾选的未摄入文件 → 可摄入路径。收件台、_ 隔离目录与同内容重复件一律拒绝。"""
     idx = raw_file_index()
-    allowed = (config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR)
+    allowed = (config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR, config.OTHERS_DIR,
+               config.SNAPSHOT_DIR)
     known = {f.get("sha256"): f.get("file") for f in ingest_mod.load_manifest()["files"]
              if f.get("sha256")}
     paths, rejected = [], []
@@ -632,7 +633,7 @@ def _ingest_pick(names):
         if not path:
             reason = "找不到文件"
         elif not any(path.is_relative_to(d) for d in allowed):
-            reason = "只接受 raw/reports、raw/filings、raw/policies 下的文件"
+            reason = "只接受 raw/reports、raw/filings、raw/policies、raw/others、raw/snapshots 下的文件"
         elif any(part.startswith("_") for part in path.relative_to(config.RAW_DIR).parts[:-1]):
             reason = "隔离目录不摄入"
         else:
@@ -685,7 +686,8 @@ def api_audit_run():
         return err
 
     def run(tid):
-        r = audit_mod.run(task_id=tid)
+        with llm.use_model(model):
+            r = audit_mod.run(task_id=tid)
         return {"file": r["path"].name, "counts": r["counts"], "model": model}
     tid = tasks.start("audit", run, label="四类健康检查", model=model)
     return jsonify({"task_id": tid, "model": model})
@@ -745,7 +747,8 @@ def api_audit_ai_review():
         return jsonify({"error": "时间戳格式不对，应为 20261013-222015 这样的形式"}), 400
 
     def run(tid):
-        r = ai_review_mod.run(ts=ts or None, task_id=tid)
+        with llm.use_model(model):
+            r = ai_review_mod.run(ts=ts or None, task_id=tid)
         return {"file": r["path"].name, "counts": r["sev_counts"],
                 "total": r["total"], "unjudged": r["unjudged"], "model": model}
     tid = tasks.start("ai_review", run, label="AI 初审排序", model=model)

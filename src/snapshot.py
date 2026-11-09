@@ -3,8 +3,8 @@
 用法：python -m src.snapshot <spec.json>
 
 spec.json 字段：
-  out         输出 docx 路径（相对项目根），写 raw/reports/数据快照/<机构>_<主题>快照_<取数日期>.docx
-              快照不走 raw/inbox 与 manage.py sort（sort 只有研报/财报/政策三类）
+  out         输出 docx 路径（相对项目根），写 raw/snapshots/<机构>_<主题>快照_<取数日期>.docx
+              快照不走 raw/inbox 与 manage.py sort（sort 只有研报/财报/政策/其他四类）
   title       快照标题，如 国家统计局宏观月度数据快照
   org         来源机构，如 国家统计局
   url         取数网页或接口地址
@@ -40,6 +40,14 @@ def build(spec):
     out = Path(spec["out"])
     if not out.is_absolute():
         out = config.ROOT / out
+    out = out.resolve()
+    snapdir = config.SNAPSHOT_DIR.resolve()
+    if not out.is_relative_to(snapdir):
+        try:
+            shown = snapdir.relative_to(config.ROOT.resolve()).as_posix()
+        except ValueError:
+            shown = str(snapdir)
+        raise SystemExit(f"快照只能写到 {shown}/ 下：{spec['out']}")
     out.parent.mkdir(parents=True, exist_ok=True)
 
     doc = Document()

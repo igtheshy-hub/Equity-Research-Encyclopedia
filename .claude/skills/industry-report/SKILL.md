@@ -54,7 +54,7 @@ description: 生成中文 A 股行业研报的完整流程：选样板研报、�
 
 ### 3. 取料
 
-逐节从 wiki 取条目：按 kb-ask 技能直接读 `wiki/industries/`、`wiki/companies/` 页面，锚点原样复用；零散问题也可走 `python manage.py ask`（带程序校验，可顺手沉淀新知识）。缺口清单上的数据派资料员补，网页或 API 取数先按 data-sources 技能落快照（`<机构>_<主题>快照_<取数日期>.docx`，放 raw/reports/数据快照/），摄入后再写。
+逐节从 wiki 取条目：按 kb-ask 技能直接读 `wiki/industries/`、`wiki/companies/` 页面，锚点原样复用；零散问题也可走 `python manage.py ask`（带程序校验，可顺手沉淀新知识）。缺口清单上的数据派资料员补，网页或 API 取数先按 data-sources 技能落快照（`<机构>_<主题>快照_<取数日期>.docx`，放 raw/snapshots/），摄入后再写。
 
 ### 4. 成文
 

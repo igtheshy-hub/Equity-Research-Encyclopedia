@@ -154,7 +154,8 @@ class DuplicateFileError(RuntimeError):
 def raw_file_groups():
     """文件名 → [路径, ...]。同名文件不会被悄悄覆盖，交给调用方显式报错。"""
     out = {}
-    for d in (config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR, config.INBOX_DIR):
+    for d in (config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR, config.OTHERS_DIR,
+              config.SNAPSHOT_DIR, config.INBOX_DIR):
         for suf in SUPPORTED_SUFFIXES:
             for p in d.rglob("*" + suf):
                 out.setdefault(p.name, []).append(p)

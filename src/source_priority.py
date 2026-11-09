@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import config
 
-LABELS = {0: "财报", 1: "公告", 2: "研报", 3: "政策", 4: "其他"}
+LABELS = {0: "财报", 1: "公告", 2: "研报", 3: "政策", 4: "其他材料"}
 RULE = ("公司财务数据的来源优先级：财报（年报、半年报、季报）> 公告/招股书 > 券商研报 > 其他材料。"
         "同一公司财务指标冲突时，以最新报告期的财报为准；研报数字只能作对照，并注明差异与各自报告期。"
         "行业总量数据不套此序，统计局、行业协会、海关等一手来源优先于研报预测。")
@@ -44,19 +44,22 @@ def _name_of(ref):
 
 
 def classify(ref, manifest=None):
-    """返回 filing / announcement / report / policy / other。"""
+    """返回 filing / announcement / report / policy / snapshot / other。"""
     name = _name_of(ref)
     entry = _manifest_map(manifest).get(name) or {}
     path = str(entry.get("path") or "")
     low = name.casefold()
     if path.startswith("raw/filings/") or path.startswith("raw\\filings\\"):
         return "filing"
+    if (path.startswith("raw/snapshots/") or path.startswith("raw\\snapshots\\")
+            or "数据快照" in path or "数据快照" in name):
+        return "snapshot"
+    if path.startswith("raw/others/") or path.startswith("raw\\others\\"):
+        return "other"
     if "研报" in low:
         return "report"
     if path.startswith("raw/policies/") or path.startswith("raw\\policies\\"):
         return "policy"
-    if "数据快照" in path or "数据快照" in name:
-        return "other"
     if any(w in low for w in _ANNOUNCE_WORDS):
         return "announcement"
     if any(w in low for w in _FILING_WORDS):
@@ -68,10 +71,12 @@ def classify(ref, manifest=None):
         return "report"
     if kind == "policy":
         return "policy"
+    if kind == "snapshot":
+        return "snapshot"
     return "other"
 
 
-_RANK = {"filing": 0, "announcement": 1, "report": 2, "policy": 3, "other": 4}
+_RANK = {"filing": 0, "announcement": 1, "report": 2, "policy": 3, "other": 4, "snapshot": 4}
 
 
 def rank(ref, manifest=None):
@@ -79,7 +84,10 @@ def rank(ref, manifest=None):
 
 
 def label(ref, manifest=None):
-    return LABELS[rank(ref, manifest)]
+    kind = classify(ref, manifest)
+    if kind == "snapshot":
+        return "快照"
+    return LABELS[_RANK[kind]]
 
 
 def prefer(a, b, manifest=None):
@@ -106,7 +114,7 @@ def page_legend(page, manifest=None, limit=8):
     groups = {}
     for name in files:
         groups.setdefault(label(name, manifest), []).append(name)
-    order = ["财报", "公告", "研报", "政策", "其他"]
+    order = ["财报", "公告", "研报", "政策", "快照", "其他材料"]
     parts = []
     for lab in order:
         names = groups.get(lab) or []

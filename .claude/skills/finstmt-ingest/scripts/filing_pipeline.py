@@ -601,12 +601,18 @@ def _tok_val(tok):
 
 
 def _detect_unit(units, sections):
-    """从资产负债表首页（或其上一页）机械解析报表单位声明（如「财务附注中报表的单位为：千元」）。
-    只认资产负债表：主要会计数据页常以元列示，与报表单位不同源，不能混用。"""
+    """从资产负债表页机械解析报表单位声明（如「财务附注中报表的单位为：千元」）。
+
+    先查资产负债表所在页，再往前最多回退两页。表前一页常放「主要会计数据」或债券专项表
+    （单位：万元），与财务报表不同源；先查前页会把千元表按万元换算（待修清单 78，
+    比亚迪 2026H1 科目整体放大 10 倍）。"""
     by_n = {u["n"]: u["text"] for u in units}
     pp = sections.get("bs") or []
-    pages = {min(pp), min(pp) - 1} if pp else set()
-    for n in sorted(p for p in pages if p > 0):
+    if not pp:
+        return None
+    first = min(pp)
+    pages = sorted(p for p in pp if p > 0) + [p for p in (first - 1, first - 2) if p > 0]
+    for n in pages:
         text = by_n.get(n, "")
         m = _UNIT_PAT.search(text) or _UNIT_DECL_PAT.search(text)
         if m:
@@ -711,13 +717,21 @@ def _row_snippets(text, item):
 
 
 def _value_on_page(text, item, value, unit):
-    """抄录值必须真出现在所标页码的原文里；负数按绝对值再试，财报空值列用「-」记 0。"""
+    """抄录值必须真出现在所标页码的原文里；负数按绝对值再试，财报空值列用「-」记 0。
+
+    0 值必须落在本科目所在行：全页任意横线不能顶替，否则模型编造的 0 值行会混进 wiki
+    （待修清单 79，长城汽车「对所有者或股东的分配 = 0」原文并无此行）。"""
     if not text:
         return False
+    snippets = _row_snippets(text, item)
+    if value == 0:
+        if not snippets:
+            return False
+        return any(re.search(r"(?<![\d.])[-—‐0](?![\d.])", s) for s in snippets)
     cands = [(str(value), unit)]
     if value < 0:
         cands.append((str(abs(value)), unit))
-    snippets = _row_snippets(text, item) or [text]
+    snippets = snippets or [text]
     if any(anchor_match.unit_has_term(s, t) for s in snippets for t in cands):
         return True
     if abs(value) < 10 and value == int(value):
@@ -727,11 +741,10 @@ def _value_on_page(text, item, value, unit):
                else r"(?<![\d.])" + n + r"(?![\d.])")
         if any(re.search(pat, s) for s in snippets):
             return True
-    return value == 0 and any(
-        re.search(r"(?<![\d.])[-—‐](?![\d.])", s) for s in snippets)
+    return False
 
 
-def _normalize_rows(path, rows, global_unit=None, page_texts=None):
+def _normalize_rows(path, rows, global_unit=None, page_texts=None, parent_pages=None):
     """归一科目名与单位，返回 (合并 items, 母公司 items, 丢弃数)。
 
     items 每项存 {v, a, unit, statement, listed}：
@@ -740,7 +753,9 @@ def _normalize_rows(path, rows, global_unit=None, page_texts=None):
       - 每股收益保留原值，unit 记 "元/股"；
       - 其他单位（股、件等）也保留原值与单位，不再静默丢弃。
     global_unit 为报表声明单位（机械解析），纯金额行以它为准——LLM 逐页填单位易整体看错。
-    page_texts 给出页码→原文时，抄录值不在该页原文里的行直接丢弃，不把看错的数字写进库。"""
+    page_texts 给出页码→原文时，抄录值不在该页原文里的行直接丢弃，不把看错的数字写进库。
+    parent_pages 为母公司报表页：落在这些页上的行一律归母公司口径，LLM 把 scope 写成
+    合并时按页纠正，避免母公司科目混进合并指标。"""
     cons, parent, dropped = {}, {}, 0
     items_dict = fin_calc.load_items()
     for r in rows:
@@ -777,7 +792,9 @@ def _normalize_rows(path, rows, global_unit=None, page_texts=None):
             # 权益变动行在未分配利润列是减项，模型偶尔抄成盈余公积列的正数；
             # 同页原行里核到对应负数就翻回，R3 的代数口径与入库值才一致
             v = -v
-        bucket = parent if r["scope"] == "母公司" else cons
+        scope = "母公司" if r["scope"] == "母公司" or (
+            parent_pages and r.get("page") in parent_pages) else "合并"
+        bucket = parent if scope == "母公司" else cons
         cls = (items_dict.get(name) or {}).get("s")
         cls_ok = not cls or _STMT_CLASS.get(r["statement"]) == cls
         entry = {"v": v, "a": anchor_of(path, r["page"]), "statement": r["statement"], "listed": listed,
@@ -921,6 +938,33 @@ def _save_store(store):
     tmp.replace(f)
 
 
+_JUMP_ITEMS = ("资产总计", "负债合计", "所有者权益合计", "归属于母公司所有者权益合计")
+
+
+def _period_jumps(periods, pk, items):
+    """存量科目与最近报告期比较，10 倍以上跳变视为口径错位。
+
+    单位识别错了（如千元当万元）会让整块科目同比例放大，勾稽校验对等比缩放无效，
+    只能靠跨期量级拦。只比资产负债表存量科目：利润表流入类受季节性与季度累计口径
+    影响，Q1 收入占全年不足一成并不少见，一刀切会误挂真报告。"""
+    prior = [(v.get("period_end") or "", k) for k, v in periods.items() if k != pk]
+    prior = [(d, k) for d, k in prior if d]
+    if not prior:
+        return []
+    prev_pk = max(prior)[1]
+    prev = periods.get(prev_pk, {}).get("items") or {}
+    out = []
+    for name in _JUMP_ITEMS:
+        a = (items.get(name) or {}).get("v")
+        b = (prev.get(name) or {}).get("v")
+        if not a or not b or a * b < 0:
+            continue
+        ratio = abs(a / b)
+        if ratio >= 10 or ratio <= 1 / 10:
+            out.append(f"{name} {a:,.0f} 对 {prev_pk} {b:,.0f}（{ratio:.1f} 倍）")
+    return out
+
+
 def ingest_filing(path, units, unit_kind, manifest, sha, targets=None, task_id=None):
     """财报摄入主流程。返回 ingest_one 形状的结果 dict；勾稽失败返回 None（挂起）。"""
     targets = normalize_targets(targets)
@@ -941,15 +985,19 @@ def ingest_filing(path, units, unit_kind, manifest, sha, targets=None, task_id=N
                                             and r["scope"] == "合并" and r["item"] in fb_items)]
             print(f"  [权益表] 机械兜底 {len(fb)} 行（覆盖 LLM 抄列）")
             rows.extend(fb)
+    parent_pages = set()
+    for key in ("parent_bs", "parent_is", "parent_cf", "parent_eq"):
+        parent_pages.update(meta["sections"].get(key) or [])
     page_texts = {u["n"]: u["text"] for u in units}
-    cons, parent, dropped = _normalize_rows(path, rows, global_unit, page_texts)
+    cons, parent, dropped = _normalize_rows(path, rows, global_unit, page_texts, parent_pages)
     want = ("资产总计", "负债合计", "所有者权益合计", "营业收入", "净利润")
     missing = [n for n in want if n not in cons]
     key_pages = meta["sections"].get("key") or []
     if missing and key_pages:
         print(f"  [补录] 主要会计数据缺 {'、'.join(missing)}，重抄关键页")
         extra_cons, extra_parent, _ = _normalize_rows(
-            path, _transcribe_batch(path, units, key_pages, True), global_unit, page_texts)
+            path, _transcribe_batch(path, units, key_pages, True), global_unit, page_texts,
+            parent_pages)
         for name, spec in extra_cons.items():
             cons.setdefault(name, spec)
         for name, spec in extra_parent.items():
@@ -1003,6 +1051,12 @@ def ingest_filing(path, units, unit_kind, manifest, sha, targets=None, task_id=N
     periods = store["periods"]
     pk = meta["pk"]
     rel = path.relative_to(config.ROOT).as_posix()
+
+    jumps = _period_jumps(periods, pk, cons)
+    if jumps:
+        print("  [量级异常] " + "；".join(jumps))
+        print("  [挂起] 存量科目与最近报告期相差 10 倍以上，疑似单位口径错位，整份财报不入库")
+        return None
 
     # 计算指标（含上年数据引用）
     periods[pk] = {

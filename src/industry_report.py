@@ -1291,6 +1291,13 @@ def approve_gaps(job_id, gap_ids):
                         if isinstance(row, dict) and row.get("指标")))[:4])
                     return (f"返回内容与缺口不符（缺「{'、'.join(classes[:4])}」，"
                             f"实际返回：{actual}）")
+                # 缺口要价格/均价，统计局按关键词模糊匹配可能回产量序列（待修清单第 74 条）
+                if re.search(r"价格|均价", g.get("item") or ""):
+                    names = "、".join(list(dict.fromkeys(
+                        str(row.get("指标") or "") for row in rows
+                        if isinstance(row, dict) and row.get("指标")))[:4])
+                    if not re.search(r"价格|均价|指数", names):
+                        return f"返回内容与缺口不符（缺口要价格类序列，实际返回：{names}）"
             return ""
 
         # 本次勾选的数据缺口随取数带进摄入：财报摄入据此补抄 skill 字典外的目标数据
@@ -2911,7 +2918,7 @@ def _gap_class_terms(item):
 
 
 def _delivery_problems(report_md):
-    """交付前硬闸门：锚点、占位符、正文图位三类问题清零才允许转 Word。"""
+    """交付前硬闸门：锚点、占位符、正文图位、空章节四类问题清零才允许转 Word。"""
     problems = list(_anchor_checks(report_md))
     if re.search(r"[（(]\s*测算\s*[:：]\s*[）)]", report_md):
         problems.append("仍有空测算标注「（测算：）」")
@@ -2920,6 +2927,14 @@ def _delivery_problems(report_md):
     refs = re.findall(r"(?<!附)图\s*\d+", wiki.ANCHOR_RE.sub("", report_md))
     if refs:
         problems.append("正文仍有图位：" + "、".join(dict.fromkeys(refs)))
+    # 审校替换曾把整章正文换成模型自述（待修清单第 75 条）：章节正文只剩元话术
+    # 或整章清空的，不许转 Word
+    for title, body in _parse_report_sections(report_md).items():
+        plain = wiki.ANCHOR_RE.sub("", body).strip()
+        if len(plain) < 20:
+            problems.append(f"章节「{title}」正文为空")
+        elif _is_meta_paragraph(plain) and len(plain) < 300:
+            problems.append(f"章节「{title}」只剩审校说明")
     return problems
 
 
@@ -3475,7 +3490,18 @@ def _order_findings(job, report_md, findings, tid):
 
 
 # 审校答复腔特征词：正常研报正文不会这么写，new 里出现即说明模型把修订说明当成了替换文本
-_REPAIR_META_WORDS = ("修正如下", "已核对", "不作改动", "锚点原文即为", "（原挂", "误报")
+_REPAIR_META_WORDS = ("修正如下", "已核对", "不作改动", "锚点原文即为", "（原挂", "误报",
+                      "修改后的", "修正后的", "修订说明", "仅调整锚点", "替换为")
+
+
+def _is_meta_paragraph(text):
+    """段落是不是审校答复话术（整段只讲怎么改，不是正文）。"""
+    t = str(text or "").strip()
+    if not t:
+        return False
+    if t.startswith(("说明：", "说明:", "注：修改", "以下为修改")):
+        return True
+    return any(w in t for w in _REPAIR_META_WORDS)
 
 
 def _line_anchors_cover(line):
@@ -3504,10 +3530,13 @@ def _line_anchors_cover(line):
 
 def _repair_rejected(old, new, report_md=""):
     """替换对闸门：拦下会把审校说明写进正文的坏替换。返回拒因，空串=放行。"""
-    if any(w in new for w in _REPAIR_META_WORDS):
+    if _is_meta_paragraph(new):
         return "new 是审校答复说明"
     if len(new) > 2 * len(old) + 80:
         return f"new 比 old 膨胀过多（{len(old)}→{len(new)} 字）"
+    # 整章/整表被替换成几句说明时，篇幅会骤降：低于原文两成直接驳回，保留原文
+    if len(old) >= 200 and len(new) < len(old) * 0.2:
+        return f"new 篇幅骤降（{len(old)}→{len(new)} 字），疑似整段丢失"
     # 把有出处的数字改成「未披露」是审校误报落地，改完原文数字就丢了：
     # 先按 old 所在行的锚点回查，原文能核上就不许删（待修清单第 32 条）
     if "未披露" in new and "未披露" not in old and report_md:

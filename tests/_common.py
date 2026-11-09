@@ -71,8 +71,11 @@ def redirect_config(root: Path) -> Path:
     config.RAW_DIR = root / "raw"
     config.INBOX_DIR = config.RAW_DIR / "inbox"
     config.REPORTS_DIR = config.RAW_DIR / "reports"
+    config.SNAPSHOT_DIR = config.RAW_DIR / "snapshots"
+    config.LEGACY_SNAPSHOT_DIR = config.REPORTS_DIR / "数据快照"
     config.FILINGS_DIR = config.RAW_DIR / "filings"
     config.POLICIES_DIR = config.RAW_DIR / "policies"
+    config.OTHERS_DIR = config.RAW_DIR / "others"
     config.WIKI_DIR = root / "wiki"
     config.INDEX_MD = config.WIKI_DIR / "index.md"
     config.LOG_MD = config.WIKI_DIR / "log.md"
@@ -89,9 +92,9 @@ def redirect_config(root: Path) -> Path:
         "concept": config.WIKI_DIR / "concepts",
         "source": config.WIKI_DIR / "sources",
     }
-    for d in (config.INBOX_DIR, config.REPORTS_DIR, config.FILINGS_DIR, config.POLICIES_DIR,
-              *config.TYPE_DIRS.values(), config.OUTPUTS_DIR, config.EXTRACTS_DIR, config.FIN_DIR,
-              config.REPORT_JOBS_DIR):
+    for d in (config.INBOX_DIR, config.REPORTS_DIR, config.SNAPSHOT_DIR, config.FILINGS_DIR,
+              config.POLICIES_DIR, config.OTHERS_DIR, *config.TYPE_DIRS.values(), config.OUTPUTS_DIR,
+              config.EXTRACTS_DIR, config.FIN_DIR, config.REPORT_JOBS_DIR):
         d.mkdir(parents=True, exist_ok=True)
     return root
 

@@ -189,4 +189,15 @@
 {"title": "2026年10月 25 日 市面常见 白酒价格 全览: 茅台 至剑南春等品牌价...", "url": "http://mp.weixin.qq.com/s?src=11&timestamp=1793983743&ver=7072&signature=d4EGQe-q4y-pOsXjC7l8icKhCfKJ0GwznaU1Ej-1dtgDuruxV1wHMQ9V-EFYA43piW*ruVgmpcE2kBcRQ7dc5rtBlloaiinxe*VLYebPZdivaKErS2t31Y*Z6IsyrhgW&new=1", "added": "2026-11-07"}
 {"title": "酒排名 - 白酒选购与 今日酒价 ,帮你买对少花冤枉钱", "url": "https://www.jiupaiming.com/", "added": "2026-11-07"}
 {"title": "中国10年期国债 到期 收益率 与沪深300指数 - value500投资导航", "url": "http://value500.com/10Bond.html", "added": "2026-11-07"}
+{"title": "8月汽车经销商库存预警指数 为51.7%", "url": "https://www.aqsiqauto.com/newcars/info/8848.html", "added": "2026-11-09"}
+{"title": "中国 汽车流通协会", "url": "http://admin.cada.cn/", "added": "2026-11-09"}
+{"title": "中国 汽车流通协会", "url": "http://www.cada.cn/", "added": "2026-11-09"}
+{"title": "出口退税 新政: 2027年4月 起新能源 汽车退税率 降至9%,电子烟设...", "url": "http://mp.weixin.qq.com/s?src=11&timestamp=1794185103&ver=7077&signature=*SbHhWBLFQ7GBOAWWOkElfAI*9kzR1cQOJJhfb60410KCrbxBAd2JeGo2i7OD8uufCiLNiRfTy35UDmM2KMDR3t*c2Jlk9Vukx7HMCbuvIwROR-pf734d9-rOjRhZNnz&new=1", "added": "2026-11-09"}
+{"title": "...比亚迪|乘用车| 上汽 集团 | 长城 汽车|江淮汽车| 长安 汽车|广汽 集团 |知名 企 ...", "url": "https://www.163.com/dy/article/JLVD2LHU0519B8U3.html", "added": "2026-11-09"}
+{"title": "比亚迪 （ 002594 ） 千股千评 _ 数据中心 _ 东方财富网", "url": "https://data.eastmoney.com/stockcomment/002594.html", "added": "2026-11-09"}
+{"title": "比亚迪 ( 002594 )_股票行情,行情首页_中财网", "url": "http://quote.cfi.cn/quote.aspx?stockid=11847", "added": "2026-11-09"}
+{"title": "比亚迪 （ 002594 ）个股分析_牛叉诊股_同花顺财经", "url": "http://doctor.10jqka.com.cn/002594/", "added": "2026-11-09"}
+{"title": "碳酸锂期货价格 _实时 行情 _今日 碳酸锂价格走势 图- 期货行情 中心-金投网", "url": "https://www.cngold.org/qihuo/tansuanli.html", "added": "2026-11-09"}
+{"title": "碳酸锂期货 _新闻资讯 价格行情 -金投期货-金投网", "url": "https://futures.cngold.org/tansuanli/", "added": "2026-11-09"}
+{"title": "碳酸锂期货 实时 行情 走势 图_今日 碳酸锂期货价格 - 行情 中心-金投网", "url": "https://quote.cngold.org/qh/gfex_lc2405.html", "added": "2026-11-09"}
 <!-- SOURCES:WEB:END -->

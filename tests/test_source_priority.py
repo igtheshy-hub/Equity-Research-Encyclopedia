@@ -17,7 +17,11 @@ MANIFEST = {"files": [
     {"file": "汽车产业政策.pdf",
      "path": "raw/policies/汽车产业政策.pdf", "source_type": "policy"},
     {"file": "乘联会_销量快照_20260901.docx",
-     "path": "raw/reports/数据快照/乘联会_销量快照_20260901.docx", "source_type": "report"},
+     "path": "raw/snapshots/乘联会_销量快照_20260901.docx", "source_type": "snapshot"},
+    {"file": "乘联会_销量快照_20260801.docx",
+     "path": "raw/reports/数据快照/乘联会_销量快照_20260801.docx", "source_type": "report"},
+    {"file": "某券商_渠道调研其他材料_20260901.docx",
+     "path": "raw/others/某券商_渠道调研其他材料_20260901.docx", "source_type": "other"},
 ]}
 
 FILING = "[[比亚迪_2026年三季报_20261030.pdf#p12]]"
@@ -25,6 +29,8 @@ REPORT = "[[中信证券_汽车行业研报_20260901.pdf#p5]]"
 ANNOUNCE = "[[比亚迪_公告_20260901.pdf#p3]]"
 POLICY = "[[汽车产业政策.pdf#p1]]"
 SNAPSHOT = "[[乘联会_销量快照_20260901.docx#para8]]"
+LEGACY_SNAPSHOT = "[[乘联会_销量快照_20260801.docx#para3]]"
+OTHER = "[[某券商_渠道调研其他材料_20260901.docx#para2]]"
 
 
 def test_classify_uses_path_and_name():
@@ -32,7 +38,11 @@ def test_classify_uses_path_and_name():
     assert source_priority.classify(REPORT, MANIFEST) == "report"
     assert source_priority.classify(ANNOUNCE, MANIFEST) == "announcement"
     assert source_priority.classify(POLICY, MANIFEST) == "policy"
-    assert source_priority.classify(SNAPSHOT, MANIFEST) == "other"
+    assert source_priority.classify(SNAPSHOT, MANIFEST) == "snapshot"
+    assert source_priority.classify(LEGACY_SNAPSHOT, MANIFEST) == "snapshot"
+    assert source_priority.label(SNAPSHOT, MANIFEST) == "快照"
+    assert source_priority.classify(OTHER, MANIFEST) == "other"
+    assert source_priority.label(OTHER, MANIFEST) == "其他材料"
 
 
 def test_rank_order_and_prefer():
@@ -45,11 +55,12 @@ def test_rank_order_and_prefer():
 
 
 def test_page_legend_groups_sources_and_flags_conflict():
-    page = {"body": f"- 营收 100 亿元 {FILING}\n- 营收 98 亿元 {REPORT}\n- 政策要求 {POLICY}"}
+    page = {"body": f"- 营收 100 亿元 {FILING}\n- 营收 98 亿元 {REPORT}\n- 政策要求 {POLICY}\n- 销量 {SNAPSHOT}"}
     text = source_priority.page_legend(page, MANIFEST)
     assert "财报（比亚迪_2026年三季报_20261030.pdf）" in text
     assert "研报（中信证券_汽车行业研报_20260901.pdf）" in text
     assert "政策（汽车产业政策.pdf）" in text
+    assert "快照（乘联会_销量快照_20260901.docx）" in text
     assert "冲突时以财报为准" in text
 
 

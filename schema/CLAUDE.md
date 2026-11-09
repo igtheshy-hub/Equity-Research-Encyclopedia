@@ -37,13 +37,13 @@ frontmatter 除必填的 title / type / sources / updated 外，可加 aliases�
 ## 收件台规则
 
 - 新文件先进 raw/inbox/（网页上传或人工复制），支持 PDF 与 Word（.docx；旧 .doc 拒收并提示另存为 .docx）
-- 智能体读取每份文件开头若干页（PDF）或若干段（Word）文字，判断类型（卖方研报 / 公司财报 / 监管政策）、主题、出具方与日期，生成规范文件名（如 中信证券_白酒行业研报_20260312.pdf），文件名只用安全字符，不含空格与 [ ] # |
-- 程序校验文件名合法性与全库唯一性（整个 raw/ 范围内重名自动加序号后缀；连去掉扩展名的 stem 也要求唯一，避免来源页与提取缓存相撞），把文件移入对应目录：研报 → raw/reports/<行业>/，财报 → raw/filings/<公司>/，政策 → raw/policies/
+- 智能体读取每份文件开头若干页（PDF）或若干段（Word）文字，判断类型（卖方研报 / 公司财报 / 监管政策 / 其他材料）、主题、出具方与日期，生成规范文件名（研报如 中信证券_白酒行业研报_20260312.pdf；财报带报告期，如 比亚迪_2025年年报_20260330.pdf、上汽集团_2026年三季报_20261030.pdf），文件名只用安全字符，不含空格与 [ ] # |。只有确实不属于前三类的文件才判其他材料，如会议纪要、新闻稿、访谈、培训材料
+- 程序校验文件名合法性与全库唯一性（整个 raw/ 范围内重名自动加序号后缀；连去掉扩展名的 stem 也要求唯一，避免来源页与提取缓存相撞），把文件移入对应目录：研报 → raw/reports/<行业>/，财报 → raw/filings/<公司>/，政策 → raw/policies/，其他材料 → raw/others/（不建子目录，类型词为「其他材料」）。其他材料摄入走通用编译管线，与研报同一条路，不套财报四段式
 - 落盘前按 SHA256 查重：下载暂存、归名移动、快照生成、摄入清理四道闸都按内容判重，同内容文件只保留一份，重复件直接删除，不生成 `-2/-3` 副本
 - 历史遗留的同名多份文件不会被静默挑一份：查看、摄入、删除都会报错并列出全部路径，要求先改名或移走重复文件；原文件页与全库校验也会提示
 - 网页端上传后自动链式执行：取名入库任务完成即自动起摄入任务，两者独立进度；命令行 `python manage.py sort` 只做取名
 - 收件台只移动 inbox/ 内的文件；已归入 raw/ 正式目录的文件智能体只读（inbox 是「raw/ 人工管理」的唯一例外区）
-- 取数快照是例外：`python -m src.snapshot` 生成的 DOCX 不进收件台（三类判定会把快照拼成「研报」），按 `<机构>_<主题>快照_<取数日期>.docx` 直接写 raw/reports/数据快照/，落盘后直接摄入（unit=para，锚点 paraN）
+- 取数快照是例外：`python -m src.snapshot` 生成的 DOCX 不进收件台（收件台四类判定没有快照类，会把快照拼成「研报」），按 `<机构>_<主题>快照_<取数日期>.docx` 直接写 raw/snapshots/，落盘后直接摄入（unit=para，锚点 paraN）。快照既不是研报也不是财报，manifest 的 source_type 记 snapshot，网页与审校里显示「快照」；`snapshot.build` 拒绝写到 raw/snapshots/ 之外的路径
 
 ## Ingest 规则
 
@@ -173,6 +173,6 @@ python manage.py ask "问题"            # 检出新知识时 y/N 确认沉淀�
 python manage.py audit
 python manage.py validate
 python manage.py serve                 # 本地网页 http://127.0.0.1:5000
-python -m src.snapshot spec.json       # 网页/API 数据落 DOCX 快照进 raw/reports/数据快照/
+python -m src.snapshot spec.json       # 网页/API 数据落 DOCX 快照进 raw/snapshots/
 pytest tests/ -q                       # 跑测试（全程隔离真实数据）
 ```

@@ -143,5 +143,5 @@ curl -s "https://www.imf.org/external/datamapper/api/v1/NGDP_RPCH"   # 注意 /C
 3. 空表、空字符串、NaN 都要显式检查并如实报告，禁止把「没取到」写成数字。
 4. 所有源均无 SLA：批量抓取限速 ≤2 req/s（统计局）/ ≤100 req/min（FRED），带指数退避重试。
 5. 接口静默变更时有发生（统计局端点曾悄悄改名）；模板 4xx/5xx 时先查对应测试报告的发现流程重新探路，并把新端点 patch 回本 skill。
-6. **取到的数落快照进知识库**：按 data-sources 技能的「取数快照」流程生成 DOCX 放 raw/reports/数据快照/（文件名 `<机构>_<主题>快照_<取数日期>.docx`，不走 sort），来源机构、网址、取数时点写进正文；不进快照的数字只活在当次报告里，下次还得重取。
+6. **取到的数落快照进知识库**：按 data-sources 技能的「取数快照」流程生成 DOCX 放 raw/snapshots/（文件名 `<机构>_<主题>快照_<取数日期>.docx`，不走 sort），来源机构、网址、取数时点写进正文；不进快照的数字只活在当次报告里，下次还得重取。
 7. **网页端取数经 src/fetcher.py**：统计局新 API 等 HTTP 源用 requests 直连；AKShare 系列在 conda macro-data 环境以子进程跑（`C:/Users/DELL/anaconda3/envs/macro-data/python.exe`），stdout 返回 JSON。会话内仍按本技能模板直接跑。

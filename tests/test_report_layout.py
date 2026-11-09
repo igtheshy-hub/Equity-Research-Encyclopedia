@@ -513,6 +513,31 @@ def test_rejected_repair_cannot_delete_sourced_number(monkeypatch):
     assert ir._repair_rejected(old, new, "正文。\n" + old + "\n") == ""
 
 
+def test_rejected_repair_cannot_write_meta_text():
+    """审校答复说明混进 new 会被拒，不写进报告正文。"""
+    old = "五、经营与财务分析\n原第五节的财务分析内容句"
+    new = "修改后的说明句：\n\n说明：页码区间不是财务数据，改写为直接挂载锚点的表述。"
+    assert "new 是审校答复说明" in ir._repair_rejected(old, new, "")
+    assert ir._repair_rejected(old, "改写后的正文句，页码区间改为锚点表述", "") == ""
+
+
+def test_rejected_repair_rejects_length_collapse():
+    """整章被换成几句话时篇幅骤降，驳回替换、保留原文。"""
+    old = "原段落内容句。" * 40  # 280 字
+    assert "篇幅骤降" in ir._repair_rejected(old, "短句", "")
+    # 正常压缩到原文一半以上放行
+    assert ir._repair_rejected(old, "压缩后的正文" * 20, "") == ""
+
+
+def test_delivery_gate_flags_empty_and_meta_only_chapter(monkeypatch):
+    """章节正文为空或只剩审校说明时不许转 Word（待修清单第 75 条）。"""
+    monkeypatch.setattr(ir, "_anchor_checks", lambda md: [])
+    meta_only = "## 第一章\n\n修正后的该句如下（仅调整锚点，不改数据）。\n\n## 第二章\n\n第二章正文内容，正常一句话。\n"
+    assert any("只剩审校说明" in x for x in ir._delivery_problems(meta_only))
+    empty = "## 第一章\n\n## 第二章\n\n第二章正文内容，正常一句话。\n"
+    assert any("正文为空" in x for x in ir._delivery_problems(empty))
+
+
 def test_decode_ignores_default_western_charset():
     """服务器声明 iso-8859-1、实际是 gb18030 时，不能照声明解成乱码。"""
     from src import fetcher

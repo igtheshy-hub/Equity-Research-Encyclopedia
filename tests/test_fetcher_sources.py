@@ -199,7 +199,7 @@ def test_web_gap_drops_older_pages(monkeypatch):
             return self
 
         def as_posix(self):
-            return "raw/reports/数据快照/fake.docx"
+            return "raw/snapshots/fake.docx"
 
     def fake_snapshot(org, topic, url, rows, note=""):
         captured["rows"] = rows
@@ -255,7 +255,7 @@ def test_web_gap_drops_undated_page_with_old_excerpt(monkeypatch):
             return self
 
         def as_posix(self):
-            return "raw/reports/数据快照/fake.docx"
+            return "raw/snapshots/fake.docx"
 
     monkeypatch.setattr(fetcher, "make_snapshot",
                         lambda org, topic, url, rows, note="": captured.update(
