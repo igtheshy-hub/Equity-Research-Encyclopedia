@@ -189,11 +189,11 @@ def export_page():
 
     if request.method == "POST":
         # 每张表勾选的列：表单里是 cols_<sheet>，收成 {"items": [...], ...}
+        # 空列表也要收下：用户点「清空」后浏览器不发送该组任何值，只有保留为空列表
+        # 才能让 _pick_columns 回落到默认列；缺 key 会被当成「没传」，导出全部列
         cols = {}
         for key in ("items", "indicators", "entries", "sources"):
-            picked = request.form.getlist(f"cols_{key}")
-            if picked:
-                cols[key] = picked
+            cols[key] = request.form.getlist(f"cols_{key}")
         data = build_workbook(
             sheets=request.form.getlist("sheets") or ["items", "indicators", "entries", "sources"],
             types=request.form.getlist("types") or ["company", "industry", "concept"],
@@ -202,7 +202,7 @@ def export_page():
             date_to=request.form.get("date_to", "").strip(),
             companies=request.form.getlist("companies") or None,
             periods=request.form.getlist("periods") or None,
-            cols=cols or None,
+            cols=cols,
         )
         fname = f"wiki_export_{config.today_str().replace('-', '')}.xlsx"
         return send_file(

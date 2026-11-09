@@ -112,6 +112,29 @@ def test_column_selection():
     check("默认列不含未勾的", "审计意见" in hdrs2, False)
 
 
+def test_clear_columns_via_http_gets_defaults():
+    """清空某张表的列后提交，HTTP 层也要回落到默认列，不能导出全部列。
+
+    页面文案是「留空 = 用该表的默认列」，但浏览器不会提交未勾选的复选框；
+    app 只有把空列表也收下，build_workbook 才分得清「清空」与「没传」。
+    """
+    print("导出：HTTP 清空列回落到默认列")
+    _sandbox_with_fin()
+    from openpyxl import load_workbook
+    from src.web.app import app
+
+    app.config.update(TESTING=True)
+    with app.test_client() as c:
+        # 模拟点「清空」：表单里没有任何 cols_items
+        r = c.post("/export", data={"sheets": ["items"]})
+        check("导出 200", r.status_code, 200)
+        ws = load_workbook(io.BytesIO(r.get_data()))["科目数据表"]
+        hdrs = [cell.value for cell in ws[1]]
+    check("清空列后用默认列",
+          hdrs, ["公司", "报告期", "期末日", "科目", "金额(亿元)", "锚点"])
+    check("清空列后不导出未默认列", "审计意见" in hdrs, False)
+
+
 def test_anchor_list_not_written_raw():
     """锚点存的是列表，不能整坨写进 Excel（曾报 Cannot convert [...] to Excel）。"""
     print("导出：锚点列表安全落盘")
@@ -186,6 +209,7 @@ if __name__ == "__main__":
     run_tests(globals(), [
         "test_export_preview",
         "test_column_selection",
+        "test_clear_columns_via_http_gets_defaults",
         "test_anchor_list_not_written_raw",
         "test_indicator_units_correct",
         "test_focus_visible_in_kb_and_page",
