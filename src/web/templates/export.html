@@ -4,80 +4,139 @@
 {% block content %}
 <div class="page-head">
   <h1>导出到 Excel</h1>
-  <span class="muted">勾选要导出的表、字段与筛选条件</span>
+  <span class="muted">勾表 → 选列 → 定筛选 → 导出</span>
 </div>
 
-<form method="post" action="/export" class="export-form">
-  <section class="table-card" style="margin-bottom: 16px;">
-    <h2 style="margin-top: 0; font-size: 16px;">① 勾选 Sheet</h2>
-    <label style="display:block; margin: 4px 0;">
-      <input type="checkbox" name="sheets" value="items" checked>
-      科目数据表 <span class="muted">— 财报三大表科目（已归一到元/亿元），带锚点</span>
-    </label>
-    <label style="display:block; margin: 4px 0;">
-      <input type="checkbox" name="sheets" value="indicators" checked>
-      派生指标表 <span class="muted">— 毛利率 / 净利率 / ROE 等（fin_calc 已做勾稽校验）</span>
-    </label>
-    <label style="display:block; margin: 4px 0;">
-      <input type="checkbox" name="sheets" value="entries" checked>
-      条目溯源表 <span class="muted">— 每行一个知识条目：页面 / 小节 / 正文 / 锚点</span>
-    </label>
-    <label style="display:block; margin: 4px 0;">
-      <input type="checkbox" name="sheets" value="sources" checked>
-      来源汇总 <span class="muted">— 每个源文件贡献了多少条、触及哪些主题</span>
-    </label>
-  </section>
-
-  <section class="table-card" style="margin-bottom: 16px;">
-    <h2 style="margin-top: 0; font-size: 16px;">② 财报筛选（科目表 + 指标表）</h2>
-    {% if companies %}
-    <div style="margin-bottom: 10px;">
-      <span class="muted tiny">公司（不勾=全部）：</span>
-      {% for c in companies %}
-      <label style="display:inline-block; margin-right: 12px;">
-        <input type="checkbox" name="companies" value="{{ c }}"> {{ c }}
+<form method="post" action="/export" id="export-form">
+  <!-- ① 勾 Sheet：每张表一张卡片，带行数徽章 -->
+  <section class="exp-section">
+    <div class="exp-sec-head">
+      <h2>① 选表</h2>
+      <span class="muted tiny">勾上的表会各自成为一个 sheet</span>
+    </div>
+    <div class="exp-sheet-grid">
+      {% for key, sname, sdesc in [
+        ('items', '科目数据表', '财报三大表科目，已归一到元 / 亿元'),
+        ('indicators', '派生指标表', '毛利率 / 净利率 / ROE 等，已按口径换算'),
+        ('entries', '条目溯源表', '每行一个知识条目，带原文锚点'),
+        ('sources', '来源汇总', '每个源文件贡献了多少条、触及哪些主题')
+      ] %}
+      <label class="exp-sheet" data-sheet="{{ key }}">
+        <input type="checkbox" name="sheets" value="{{ key }}" checked
+               data-rows="{{ preview.counts.get(key, 0) }}">
+        <span class="exp-sheet-body">
+          <span class="exp-sheet-title">
+            {{ sname }}
+            <span class="exp-rows">{{ preview.counts.get(key, 0) }} 行</span>
+          </span>
+          <span class="exp-sheet-desc muted tiny">{{ sdesc }}</span>
+        </span>
       </label>
       {% endfor %}
     </div>
-    <div style="margin-bottom: 10px;">
-      <span class="muted tiny">报告期（不勾=全部）：</span>
-      {% for p in periods %}
-      <label style="display:inline-block; margin-right: 12px;">
-        <input type="checkbox" name="periods" value="{{ p }}"> {{ p }}
-      </label>
+  </section>
+
+  <!-- ② 选列 -->
+  <section class="exp-section">
+    <div class="exp-sec-head">
+      <h2>② 选列</h2>
+      <span class="muted tiny">留空 = 用该表的默认列</span>
+    </div>
+    <div class="exp-cols">
+      {% for key, sname in [
+        ('items', '科目数据表'), ('indicators', '派生指标表'),
+        ('entries', '条目溯源表'), ('sources', '来源汇总')
+      ] %}
+      <div class="exp-col-group" data-sheet="{{ key }}">
+        <div class="exp-col-title">
+          {{ sname }}
+          <button type="button" class="exp-mini" data-col-toggle="{{ key }}">全选 / 清空</button>
+        </div>
+        <div class="exp-col-list">
+          {% for c in preview.columns.get(key, []) %}
+          <label class="exp-col">
+            <input type="checkbox" name="cols_{{ key }}" value="{{ c.key }}" data-default="{{ '1' if c.default else '0' }}">
+            <span>{{ c.label }}</span>
+            {% if c.default %}<span class="exp-col-def">默认</span>{% endif %}
+          </label>
+          {% endfor %}
+        </div>
+      </div>
       {% endfor %}
+    </div>
+  </section>
+
+  <!-- ③ 筛选 -->
+  <section class="exp-section">
+    <div class="exp-sec-head">
+      <h2>③ 筛选</h2>
+      <span class="muted tiny">不勾 = 全部</span>
+    </div>
+
+    {% if companies %}
+    <div class="exp-filter">
+      <div class="exp-filter-label">
+        <div>公司</div>
+        <div class="muted tiny">财报数据</div>
+      </div>
+      <div class="exp-chips">
+        {% for c in companies %}
+        <label class="exp-chip"><input type="checkbox" name="companies" value="{{ c }}"><span>{{ c }}</span></label>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="exp-filter">
+      <div class="exp-filter-label">
+        <div>报告期</div>
+        <div class="muted tiny">财报数据</div>
+      </div>
+      <div class="exp-chips">
+        {% for p in periods %}
+        <label class="exp-chip"><input type="checkbox" name="periods" value="{{ p }}"><span>{{ p }}</span></label>
+        {% endfor %}
+      </div>
     </div>
     {% else %}
     <p class="muted tiny">data/fin/ 里还没有财报结构化数据。摄取财报后会自动生成。</p>
     {% endif %}
-  </section>
 
-  <section class="table-card" style="margin-bottom: 16px;">
-    <h2 style="margin-top: 0; font-size: 16px;">③ 条目筛选（条目溯源表）</h2>
-    <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end;">
-      <label style="display:flex; flex-direction:column; gap:4px;">
-        <span class="muted tiny">页面类型</span>
-        <div>
-          <label style="margin-right:12px;"><input type="checkbox" name="types" value="company" checked> 公司</label>
-          <label style="margin-right:12px;"><input type="checkbox" name="types" value="industry" checked> 行业</label>
-          <label><input type="checkbox" name="types" value="concept" checked> 概念</label>
+    <div class="exp-filter">
+      <div class="exp-filter-label">
+        <div>条目筛选</div>
+        <div class="muted tiny">条目溯源表</div>
+      </div>
+      <div class="exp-filter-body">
+        <div class="exp-inline">
+          <span class="muted tiny">页面类型</span>
+          <label class="exp-chip"><input type="checkbox" name="types" value="company" checked><span>公司</span></label>
+          <label class="exp-chip"><input type="checkbox" name="types" value="industry" checked><span>行业</span></label>
+          <label class="exp-chip"><input type="checkbox" name="types" value="concept" checked><span>概念</span></label>
         </div>
-      </label>
-      <label style="display:flex; flex-direction:column; gap:4px;">
-        <span class="muted tiny">关键词</span>
-        <input type="search" name="keyword" placeholder="科目名 / 公司名 / 正文关键词">
-      </label>
-      <label style="display:flex; flex-direction:column; gap:4px;">
-        <span class="muted tiny">更新时间从</span>
-        <input type="date" name="date_from">
-      </label>
-      <label style="display:flex; flex-direction:column; gap:4px;">
-        <span class="muted tiny">到</span>
-        <input type="date" name="date_to">
-      </label>
+        <div class="exp-inline">
+          <span class="muted tiny">关键词</span>
+          <input type="search" name="keyword" placeholder="科目名 / 公司名 / 正文关键词">
+        </div>
+        <div class="exp-inline">
+          <span class="muted tiny">更新时间</span>
+          <input type="date" name="date_from"> <span class="muted tiny">到</span> <input type="date" name="date_to">
+        </div>
+      </div>
     </div>
   </section>
 
-  <button type="submit" class="primary" style="padding: 8px 20px;">导出 xlsx</button>
+  <!-- 底部 sticky 工具条 -->
+  <div class="exp-bar">
+    <div class="exp-bar-info">
+      <span id="exp-summary-text" class="muted tiny">…</span>
+    </div>
+    <div class="exp-bar-actions">
+      <button type="button" class="ghost" id="exp-reset">重置</button>
+      <button type="submit" class="primary" id="exp-submit">导出 xlsx</button>
+    </div>
+  </div>
 </form>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='export.js') }}" defer></script>
 {% endblock %}

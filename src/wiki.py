@@ -227,6 +227,9 @@ def build_index_entry(page):
     aliases = meta.get("aliases") or []
     if isinstance(aliases, str):
         aliases = [aliases]
+    focus = meta.get("focus") or []
+    if isinstance(focus, str):
+        focus = [focus]
     return {
         "slug": page["slug"],
         "type": page["type"],
@@ -236,6 +239,9 @@ def build_index_entry(page):
         "source_files": sorted({Path(s).name for s in (meta.get("sources") or [])}),
         "statements": page["statements"],
         "updated": str(meta.get("updated") or ""),
+        # 关注点（导入时填的）与命中条目数——列表页据此标出这页是为哪组关注点建的
+        "focus": [str(f) for f in focus],
+        "focus_hits": len(meta.get("focus_hits") or []),
     }
 
 

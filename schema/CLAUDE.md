@@ -155,6 +155,8 @@ frontmatter 除必填的 title / type / sources / updated 外，可加 aliases�
 - 研报管线跨阶段使用多个 report 任务，阶段产物与确认状态落 data/report_jobs/<id>.json，服务重启后可按 job 状态续跑
 - 模型选择：网页下拉选中的模型随请求传给后台任务，取名、摄入、审校、修复、问答全部生效；config.json 的 llm.default 可写 "auto"，按 .env 里配了 key 的模型顺序自动选，协作者不必改配置文件
 - 网页路由：/ 首页（提问框 + 上传区 + 导入设置 + 进度）、/kb 知识库、/ask 问答（支持双栏会话分屏）、/report 研报管线（大纲确认、缺口勾选、候选沉淀）、/fetch 主动取数、/files 原文件（列表、重复名警告、批量删除）、/audit 审校、/outputs 产出、/export Excel 导出（科目 / 指标 / 条目 / 来源四张表，需 openpyxl）、/log 日志（按 wiki 条目展示元数据）、/viewer 原文对照（PDF.js 渲染 PDF：定位页 + 文本层高亮 + 缩放；docx 转 HTML：定位段落 + 高亮）
+- 导出页四步：选表（每张表带行数徽章）→ 选列（逐列勾选，留空=默认列）→ 筛选（公司 / 报告期胶囊多选，条目按类型、关键词、更新时间）→ 底部固定条实时显示「将导出 N 张表 · 约 M 行 · 各表 X/Y 列」。列选择通过表单的 `cols_<sheet>` 传回，后端 `build_workbook(cols=...)` 按勾选裁剪表头
+- 关注点（focus / focus_hits）除了写进 frontmatter，还要**看得见**：知识库列表加「关注点」列（紫色标签 + 命中条数），知识页 meta-card 里显示关注点标签与可展开的命中条目清单
 - 数据隔离：wiki/、data/、outputs/、raw/ 都进 .gitignore，克隆后首次启动自动创建空目录与 index/log。每人的知识库、会话、LLM 日志、材料清单都只在自己机器上；data/conversations.json 损坏时先备份成 conversations.corrupt-<时间>.json 再以空会话启动，网页启动自检会提示
 - 会改状态的接口（上传 / 删除 / 摄入 / 审校 / 修复 / 问答 / 深查 / 沉淀 / 取数 / 研报管线）都要带 `X-Requested-With: wiki` 头，否则 403。这是防跨站请求（CSRF）：浏览器发跨站请求时带不上自定义头，挡住「别的网页偷偷调我的删除接口」
 - 渲染顺序固定：先 HTML 转义、再过 Markdown、最后放回程序自己生成的锚点/双链标签。用户与研报提供的内容永远只是文字，不能变成可执行 HTML

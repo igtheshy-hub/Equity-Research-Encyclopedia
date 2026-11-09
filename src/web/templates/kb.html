@@ -39,13 +39,21 @@
   {% if g.pages %}
   <div class="table-card">
   <table>
-    <thead><tr><th>页面</th><th>别名</th><th>摘要</th><th>来源</th><th>条目</th><th>更新</th></tr></thead>
+    <thead><tr><th>页面</th><th>别名</th><th>摘要</th><th>关注点</th><th>来源</th><th>条目</th><th>更新</th></tr></thead>
     <tbody>
     {% for e in g.pages %}
-      <tr class="row" data-search="{{ e.title }} {{ e.aliases | join(' ') }} {{ e.summary }}">
+      <tr class="row" data-search="{{ e.title }} {{ e.aliases | join(' ') }} {{ e.summary }} {{ e.focus | join(' ') }}">
         <td><a href="{{ e.url }}">{{ e.title }}</a></td>
         <td>{{ e.aliases | join('、') or '—' }}</td>
         <td>{{ e.summary or '—' }}</td>
+        <td>
+          {% if e.focus %}
+            <span class="src focus-tag">{{ e.focus | join('、') }}</span>
+            {% if e.focus_hits %}<span class="num-badge" title="命中关注点的条目数">{{ e.focus_hits }}</span>{% endif %}
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
         <td class="num"><span class="num-badge">{{ e.source_files | length }}</span></td>
         <td class="num"><span class="num-badge">{{ e.statements }}</span></td>
         <td>{{ e.updated or '—' }}</td>

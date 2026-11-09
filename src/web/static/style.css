@@ -285,6 +285,10 @@ td a { font-weight: 600; }
   border-left: 3px solid var(--accent); border-radius: 6px;
   padding: 0 8px 0 6px; margin: 2px 4px 2px 0; font-size: 12px;
 }
+/* 关注点标签：与来源文件区分开，用紫色系 */
+.src.focus-tag {
+  background: #f1ebfb; color: #7a3fd1; border-left-color: #7a3fd1;
+}
 /* 反链面板：入链 tag 复用来源标签的胶囊样式，可点击跳引用页 */
 a.backlink-tag:hover { text-decoration: none; filter: brightness(.94); }
 .backlink-tag .bl-times { color: var(--ink-2); margin-left: 3px; font-weight: 600; }
@@ -419,6 +423,96 @@ body.split-ask .pane:last-child { border-radius: 0 var(--radius) var(--radius) 0
 .cand { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
 .cand input { margin: 0; }
 .deep-btn { margin-top: 6px; }
+
+/* ---------- 导出页 ---------- */
+.export-form { padding-bottom: 84px; }
+.exp-section { margin-bottom: 22px; }
+.exp-sec-head {
+  display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px;
+}
+.exp-sec-head h2 { margin: 0; font-size: 16px; }
+.exp-sec-head .muted { font-size: 12px; }
+
+/* 选表：卡片 */
+.exp-sheet-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(255px, 1fr)); gap: 10px;
+}
+.exp-sheet {
+  display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px 14px; box-shadow: var(--shadow); transition: border-color .15s, background .15s;
+}
+.exp-sheet:hover { border-color: var(--accent); }
+.exp-sheet input { margin: 2px 0 0; }
+.exp-sheet-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.exp-sheet-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
+.exp-rows {
+  background: var(--accent-weak); color: var(--accent);
+  border-radius: 6px; padding: 0 7px; font-size: 11.5px; font-weight: 500;
+}
+.exp-sheet-desc { line-height: 1.45; }
+
+/* 选列 */
+.exp-cols { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.exp-col-group {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px 14px; box-shadow: var(--shadow); transition: opacity .15s;
+}
+.exp-col-title {
+  display: flex; align-items: center; justify-content: space-between;
+  font-weight: 600; font-size: 13.5px; margin-bottom: 8px;
+}
+.exp-mini {
+  background: none; border: none; color: var(--accent); font-size: 12px;
+  padding: 0; cursor: pointer;
+}
+.exp-mini:hover { text-decoration: underline; }
+.exp-col-list { display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.exp-col {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px;
+  color: var(--ink-2); cursor: pointer;
+}
+.exp-col input { margin: 0; }
+.exp-col-def {
+  font-size: 10.5px; color: var(--accent); background: var(--accent-weak);
+  border-radius: 4px; padding: 0 4px;
+}
+
+/* 筛选 */
+.exp-filter {
+  display: flex; gap: 14px; align-items: flex-start; margin-bottom: 12px;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px 14px; box-shadow: var(--shadow);
+}
+.exp-filter-label {
+  flex: 0 0 88px; font-size: 13.5px; font-weight: 600; padding-top: 3px;
+  white-space: nowrap;
+}
+.exp-filter-label .muted { font-weight: 400; }
+.exp-filter-body { display: flex; flex-direction: column; gap: 8px; }
+.exp-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.exp-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.exp-chip {
+  display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 11px;
+  font-size: 12.5px; background: var(--card); color: var(--ink-2); transition: all .15s;
+}
+.exp-chip:hover { border-color: var(--accent); color: var(--accent); }
+.exp-chip input { margin: 0; }
+.exp-chip:has(input:checked) {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.exp-chip:has(input:checked) input { accent-color: #fff; }
+
+/* 底部固定工具条 */
+.exp-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 12px 26px; background: var(--card);
+  border-top: 1px solid var(--line); box-shadow: 0 -4px 18px rgba(20, 30, 60, .07);
+}
+.exp-bar-actions { display: flex; gap: 10px; }
+.exp-bar button { padding: 8px 18px; }
 
 /* ---------- 弹窗 ---------- */
 .modal-backdrop {
