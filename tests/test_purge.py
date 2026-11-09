@@ -51,6 +51,7 @@ def _seed():
             "【数据】2025FY 营业收入 = 100 元 [[财报丙.pdf#p1]]",
             "【数据】2025FY 营业收入同比 = 10.00% [[财报丙.pdf#p2]] [[研报甲.pdf#p2]]",
             "【指标】2025FY ROE(加权披露) = 15.31% [[财报丙.pdf#p3]]",
+            "【数据】2025FY 净利润 = 10 元 [[财报丙.pdf#p1]] [[财报丙.pdf#p2]]",
             "管理层说需求好 [[研报甲.pdf#p1]]",
             "这条没有锚点，是人工笔记",
         ],
@@ -119,6 +120,10 @@ def sandbox():
     config.REPORTS_DIR = config.RAW_DIR / "reports"
     config.FILINGS_DIR = config.RAW_DIR / "filings"
     config.POLICIES_DIR = config.RAW_DIR / "policies"
+    # raw_file_groups 还会扫 others / snapshots，不重定向就会读到真实资料库
+    config.OTHERS_DIR = config.RAW_DIR / "others"
+    config.SNAPSHOT_DIR = config.RAW_DIR / "snapshots"
+    config.LEGACY_SNAPSHOT_DIR = config.REPORTS_DIR / "数据快照"
     config.WIKI_DIR = tmp / "wiki"
     config.INDEX_MD = config.WIKI_DIR / "index.md"
     config.LOG_MD = config.WIKI_DIR / "log.md"
@@ -133,7 +138,8 @@ def sandbox():
         "source": config.WIKI_DIR / "sources",
     }
     for d in (config.INBOX_DIR, config.REPORTS_DIR, config.FILINGS_DIR,
-              config.POLICIES_DIR, config.DATA_DIR, config.EXTRACTS_DIR,
+              config.POLICIES_DIR, config.OTHERS_DIR, config.SNAPSHOT_DIR,
+              config.DATA_DIR, config.EXTRACTS_DIR,
               config.FIN_DIR, *config.TYPE_DIRS.values()):
         d.mkdir(parents=True, exist_ok=True)
     _seed()
@@ -167,10 +173,13 @@ def test_list():
     check("按名字能查到研报", "研报甲.pdf" in names, True)
     rep = next(r for r in rows if r["name"] == "研报甲.pdf")
     check("研报类型与条目数", (rep["kind_label"], rep["entries_count"]), ("研报", 1))
+    check("研报实时知识条目数（锚点含该文件的行）", rep["cited"], 4)
     check("研报被引用条数（只算独占锚点的行）", rep["statements"], 3)
+    check("跨文件共引的行在两个文件各算一条", rep["cited"] - rep["statements"], 1)
     check("只含锚点的页面会被删空", rep["empty_pages"], ["估值"])
     fil = next(r for r in rows if r["name"] == "财报丙.pdf")
-    check("财报条目数与被引用数", (fil["entries_count"], fil["statements"]), (3, 5))
+    check("财报条目数与被引用数", (fil["entries_count"], fil["statements"]), (3, 6))
+    check("财报实时知识条目数（同行两个锚点只算一条）", fil["cited"], 7)
     check("财报会删空的页面", fil["empty_pages"], ["现金流"])
     check("不把有正文的页面算作会删空", "比亚迪" in fil["empty_pages"], False)
 

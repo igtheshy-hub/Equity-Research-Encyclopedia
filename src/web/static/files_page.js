@@ -55,7 +55,7 @@ function openConfirm(names) {
   }
   document.getElementById("del-confirm").disabled = false;
   body.innerHTML = "<ul class=\"del-list\">" + items.map((r) => {
-    const bits = [r.kind_label + (r.entries_count ? `，${r.entries_count} 条知识` : "")];
+    const bits = [r.kind_label + (r.cited ? `，${r.cited} 条知识引用它` : "")];
     bits.push(r.statements ? `被 ${r.pages.length} 个页面引用 ${r.statements} 条` : "没有页面引用它的条目");
     const empty = (r.empty_pages || []).length
       ? `<div class="muted">会清空并移除页面：${r.empty_pages.map((t) => App.escapeHtml(t)).join("、")}</div>` : "";

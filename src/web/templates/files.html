@@ -10,7 +10,7 @@
   <button class="primary" id="files-ingest" disabled>摄入所选</button>
   <button class="primary" id="files-delete" disabled>删除所选</button>
 </div>
-<p class="muted">这里列出 raw/ 下的材料，未摄入的排在最前面，可勾选后直接摄入或删除。点文件名在新标签页打开原件（PDF 定位到页，Word 按段落）。删除会一并清掉这份材料带来的知识条目、来源页、提取缓存与财报结构化数据；被清空的页面整页移除，操作不可撤销。</p>
+<p class="muted">这里列出 raw/ 下的材料，未摄入的排在最前面，可勾选后直接摄入或删除。点文件名在新标签页打开原件（PDF 定位到页，Word 按段落）。「知识条目」和「被引用」都是打开本页时实时统计：知识条目指锚点含这份文件的知识行数（同一行挂同一文件多个锚点只算一条，跨文件共引各算一条），被引用指只引用这份文件、删除后会失去依据的知识行数。删除会一并清掉这份材料带来的知识条目、来源页、提取缓存与财报结构化数据；被清空的页面整页移除，操作不可撤销。</p>
 <div id="files-progress" class="task-area"></div>
 {% if rows %}
 <div class="table-card">
@@ -46,7 +46,7 @@
       </td>
       <td>{{ r.kind_label }}</td>
       <td>{{ r.report_date or '—' }}</td>
-      <td class="num">{{ r.entries_count or '—' }}</td>
+      <td class="num">{{ r.cited }}</td>
       <td class="num">{{ r.statements }}</td>
       <td>{{ r.ingested_at.replace('T', ' ') if r.ingested_at else '—' }}</td>
       <td>

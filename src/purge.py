@@ -43,8 +43,10 @@ def _strip_anchor(line, name):
 
 
 def _impact(pages):
-    """文件名 → {statements, pages, empty_pages}。
+    """文件名 → {cited, statements, pages, empty_pages}。
 
+    cited 统计锚点含这份文件的条目行，打开页面时实时算：
+    同一行挂同一文件多个锚点只算 1，跨文件共引的行每个文件各算 1。
     statements 统计「只引用这份文件、删掉后会失去锚点」的条目；
     empty_pages 只包含删完后一条不剩的页面。删除会保留失去锚点的正文，
     所以只有「整行只有锚点」的页面才会真的空掉。
@@ -63,7 +65,8 @@ def _impact(pages):
             if not files:
                 continue
             for f in files:
-                per.setdefault(f, {"statements": 0, "remains": base_remains})
+                per.setdefault(f, {"cited": 0, "statements": 0, "remains": base_remains})
+                per[f]["cited"] += 1
                 if files == {f}:
                     per[f]["statements"] += 1
                 # 同一行还引用别的文件，或摘掉锚点后仍有正文，这行就不会消失
@@ -71,7 +74,8 @@ def _impact(pages):
                 if files != {f} or _strip_anchor(content, f).strip():
                     per[f]["remains"] += 1
         for f, n in per.items():
-            e = out.setdefault(f, {"statements": 0, "pages": [], "empty_pages": []})
+            e = out.setdefault(f, {"cited": 0, "statements": 0, "pages": [], "empty_pages": []})
+            e["cited"] += n["cited"]
             e["statements"] += n["statements"]
             e["pages"].append(title)
             if n["remains"] == 0:
@@ -91,6 +95,7 @@ def _row(name, rel, entry, imp, missing, duplicate=False, paths=None):
         "report_date": entry.get("report_date") or "",
         "entries_count": entry.get("entries_count") or 0,
         "ingested_at": entry.get("ingested_at") or "",
+        "cited": imp.get("cited", 0),
         "statements": imp.get("statements", 0),
         "pages": imp.get("pages", []),
         "empty_pages": imp.get("empty_pages", []),
