@@ -140,7 +140,10 @@ def _iter_items(store):
                 "item": name,
                 "value_yi": round(v / 1e8, 4) if isinstance(v, (int, float)) else "",
                 "value_yuan": v if isinstance(v, (int, float)) else "",
-                "anchor": anchors,
+                # 锚点存的是列表 ["[[x.pdf#p3]]", ...]，直接写进 Excel 会报
+                # "Cannot convert [...] to Excel"；用全角空格分隔多个锚点
+                "anchor": ("　".join(str(a) for a in anchors) if isinstance(anchors, (list, tuple))
+                           else str(anchors)),
                 "source": src,
                 "audit_opinion": audit,
             }
@@ -281,6 +284,19 @@ def _write_sheet(ws, rows: List[dict], columns):
         ws.column_dimensions[get_column_letter(i)].width = min(48, max(10, w + 4))
 
 
+def _pick_columns(columns, wanted):
+    """按用户勾选的列裁剪；没勾（None / 空）就用该表的默认列。"""
+    if wanted is None:
+        return columns
+    wanted = set(wanted)
+    if not wanted:
+        # 一个都没勾 = 用默认列（default=True 的那些）
+        picked = [c for c in columns if c[2]]
+        return picked or columns
+    # 保持原顺序，只留勾中的
+    return [c for c in columns if c[0] in wanted]
+
+
 def build_workbook(
     *,
     sheets: Optional[List[str]] = None,
@@ -290,6 +306,7 @@ def build_workbook(
     date_to: str = "",
     companies: Optional[List[str]] = None,
     periods: Optional[List[str]] = None,
+    cols: Optional[dict] = None,
 ) -> bytes:
     """生成 xlsx 字节流。
 
@@ -297,9 +314,11 @@ def build_workbook(
     types       条目表的页面类型：company / industry / concept
     companies   财务表限定公司（空=全部）
     periods     财务表限定报告期（空=全部）
+    cols        每张表勾选的列：{"items": ["company", "item", ...]}；没给=用默认列
     """
     sheets = sheets or ["items", "indicators", "entries", "sources"]
     types = types if types is not None else ["company", "industry", "concept"]
+    cols = cols or {}
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -311,21 +330,25 @@ def build_workbook(
         for st in stores:
             rows.extend(_iter_items(st))
         rows = _filter_fin(rows, keyword, companies, periods)
-        _write_sheet(wb.create_sheet("科目数据表"), rows, ITEM_COLUMNS)
+        _write_sheet(wb.create_sheet("科目数据表"), rows,
+                     _pick_columns(ITEM_COLUMNS, cols.get("items")))
 
     if "indicators" in sheets:
         rows = []
         for st in stores:
             rows.extend(_iter_indicators(st))
         rows = _filter_fin(rows, keyword, companies, periods)
-        _write_sheet(wb.create_sheet("派生指标表"), rows, INDICATOR_COLUMNS)
+        _write_sheet(wb.create_sheet("派生指标表"), rows,
+                     _pick_columns(INDICATOR_COLUMNS, cols.get("indicators")))
 
     if "entries" in sheets:
         rows = _entry_rows(types, keyword, date_from, date_to)
-        _write_sheet(wb.create_sheet("条目溯源表"), rows, ENTRY_COLUMNS)
+        _write_sheet(wb.create_sheet("条目溯源表"), rows,
+                     _pick_columns(ENTRY_COLUMNS, cols.get("entries")))
 
     if "sources" in sheets:
-        _write_sheet(wb.create_sheet("来源汇总"), _source_rows(), SOURCE_COLUMNS)
+        _write_sheet(wb.create_sheet("来源汇总"), _source_rows(),
+                     _pick_columns(SOURCE_COLUMNS, cols.get("sources")))
 
     if not wb.sheetnames:
         wb.create_sheet("空")
@@ -345,3 +368,26 @@ def available_companies():
         for pk in (st.get("periods") or {}):
             periods.add(pk)
     return comps, sorted(periods)
+
+
+def export_preview():
+    """导出页用：每张表大概有多少行、各有哪些列。
+
+    只读、不做筛选统计（筛选后的真实行数由 build_workbook 决定），
+    这里给的是「全量时」的规模，用户据此判断要不要勾。
+    """
+    stores = _load_fin_stores()
+    n_items = sum(1 for st in stores for _ in _iter_items(st))
+    n_inds = sum(1 for st in stores for _ in _iter_indicators(st))
+    counts = {
+        "items": n_items,
+        "indicators": n_inds,
+        "entries": len(_entry_rows(None)),
+        "sources": len(_source_rows()),
+    }
+    cols = {
+        key: [{"key": k, "label": hdr, "default": bool(def_)}
+               for k, hdr, def_ in spec["columns"]]
+        for key, spec in SHEETS.items()
+    }
+    return {"counts": counts, "columns": cols}
