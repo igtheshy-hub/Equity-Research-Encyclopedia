@@ -182,11 +182,18 @@ def export_page():
         return render_template("error.html",
                                message="导出 Excel 需要 openpyxl。请在项目目录运行："
                                        "python -m pip install -r requirements.txt，然后重启网页。"), 500
-    from ..excel_export import available_companies, build_workbook
+    from ..excel_export import available_companies, build_workbook, export_preview
 
     companies, periods = available_companies()
+    preview = export_preview()
 
     if request.method == "POST":
+        # 每张表勾选的列：表单里是 cols_<sheet>，收成 {"items": [...], ...}
+        cols = {}
+        for key in ("items", "indicators", "entries", "sources"):
+            picked = request.form.getlist(f"cols_{key}")
+            if picked:
+                cols[key] = picked
         data = build_workbook(
             sheets=request.form.getlist("sheets") or ["items", "indicators", "entries", "sources"],
             types=request.form.getlist("types") or ["company", "industry", "concept"],
@@ -195,6 +202,7 @@ def export_page():
             date_to=request.form.get("date_to", "").strip(),
             companies=request.form.getlist("companies") or None,
             periods=request.form.getlist("periods") or None,
+            cols=cols or None,
         )
         fname = f"wiki_export_{config.today_str().replace('-', '')}.xlsx"
         return send_file(
@@ -204,7 +212,19 @@ def export_page():
             download_name=fname,
         )
 
-    return render_template("export.html", companies=companies, periods=periods)
+    return render_template("export.html", companies=companies, periods=periods,
+                           preview=preview)
+
+
+@app.route("/outputs")
+def outputs_page():
+    """产出列表页。
+
+    模板 outputs.html 一直在，但这条路由在重构时掉了 —— 顶部 nav 点「产出」直接 404。
+    """
+    files = sorted(config.OUTPUTS_DIR.glob("*.md"), reverse=True)
+    reports = [p.name for p in files if not p.name.startswith(("memo-", "audit-"))]
+    return render_template("outputs.html", reports=reports)
 
 
 @app.route("/outputs/charts/<name>")

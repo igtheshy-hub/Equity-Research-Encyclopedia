@@ -17,6 +17,21 @@
         {% for s in meta.sources %}<span class="src">{{ s.split('/')[-1] }}</span>{% endfor %}
       </div>
       {% endif %}
+      {% if meta.focus %}
+      <div class="sources">关注点：
+        {% for f in meta.focus %}<span class="src focus-tag">{{ f }}</span>{% endfor %}
+        {% if meta.focus_hits %}
+        <details style="margin-top: 4px;">
+          <summary class="muted tiny" style="cursor:pointer;">命中条目（{{ meta.focus_hits | length }}）</summary>
+          <ul style="padding-left: 20px; margin: 4px 0 0;">
+            {% for h in meta.focus_hits %}
+            <li class="tiny">{{ h }}</li>
+            {% endfor %}
+          </ul>
+        </details>
+        {% endif %}
+      </div>
+      {% endif %}
       {% if meta.history %}
       <details><summary>更新历史（{{ meta.history | length }}）</summary>
         <ul>{% for h in meta.history %}<li>{{ h }}</li>{% endfor %}</ul>
